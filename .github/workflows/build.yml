@@ -114,6 +114,7 @@ jobs:
         uses: mikepenz/release-changelog-builder-action@v6
         with:
           mode: COMMIT
+          offlineMode: true
           failOnError: true
           configurationJson: |
             {

@@ -27,6 +27,7 @@ const requiredSnippets = [
   "mikepenz/release-changelog-builder-action@v6",
   "id: build_changelog",
   "mode: COMMIT",
+  "offlineMode: true",
   "failOnError: true",
   "configurationJson:",
   "label_extractor",
