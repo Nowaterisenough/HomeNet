@@ -4,7 +4,7 @@ import { join } from "node:path";
 const root = process.cwd();
 
 const checks = [
-  ["src/App.vue", "网络管家 · DDNS 与端口转发"],
+  ["src/App.vue", "homenet · DDNS 与端口转发"],
   ["src/App.vue", 'invoke<RuntimeStatus>("get_runtime_status")'],
   ["src/App.vue", "setInterval(loadRuntimeStatus"],
   ["src/App.vue", "homenet:focus-logs"],
@@ -26,6 +26,14 @@ const checks = [
   ["src/utils/ports.ts", "pairPortExpressions"],
   ["src/components/LogPanel.vue", "最近日志"],
   ["src/components/LogPanel.vue", 'invoke<LogEntry[]>("get_recent_logs")'],
+  ["src-tauri/tauri.conf.json", '"productName": "homenet"'],
+  ["src-tauri/tauri.conf.json", '"title": "homenet · DDNS与端口转发"'],
+  ["src-tauri/tauri.conf.json", '"tooltip": "homenet · DDNS与端口转发"'],
+  ["src-tauri/Cargo.toml", 'name = "homenet"'],
+  ["src-tauri/Cargo.toml", 'description = "homenet · DDNS与端口转发"'],
+  ["src-tauri/src/tray.rs", '.tooltip("homenet · DDNS与端口转发")'],
+  ["src-tauri/src/autostart.rs", 'let value_name = "homenet"'],
+  ["src-tauri/src/autostart.rs", "Name=homenet"],
 ];
 
 const missing = [];
@@ -34,6 +42,23 @@ for (const [file, needle] of checks) {
   const content = readFileSync(join(root, file), "utf8");
   if (!content.includes(needle)) {
     missing.push(`${file}: ${needle}`);
+  }
+}
+
+const brandFiles = [
+  "src/App.vue",
+  "src-tauri/tauri.conf.json",
+  "src-tauri/Cargo.toml",
+  "src-tauri/src/tray.rs",
+  "src-tauri/src/autostart.rs",
+];
+
+for (const file of brandFiles) {
+  const content = readFileSync(join(root, file), "utf8");
+  for (const needle of ["网络管家", "HomeNet"]) {
+    if (content.includes(needle)) {
+      missing.push(`${file}: replace '${needle}' with homenet`);
+    }
   }
 }
 

@@ -1,7 +1,7 @@
 [package]
-name = "home-net"
-version = "0.1.1"
-description = "网络管家 · DDNS与端口转发"
+name = "homenet"
+version = "0.1.2"
+description = "homenet · DDNS与端口转发"
 authors = ["NoWat"]
 edition = "2021"
 

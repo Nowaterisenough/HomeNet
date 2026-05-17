@@ -53,7 +53,7 @@ fn set_autostart_windows(enabled: bool) -> Result<(), String> {
     let exe_str = exe_path.to_string_lossy().to_string();
 
     let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
-    let value_name = "HomeNet";
+    let value_name = "homenet";
 
     if enabled {
         let output = std::process::Command::new("reg")
@@ -87,7 +87,7 @@ fn set_autostart_windows(enabled: bool) -> Result<(), String> {
 #[cfg(target_os = "windows")]
 fn is_autostart_enabled_windows() -> bool {
     let output = std::process::Command::new("reg")
-        .args(["query", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run", "/v", "HomeNet"])
+        .args(["query", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run", "/v", "homenet"])
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false);
@@ -106,7 +106,7 @@ fn autostart_desktop_path() -> PathBuf {
             let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
             PathBuf::from(home).join(".config")
         });
-    base.join("autostart").join("home-net.desktop")
+    base.join("autostart").join("homenet.desktop")
 }
 
 #[cfg(target_os = "linux")]
@@ -125,7 +125,7 @@ fn set_autostart_linux(enabled: bool) -> Result<(), String> {
         let content = format!(
             r#"[Desktop Entry]
 Type=Application
-Name=网络管家
+Name=homenet
 Comment=DDNS 与端口转发
 Exec={}
 Terminal=false
@@ -164,7 +164,7 @@ fn launchagent_plist_path() -> PathBuf {
     PathBuf::from(home)
         .join("Library")
         .join("LaunchAgents")
-        .join("com.nowat.home-net.plist")
+        .join("com.nowat.homenet.plist")
 }
 
 #[cfg(target_os = "macos")]
@@ -186,7 +186,7 @@ fn set_autostart_macos(enabled: bool) -> Result<(), String> {
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.nowat.home-net</string>
+    <string>com.nowat.homenet</string>
     <key>Program</key>
     <string>{}</string>
     <key>RunAtLoad</key>

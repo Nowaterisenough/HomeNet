@@ -1,4 +1,4 @@
-name: Build desktop packages
+name: Build desktop artifacts
 
 on:
   push:
@@ -23,17 +23,19 @@ jobs:
           - label: macOS ARM64
             runner: macos-15
             rustTarget: aarch64-apple-darwin
-            args: --target aarch64-apple-darwin --bundles dmg
-            artifactGlob: src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
-            artifactName: HomeNet-macos-arm64
-            assetSuffix: macos-arm64.dmg
+            args: --target aarch64-apple-darwin --bundles app
+            artifactGlob: src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app
+            artifactName: homenet-macos-arm64
+            assetSuffix: macos-arm64-app.zip
+            assetMode: zip
           - label: Windows x64
             runner: windows-latest
             rustTarget: x86_64-pc-windows-msvc
-            args: --target x86_64-pc-windows-msvc --bundles nsis
-            artifactGlob: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
-            artifactName: HomeNet-windows-x64
-            assetSuffix: windows-x64-setup.exe
+            args: --target x86_64-pc-windows-msvc --no-bundle
+            artifactGlob: src-tauri/target/x86_64-pc-windows-msvc/release/homenet.exe
+            artifactName: homenet-windows-x64
+            assetSuffix: windows-x64.exe
+            assetMode: file
 
     steps:
       - name: Checkout
@@ -65,7 +67,7 @@ jobs:
           node scripts/verify-port-expression.mjs
           node scripts/verify-ci-workflow.mjs
 
-      - name: Build Tauri package
+      - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -80,8 +82,22 @@ jobs:
             throw "未找到构建产物：${{ matrix.artifactGlob }}"
           }
           New-Item -ItemType Directory -Force -Path release-assets | Out-Null
-          $target = Join-Path release-assets "HomeNet_${{ github.ref_name }}_${{ matrix.assetSuffix }}"
-          Copy-Item -LiteralPath $source.FullName -Destination $target
+          $target = Join-Path release-assets "homenet_${{ github.ref_name }}_${{ matrix.assetSuffix }}"
+          if ("${{ matrix.assetMode }}" -eq "zip") {
+            if (Test-Path -LiteralPath $target) {
+              Remove-Item -LiteralPath $target -Force
+            }
+            if ($IsMacOS) {
+              & ditto -c -k --sequesterRsrc --keepParent $source.FullName $target
+              if ($LASTEXITCODE -ne 0) {
+                throw "压缩应用目录失败：$($source.FullName)"
+              }
+            } else {
+              Compress-Archive -LiteralPath $source.FullName -DestinationPath $target -Force
+            }
+          } else {
+            Copy-Item -LiteralPath $source.FullName -Destination $target
+          }
           Get-ChildItem release-assets
 
       - name: Upload package artifact
@@ -159,7 +175,7 @@ jobs:
       - name: Publish release with generated changelog
         uses: softprops/action-gh-release@v3
         with:
-          name: 网络管家 ${{ github.ref_name }}
+          name: homenet ${{ github.ref_name }}
           body: ${{ steps.build_changelog.outputs.changelog }}
           files: release-assets/*
           fail_on_unmatched_files: true

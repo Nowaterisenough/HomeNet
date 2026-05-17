@@ -12,7 +12,7 @@ try {
 }
 
 const requiredSnippets = [
-  "name: Build desktop packages",
+  "name: Build desktop artifacts",
   "tags:",
   "v*",
   "workflow_dispatch:",
@@ -21,6 +21,10 @@ const requiredSnippets = [
   "aarch64-apple-darwin",
   "windows-latest",
   "tauri-apps/tauri-action@v0.6.2",
+  "--bundles app",
+  "--no-bundle",
+  "assetMode: zip",
+  "assetMode: file",
   "release:",
   "needs: build",
   "actions/download-artifact@v5",
@@ -34,10 +38,10 @@ const requiredSnippets = [
   "softprops/action-gh-release@v3",
   "body: ${{ steps.build_changelog.outputs.changelog }}",
   "files: release-assets/*",
-  "name: 网络管家",
-  "HomeNet_${{ github.ref_name }}_${{ matrix.assetSuffix }}",
-  "assetSuffix: macos-arm64.dmg",
-  "assetSuffix: windows-x64-setup.exe",
+  "name: homenet ${{ github.ref_name }}",
+  "homenet_${{ github.ref_name }}_${{ matrix.assetSuffix }}",
+  "assetSuffix: macos-arm64-app.zip",
+  "assetSuffix: windows-x64.exe",
   "actions/upload-artifact@v4",
   "artifactGlob:",
   "pnpm/action-setup@v4",
@@ -47,11 +51,25 @@ const requiredSnippets = [
 ];
 
 const missing = requiredSnippets.filter((snippet) => !workflow.includes(snippet));
+const forbiddenSnippets = [
+  "网络管家",
+  "HomeNet_",
+  "--bundles dmg",
+  "--bundles nsis",
+  "bundle/dmg",
+  "bundle/nsis",
+  ".dmg",
+  "setup.exe",
+];
+const forbidden = forbiddenSnippets.filter((snippet) => workflow.includes(snippet));
 
-if (missing.length > 0) {
+if (missing.length > 0 || forbidden.length > 0) {
   console.error("CI workflow checks failed:");
   for (const snippet of missing) {
     console.error(`- Missing ${snippet}`);
+  }
+  for (const snippet of forbidden) {
+    console.error(`- Forbidden ${snippet}`);
   }
   process.exit(1);
 }

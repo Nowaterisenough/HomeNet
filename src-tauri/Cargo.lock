@@ -1594,8 +1594,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "home-net"
-version = "0.1.1"
+name = "homenet"
+version = "0.1.2"
 dependencies = [
  "base64 0.22.1",
  "chrono",
