@@ -1,6 +1,6 @@
 [package]
 name = "homenet"
-version = "0.1.2"
+version = "0.1.3"
 description = "homenet · DDNS与端口转发"
 authors = ["NoWat"]
 edition = "2021"
