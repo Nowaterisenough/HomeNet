@@ -190,6 +190,18 @@ const cssChecks = [
       !content.includes(".info-icon::before"),
   ],
   [
+    "src/components/ForwardRulesPanel.vue",
+    "rules panel footer stays at groupbox bottom",
+    (content) => {
+      const normalized = content.replace(/\r\n/g, "\n");
+      return (
+        normalized.includes(".rules-panel {\n  height: 100%;\n}") &&
+        normalized.includes(".table-wrapper {\n  flex: 1 1 auto;\n  overflow: auto;\n  min-height: 0;\n}") &&
+        normalized.includes(".panel-footer {\n  flex: 0 0 auto;")
+      );
+    },
+  ],
+  [
     "src-tauri/capabilities/default.json",
     "custom window controls have Tauri permissions",
     (content) =>

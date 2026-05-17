@@ -531,6 +531,10 @@ onMounted(() => {
   box-shadow: var(--shadow-card);
 }
 
+.rules-panel {
+  height: 100%;
+}
+
 .panel-header {
   height: 56px;
   display: flex;
@@ -702,6 +706,7 @@ onMounted(() => {
 }
 
 .table-wrapper {
+  flex: 1 1 auto;
   overflow: auto;
   min-height: 0;
 }
@@ -967,6 +972,7 @@ input[type="checkbox"] {
 }
 
 .panel-footer {
+  flex: 0 0 auto;
   min-height: 32px;
   display: flex;
   align-items: center;
@@ -974,6 +980,7 @@ input[type="checkbox"] {
   padding: 0 16px;
   color: #5d6b7d;
   font-size: 12px;
+  border-top: 1px solid #e6edf5;
   background: #f7fbff;
 }
 
