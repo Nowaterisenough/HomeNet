@@ -26,7 +26,6 @@ const requiredSnippets = [
   "portableGlob:",
   "installerGlob:",
   "portableMode: zip",
-  "portableMode: file",
   "release:",
   "needs: build",
   "actions/download-artifact@v5",
@@ -45,7 +44,7 @@ const requiredSnippets = [
   "homenet_${{ github.ref_name }}_${{ matrix.installerSuffix }}",
   "portableSuffix: macos-arm64-app.zip",
   "installerSuffix: macos-arm64.dmg",
-  "portableSuffix: windows-x64-portable.exe",
+  "portableSuffix: windows-x64-portable.zip",
   "installerSuffix: windows-x64-setup.exe",
   "actions/upload-artifact@v4",
   "pnpm/action-setup@v4",
@@ -62,6 +61,7 @@ const forbiddenSnippets = [
   "assetSuffix:",
   "assetMode:",
   "artifactGlob:",
+  "windows-x64-portable.exe",
 ];
 const forbidden = forbiddenSnippets.filter((snippet) => workflow.includes(snippet));
 

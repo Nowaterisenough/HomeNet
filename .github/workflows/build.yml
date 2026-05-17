@@ -37,9 +37,9 @@ jobs:
             portableGlob: src-tauri/target/x86_64-pc-windows-msvc/release/homenet.exe
             installerGlob: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
             artifactName: homenet-windows-x64
-            portableSuffix: windows-x64-portable.exe
+            portableSuffix: windows-x64-portable.zip
             installerSuffix: windows-x64-setup.exe
-            portableMode: file
+            portableMode: zip
 
     steps:
       - name: Checkout
