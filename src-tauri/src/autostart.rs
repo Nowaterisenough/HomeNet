@@ -53,7 +53,7 @@ fn set_autostart_windows(enabled: bool) -> Result<(), String> {
     let exe_str = exe_path.to_string_lossy().to_string();
 
     let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
-    let value_name = "homenet";
+    let value_name = "HomeNet";
 
     if enabled {
         let output = std::process::Command::new("reg")
@@ -87,7 +87,7 @@ fn set_autostart_windows(enabled: bool) -> Result<(), String> {
 #[cfg(target_os = "windows")]
 fn is_autostart_enabled_windows() -> bool {
     let output = std::process::Command::new("reg")
-        .args(["query", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run", "/v", "homenet"])
+        .args(["query", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run", "/v", "HomeNet"])
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false);
@@ -125,7 +125,7 @@ fn set_autostart_linux(enabled: bool) -> Result<(), String> {
         let content = format!(
             r#"[Desktop Entry]
 Type=Application
-Name=homenet
+Name=HomeNet
 Comment=DDNS 与端口转发
 Exec={}
 Terminal=false

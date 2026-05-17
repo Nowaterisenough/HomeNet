@@ -303,7 +303,7 @@ onUnmounted(() => {
         <button class="menu-button" aria-label="打开菜单">
           <Menu :size="19" :stroke-width="2.4" />
         </button>
-        <h1>homenet · DDNS 与端口转发</h1>
+        <h1>HomeNet · DDNS 与端口转发</h1>
       </div>
       <div class="window-controls">
         <button

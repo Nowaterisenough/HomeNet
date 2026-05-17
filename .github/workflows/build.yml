@@ -108,8 +108,8 @@ jobs:
           }
 
           New-Item -ItemType Directory -Force -Path release-assets | Out-Null
-          $portableTarget = Join-Path release-assets "homenet_${{ github.ref_name }}_${{ matrix.portableSuffix }}"
-          $installerTarget = Join-Path release-assets "homenet_${{ github.ref_name }}_${{ matrix.installerSuffix }}"
+          $portableTarget = Join-Path release-assets "HomeNet_${{ github.ref_name }}_${{ matrix.portableSuffix }}"
+          $installerTarget = Join-Path release-assets "HomeNet_${{ github.ref_name }}_${{ matrix.installerSuffix }}"
           $portable = Get-FirstArtifact "${{ matrix.portableGlob }}" "免安装产物"
           Export-Artifact $portable $portableTarget "${{ matrix.portableMode }}"
           $installer = Get-FirstArtifact "${{ matrix.installerGlob }}" "安装产物"
@@ -191,7 +191,7 @@ jobs:
       - name: Publish release with generated changelog
         uses: softprops/action-gh-release@v3
         with:
-          name: homenet ${{ github.ref_name }}
+          name: HomeNet ${{ github.ref_name }}
           body: ${{ steps.build_changelog.outputs.changelog }}
           files: release-assets/*
           fail_on_unmatched_files: true

@@ -24,7 +24,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or_else(|| app.default_window_icon().unwrap().clone()),
         )
         .menu(&menu)
-        .tooltip("homenet · DDNS与端口转发")
+        .tooltip("HomeNet · DDNS与端口转发")
         .on_menu_event(|app, event| match event.id().as_ref() {
             "show" => {
                 if let Some(window) = app.get_webview_window("main") {

@@ -39,9 +39,9 @@ const requiredSnippets = [
   "softprops/action-gh-release@v3",
   "body: ${{ steps.build_changelog.outputs.changelog }}",
   "files: release-assets/*",
-  "name: homenet ${{ github.ref_name }}",
-  "homenet_${{ github.ref_name }}_${{ matrix.portableSuffix }}",
-  "homenet_${{ github.ref_name }}_${{ matrix.installerSuffix }}",
+  "name: HomeNet ${{ github.ref_name }}",
+  "HomeNet_${{ github.ref_name }}_${{ matrix.portableSuffix }}",
+  "HomeNet_${{ github.ref_name }}_${{ matrix.installerSuffix }}",
   "portableSuffix: macos-arm64-app.zip",
   "installerSuffix: macos-arm64.dmg",
   "portableSuffix: windows-x64-portable.zip",
@@ -56,7 +56,8 @@ const requiredSnippets = [
 const missing = requiredSnippets.filter((snippet) => !workflow.includes(snippet));
 const forbiddenSnippets = [
   "网络管家",
-  "HomeNet_",
+  "name: homenet ${{ github.ref_name }}",
+  "homenet_${{ github.ref_name }}_",
   "--no-bundle",
   "assetSuffix:",
   "assetMode:",
