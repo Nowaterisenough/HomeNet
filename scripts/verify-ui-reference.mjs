@@ -28,7 +28,6 @@ const checks = [
   ["src/components/LogPanel.vue", 'invoke<LogEntry[]>("get_recent_logs")'],
   ["src-tauri/tauri.conf.json", '"productName": "homenet"'],
   ["src-tauri/tauri.conf.json", '"title": "homenet · DDNS与端口转发"'],
-  ["src-tauri/tauri.conf.json", '"tooltip": "homenet · DDNS与端口转发"'],
   ["src-tauri/Cargo.toml", 'name = "homenet"'],
   ["src-tauri/Cargo.toml", 'description = "homenet · DDNS与端口转发"'],
   ["src-tauri/src/tray.rs", '.tooltip("homenet · DDNS与端口转发")'],
@@ -141,6 +140,36 @@ const cssChecks = [
       content.includes('from "@lucide/vue"') &&
       content.includes("Globe") &&
       content.includes("ShieldCheck"),
+  ],
+  [
+    "src/components/StatusCard.vue",
+    "status cards support a top-right action slot",
+    (content) =>
+      content.includes("$slots.action") &&
+      content.includes('class="card-action"') &&
+      content.includes(".has-action .card-copy"),
+  ],
+  [
+    "src/App.vue",
+    "public IPv4 and IPv6 cards have copy buttons",
+    (content) =>
+      content.includes("copyPublicIp") &&
+      content.includes("copiedPublicIp") &&
+      content.includes("navigator.clipboard.writeText") &&
+      content.includes("copy-public-ip") &&
+      content.includes("Copy") &&
+      content.includes("复制公网 IPv4") &&
+      content.includes("复制公网 IPv6"),
+  ],
+  [
+    "src-tauri/tauri.conf.json",
+    "only manual tray icon is configured",
+    (content) => !content.includes('"trayIcon"'),
+  ],
+  [
+    "src-tauri/src/tray.rs",
+    "manual tray icon remains configured",
+    (content) => content.includes("TrayIconBuilder::new()") && content.includes(".menu(&menu)"),
   ],
   [
     "src/components/DdnsPanel.vue",

@@ -24,8 +24,11 @@ const iconComponent = computed(() => iconMap[props.icon]);
 <template>
   <article
     class="status-card"
-    :class="[`status-${status}`, { 'has-control': $slots.control }]"
+    :class="[`status-${status}`, { 'has-control': $slots.control, 'has-action': $slots.action }]"
   >
+    <div v-if="$slots.action" class="card-action">
+      <slot name="action"></slot>
+    </div>
     <div class="icon-disc" :class="`icon-${icon}`" aria-hidden="true">
       <component
         v-if="iconComponent"
@@ -53,6 +56,7 @@ const iconComponent = computed(() => iconMap[props.icon]);
   grid-template-columns: 42px minmax(0, 1fr);
   column-gap: 14px;
   align-items: start;
+  position: relative;
   padding: 19px 20px 15px;
   border: 1px solid rgba(217, 225, 237, 0.92);
   border-radius: var(--radius-md, 8px);
@@ -110,6 +114,17 @@ const iconComponent = computed(() => iconMap[props.icon]);
 
 .card-copy {
   min-width: 0;
+}
+
+.card-action {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  z-index: 1;
+}
+
+.has-action .card-copy {
+  padding-right: 31px;
 }
 
 h3 {

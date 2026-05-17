@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
-import { Check, ChevronDown, Menu } from "@lucide/vue";
+import { Check, ChevronDown, Copy, Menu } from "@lucide/vue";
 import StatusCard from "./components/StatusCard.vue";
 import DdnsPanel from "./components/DdnsPanel.vue";
 import ForwardRulesPanel from "./components/ForwardRulesPanel.vue";
@@ -28,11 +28,13 @@ const ipv6DropdownOpen = ref(false);
 const ipv6SelectRef = ref<HTMLElement | null>(null);
 const logSection = ref<HTMLElement | null>(null);
 const logsFocused = ref(false);
+const copiedPublicIp = ref<"ipv4" | "ipv6" | null>(null);
 const appWindow = getCurrentWindow();
 const DESIGN_WIDTH = 1586;
 const DESIGN_HEIGHT = 992;
 const referenceWindowSize = new LogicalSize(DESIGN_WIDTH, DESIGN_HEIGHT);
 let runtimeTimer: ReturnType<typeof setInterval> | null = null;
+let copiedPublicIpTimer: ReturnType<typeof setTimeout> | null = null;
 
 const selectedInterfaceMissing = computed(
   () =>
@@ -181,6 +183,27 @@ function displayValue(value: string): string {
   return value.trim() ? value : "--";
 }
 
+async function copyPublicIp(kind: "ipv4" | "ipv6", value: string) {
+  const text = value.trim();
+  if (!text) return;
+
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    copiedPublicIp.value = null;
+    return;
+  }
+  copiedPublicIp.value = kind;
+
+  if (copiedPublicIpTimer !== null) {
+    clearTimeout(copiedPublicIpTimer);
+  }
+  copiedPublicIpTimer = setTimeout(() => {
+    copiedPublicIp.value = null;
+    copiedPublicIpTimer = null;
+  }, 1200);
+}
+
 function ipv6PrefixSubtitle(value: string): string {
   const parts = value.split(":");
   if (!value.trim() || parts.length < 4) {
@@ -266,6 +289,10 @@ onUnmounted(() => {
     clearInterval(runtimeTimer);
     runtimeTimer = null;
   }
+  if (copiedPublicIpTimer !== null) {
+    clearTimeout(copiedPublicIpTimer);
+    copiedPublicIpTimer = null;
+  }
 });
 </script>
 
@@ -303,7 +330,25 @@ onUnmounted(() => {
             subtitle="公网 IPv4 出口地址"
             status="normal"
             icon="globe"
-          />
+          >
+            <template #action>
+              <button
+                class="copy-public-ip"
+                type="button"
+                aria-label="复制公网 IPv4"
+                title="复制公网 IPv4"
+                :disabled="!statusData.public_ipv4"
+                @click="copyPublicIp('ipv4', statusData.public_ipv4)"
+              >
+                <Check
+                  v-if="copiedPublicIp === 'ipv4'"
+                  :size="14"
+                  :stroke-width="2.6"
+                />
+                <Copy v-else :size="14" :stroke-width="2.4" />
+              </button>
+            </template>
+          </StatusCard>
           <StatusCard
             title="公网 IPv6"
             :value="displayValue(statusData.public_ipv6)"
@@ -311,6 +356,23 @@ onUnmounted(() => {
             status="normal"
             icon="ipv6"
           >
+            <template #action>
+              <button
+                class="copy-public-ip"
+                type="button"
+                aria-label="复制公网 IPv6"
+                title="复制公网 IPv6"
+                :disabled="!statusData.public_ipv6"
+                @click="copyPublicIp('ipv6', statusData.public_ipv6)"
+              >
+                <Check
+                  v-if="copiedPublicIp === 'ipv6'"
+                  :size="14"
+                  :stroke-width="2.6"
+                />
+                <Copy v-else :size="14" :stroke-width="2.4" />
+              </button>
+            </template>
             <template #control>
               <div ref="ipv6SelectRef" class="ipv6-bind-control">
                 <span class="ipv6-bind-label">绑定网卡</span>
@@ -639,6 +701,37 @@ button {
 .section-logs.logs-focus {
   outline: 2px solid rgba(37, 99, 235, 0.42);
   box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.1);
+}
+
+.copy-public-ip {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(191, 208, 232, 0.9);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.88);
+  color: #2563eb;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease,
+    color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.copy-public-ip:hover:not(:disabled),
+.copy-public-ip:focus-visible {
+  border-color: #8fb5ff;
+  outline: none;
+  background: #ffffff;
+  color: #0f4bcc;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+.copy-public-ip:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
 }
 
 .ipv6-bind-control {

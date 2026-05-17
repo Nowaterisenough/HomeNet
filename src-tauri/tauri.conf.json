@@ -22,10 +22,6 @@
         "center": true
       }
     ],
-    "trayIcon": {
-      "iconPath": "icons/icon.ico",
-      "tooltip": "homenet · DDNS与端口转发"
-    },
     "security": {
       "csp": null
     }
