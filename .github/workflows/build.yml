@@ -22,10 +22,12 @@ jobs:
             runner: macos-15
             rustTarget: aarch64-apple-darwin
             args: --target aarch64-apple-darwin --bundles dmg
+            artifactGlob: src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
           - label: Windows x64
             runner: windows-latest
             rustTarget: x86_64-pc-windows-msvc
             args: --target x86_64-pc-windows-msvc --bundles nsis
+            artifactGlob: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
 
     steps:
       - name: Checkout
@@ -58,10 +60,15 @@ jobs:
           node scripts/verify-ci-workflow.mjs
 
       - name: Build Tauri package
-        uses: tauri-apps/tauri-action@v1
+        uses: tauri-apps/tauri-action@v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           args: ${{ matrix.args }}
-          uploadWorkflowArtifacts: true
-          workflowArtifactNamePattern: home-net-${{ matrix.label }}-[bundle]
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: home-net-${{ matrix.label }}
+          path: ${{ matrix.artifactGlob }}
+          if-no-files-found: error
