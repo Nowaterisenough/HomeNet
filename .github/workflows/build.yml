@@ -23,7 +23,7 @@ jobs:
           - label: macOS ARM64
             runner: macos-15
             rustTarget: aarch64-apple-darwin
-            args: --target aarch64-apple-darwin --bundles dmg
+            args: --target aarch64-apple-darwin --bundles app,dmg
             portableGlob: src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app
             installerGlob: src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
             artifactName: homenet-macos-arm64

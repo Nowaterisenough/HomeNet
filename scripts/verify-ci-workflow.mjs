@@ -21,7 +21,7 @@ const requiredSnippets = [
   "aarch64-apple-darwin",
   "windows-latest",
   "tauri-apps/tauri-action@v0.6.2",
-  "--bundles dmg",
+  "--bundles app,dmg",
   "--bundles nsis",
   "portableGlob:",
   "installerGlob:",
