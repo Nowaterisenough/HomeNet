@@ -127,7 +127,7 @@ pub struct LogEntry {
 // ---------------------------------------------------------------------------
 
 fn default_version() -> String {
-    "0.1.0".into()
+    env!("CARGO_PKG_VERSION").into()
 }
 
 fn default_log_level() -> String {
