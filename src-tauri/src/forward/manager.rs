@@ -1,13 +1,19 @@
 use crate::config::{add_log, ForwardRule};
-use crate::forward::tcp;
+use crate::forward::{tcp, udp};
 use std::collections::HashMap;
 use tokio_util::sync::CancellationToken;
 
 /// Tracks the listen address that was successfully bound for a rule.
 struct ActiveListener {
-    cancel: CancellationToken,
+    cancels: Vec<CancellationToken>,
+    signature: String,
     #[allow(dead_code)]
     listen_addr: String,
+}
+
+enum ForwardProtocolKind {
+    Tcp,
+    Udp,
 }
 
 /// Manages the lifecycle of all port-forwarding listeners.
@@ -39,6 +45,37 @@ fn listen_endpoint(rule: &ForwardRule) -> String {
     format!("[{}]:{}", addr, rule.listen_port)
 }
 
+fn rule_signature(rule: &ForwardRule) -> String {
+    let listen_addr = if rule.listen_addr.trim().is_empty() {
+        "0.0.0.0"
+    } else {
+        rule.listen_addr.trim()
+    };
+    format!(
+        "{}|{}|{}|{}|{}|{}",
+        rule.protocol.trim().to_uppercase(),
+        rule.mode.trim().to_lowercase(),
+        listen_addr,
+        rule.listen_port,
+        rule.target_ip.trim(),
+        rule.target_port,
+    )
+}
+
+fn protocol_kinds(rule: &ForwardRule) -> Vec<ForwardProtocolKind> {
+    match rule.protocol.trim().to_uppercase().as_str() {
+        "UDP" => vec![ForwardProtocolKind::Udp],
+        "TCP+UDP" | "UDP+TCP" => vec![ForwardProtocolKind::Tcp, ForwardProtocolKind::Udp],
+        _ => vec![ForwardProtocolKind::Tcp],
+    }
+}
+
+fn cancel_active(active: ActiveListener) {
+    for cancel in active.cancels {
+        cancel.cancel();
+    }
+}
+
 impl ForwardManager {
     pub fn new() -> Self {
         Self {
@@ -62,7 +99,7 @@ impl ForwardManager {
 
         for id in &to_stop {
             if let Some(active) = self.active.remove(id) {
-                active.cancel.cancel();
+                cancel_active(active);
                 add_log("info", "转发", &format!("转发规则 [{}] 已停止", id));
             }
         }
@@ -71,7 +108,7 @@ impl ForwardManager {
         for rule in rules {
             if !rule.enabled {
                 if let Some(active) = self.active.remove(&rule.id) {
-                    active.cancel.cancel();
+                    cancel_active(active);
                     add_log(
                         "info",
                         "转发",
@@ -85,18 +122,47 @@ impl ForwardManager {
                 continue;
             }
 
-            // If already active, keep it
-            if self.active.contains_key(&rule.id) {
-                results.push(RuleApplyResult {
-                    rule_id: rule.id.clone(),
-                    status: "正常".into(),
-                });
-                continue;
+            let signature = rule_signature(rule);
+
+            // If already active with the same effective config, keep it.
+            if let Some(active) = self.active.get(&rule.id) {
+                if active.signature == signature {
+                    results.push(RuleApplyResult {
+                        rule_id: rule.id.clone(),
+                        status: "正常".into(),
+                    });
+                    continue;
+                }
+            }
+
+            if let Some(active) = self.active.remove(&rule.id) {
+                cancel_active(active);
+                add_log(
+                    "info",
+                    "转发",
+                    &format!("转发规则 [{}] 配置已变更，正在重启监听", rule_label(rule)),
+                );
             }
 
             // Start the listener
-            match tcp::spawn_forwarder(rule).await {
-                Ok(cancel) => {
+            let mut cancels = Vec::new();
+            let mut start_error: Option<String> = None;
+            for protocol in protocol_kinds(rule) {
+                let result = match protocol {
+                    ForwardProtocolKind::Tcp => tcp::spawn_forwarder(rule).await,
+                    ForwardProtocolKind::Udp => udp::spawn_forwarder(rule).await,
+                };
+                match result {
+                    Ok(cancel) => cancels.push(cancel),
+                    Err(e) => {
+                        start_error = Some(e);
+                        break;
+                    }
+                }
+            }
+
+            match start_error {
+                None => {
                     let listen_addr = format!(
                         "{}:{}",
                         if rule.listen_addr.is_empty() { "::" } else { &rule.listen_addr },
@@ -105,7 +171,8 @@ impl ForwardManager {
                     self.active.insert(
                         rule.id.clone(),
                         ActiveListener {
-                            cancel,
+                            cancels,
+                            signature: signature.clone(),
                             listen_addr: listen_addr.clone(),
                         },
                     );
@@ -125,7 +192,10 @@ impl ForwardManager {
                         status: "正常".into(),
                     });
                 }
-                Err(e) => {
+                Some(e) => {
+                    for cancel in cancels {
+                        cancel.cancel();
+                    }
                     let is_conflict = e.contains("绑定失败") || e.contains("Address in use");
                     let status = if is_conflict { "冲突" } else { "错误" };
                     if is_conflict {
@@ -147,7 +217,7 @@ impl ForwardManager {
                     }
                     // Stop any old listener for this rule on error
                     if let Some(active) = self.active.remove(&rule.id) {
-                        active.cancel.cancel();
+                        cancel_active(active);
                     }
                     results.push(RuleApplyResult {
                         rule_id: rule.id.clone(),
@@ -164,7 +234,7 @@ impl ForwardManager {
     #[allow(dead_code)]
     pub async fn stop_all(&mut self) {
         for (id, active) in self.active.drain() {
-            active.cancel.cancel();
+            cancel_active(active);
             add_log("info", "转发", &format!("转发规则 [{}] 已停止", id));
         }
     }

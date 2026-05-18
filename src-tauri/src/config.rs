@@ -150,7 +150,7 @@ fn default_interval_minutes() -> u32 {
 }
 
 fn default_protocol() -> String {
-    "tcp".into()
+    "TCP".into()
 }
 
 fn default_listen_addr() -> String {
@@ -158,11 +158,52 @@ fn default_listen_addr() -> String {
 }
 
 fn default_mode() -> String {
-    "nat".into()
+    "relay".into()
 }
 
 fn default_status() -> String {
     "正常".into()
+}
+
+pub fn normalize_forward_protocol(protocol: &str) -> String {
+    match protocol.trim().to_uppercase().replace('＋', "+").as_str() {
+        "UDP" => "UDP".to_string(),
+        "TCP+UDP" | "UDP+TCP" => "TCP+UDP".to_string(),
+        _ => "TCP".to_string(),
+    }
+}
+
+pub fn normalize_forward_rule(rule: &mut ForwardRule) -> bool {
+    let original_protocol = rule.protocol.clone();
+    let original_mode = rule.mode.clone();
+    let original_listen_addr = rule.listen_addr.clone();
+    let original_status = rule.status.clone();
+
+    rule.protocol = normalize_forward_protocol(&rule.protocol);
+    rule.mode = "relay".into();
+    if rule.listen_addr.trim().is_empty() {
+        rule.listen_addr = default_listen_addr();
+    }
+    if rule.status.trim().is_empty() {
+        rule.status = if rule.enabled {
+            default_status()
+        } else {
+            "已禁用".into()
+        };
+    }
+
+    rule.protocol != original_protocol
+        || rule.mode != original_mode
+        || rule.listen_addr != original_listen_addr
+        || rule.status != original_status
+}
+
+fn normalize_app_config(config: &mut AppConfig) -> bool {
+    let mut changed = false;
+    for rule in &mut config.forward_rules {
+        changed |= normalize_forward_rule(rule);
+    }
+    changed
 }
 
 // ---------------------------------------------------------------------------
@@ -235,8 +276,19 @@ pub fn load_config() -> AppConfig {
 
     match fs::read_to_string(&path) {
         Ok(content) => match toml::from_str::<AppConfig>(&content) {
-            Ok(cfg) => {
+            Ok(mut cfg) => {
                 add_log("info", "配置", "已从磁盘加载配置");
+                if normalize_app_config(&mut cfg) {
+                    if let Err(e) = save_config(&cfg) {
+                        add_log(
+                            "warn",
+                            "配置",
+                            &format!("旧版转发规则配置迁移写入失败：{}", e),
+                        );
+                    } else {
+                        add_log("info", "配置", "已迁移旧版转发规则配置");
+                    }
+                }
                 cfg
             }
             Err(e) => {

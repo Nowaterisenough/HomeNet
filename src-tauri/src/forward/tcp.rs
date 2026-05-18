@@ -3,16 +3,25 @@ use tokio::io;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::sync::CancellationToken;
 
+fn format_socket_endpoint(host: &str, port: u16, default_host: &str) -> String {
+    let normalized = if host.trim().is_empty() {
+        default_host
+    } else {
+        host.trim()
+    };
+    if normalized.contains(':') && !normalized.starts_with('[') {
+        format!("[{}]:{}", normalized, port)
+    } else {
+        format!("{}:{}", normalized, port)
+    }
+}
+
 /// Spawn a TCP forwarding accept loop for the given rule.
 ///
 /// Returns a `CancellationToken` that can be used to shut down the listener.
 /// The accept loop runs in a separate tokio task.
 pub async fn spawn_forwarder(rule: &ForwardRule) -> Result<CancellationToken, String> {
-    let listen_addr = if rule.listen_addr.is_empty() {
-        format!("0.0.0.0:{}", rule.listen_port)
-    } else {
-        format!("{}:{}", rule.listen_addr, rule.listen_port)
-    };
+    let listen_addr = format_socket_endpoint(&rule.listen_addr, rule.listen_port, "::");
 
     let listener = TcpListener::bind(&listen_addr)
         .await
@@ -59,7 +68,7 @@ async fn accept_loop(
                             "转发",
                             &format!("转发规则 [{}] 收到来自 {} 的连接", rule_id, remote_addr),
                         );
-                        let target = format!("{}:{}", target_ip, target_port);
+                        let target = format_socket_endpoint(target_ip, target_port, "");
                         let rid = rule_id.to_string();
                         tokio::spawn(async move {
                             relay(incoming, &target, &rid).await;

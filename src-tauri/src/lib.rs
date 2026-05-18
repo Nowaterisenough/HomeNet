@@ -31,6 +31,7 @@ pub fn run() {
     let _log_guard = logging::setup_logging(&app_config.log_level);
 
     config::add_log("info", "系统", "应用启动中");
+    forward::system::log_capabilities();
 
     // Wrap config and forward manager in shared state.
     let app_state = commands::AppState {

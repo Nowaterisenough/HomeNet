@@ -10,6 +10,18 @@ interface ForwardRuleForm extends Omit<ForwardRule, "listen_port" | "target_port
   target_port: string;
 }
 
+const IMPLEMENTED_PROTOCOLS = ["TCP", "UDP", "TCP+UDP"] as const;
+type ForwardProtocol = (typeof IMPLEMENTED_PROTOCOLS)[number];
+const FORWARD_MODE = "relay";
+const FORWARD_MODE_LABEL = "普通 TCP/UDP 转发";
+
+function normalizeProtocol(protocol: string): ForwardProtocol {
+  const normalized = protocol.trim().toUpperCase().replace("＋", "+");
+  if (normalized === "UDP") return "UDP";
+  if (normalized === "TCP+UDP" || normalized === "UDP+TCP") return "TCP+UDP";
+  return "TCP";
+}
+
 const rules = ref<ForwardRule[]>([]);
 const selectedIds = ref<Set<string>>(new Set());
 const showEditor = ref(false);
@@ -29,7 +41,7 @@ function createEmptyRule(): ForwardRuleForm {
     listen_port: "",
     target_ip: "",
     target_port: "",
-    mode: "nat",
+    mode: FORWARD_MODE,
     remark: "",
     status: "正常",
   };
@@ -38,6 +50,8 @@ function createEmptyRule(): ForwardRuleForm {
 function toForm(rule: ForwardRule): ForwardRuleForm {
   return {
     ...rule,
+    protocol: normalizeProtocol(rule.protocol),
+    mode: FORWARD_MODE,
     listen_port: formatPortExpression(rule.listen_port),
     target_port: formatPortExpression(rule.target_port),
   };
@@ -51,9 +65,9 @@ function normalizeStatus(status: string): string {
 function normalizeRule(rule: ForwardRule): ForwardRule {
   return {
     ...rule,
-    protocol: rule.protocol.toUpperCase(),
+    protocol: normalizeProtocol(rule.protocol),
     listen_addr: rule.listen_addr || "::",
-    mode: rule.mode || "nat",
+    mode: FORWARD_MODE,
     status: normalizeStatus(rule.status),
   };
 }
@@ -135,10 +149,10 @@ function buildRulePayloads(): ForwardRule[] | null {
     return null;
   }
   const baseRule = {
-    protocol: form.protocol.toUpperCase(),
+    protocol: normalizeProtocol(form.protocol),
     listen_addr: form.listen_addr.trim(),
     target_ip: form.target_ip.trim(),
-    mode: form.mode,
+    mode: FORWARD_MODE,
     remark: form.remark.trim(),
     status: form.status || "正常",
   };
@@ -455,9 +469,13 @@ onMounted(() => {
         <label>
           <span>外部协议</span>
           <select v-model="editorForm.protocol">
-            <option value="TCP">TCP</option>
-            <option value="UDP">UDP</option>
-            <option value="TCP+UDP">TCP+UDP</option>
+            <option
+              v-for="protocol in IMPLEMENTED_PROTOCOLS"
+              :key="protocol"
+              :value="protocol"
+            >
+              {{ protocol }}
+            </option>
           </select>
         </label>
         <label>
@@ -489,11 +507,8 @@ onMounted(() => {
           />
         </label>
         <label>
-          <span>转发模式</span>
-          <select v-model="editorForm.mode">
-            <option value="nat">NAT（默认）</option>
-            <option value="forward">透明转发</option>
-          </select>
+          <span>转发方式</span>
+          <input :value="FORWARD_MODE_LABEL" type="text" disabled />
         </label>
         <label>
           <span>备注</span>
@@ -512,7 +527,7 @@ onMounted(() => {
 
     <footer class="panel-footer">
       <Info class="footer-icon footer-icon-info" :size="18" :stroke-width="2.2" />
-      <span>监听 IP 为空或 :: 表示监听所有 IPv4/IPv6 地址；监听端口支持 80;443;1000-1003。</span>
+      <span>支持普通 TCP/UDP 转发；监听端口支持 80;443;1000-1003。</span>
       <span class="rule-summary">启用：{{ enabledCount }} / {{ rules.length }}</span>
     </footer>
   </section>

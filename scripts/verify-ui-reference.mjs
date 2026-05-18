@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const root = process.cwd();
@@ -109,6 +109,19 @@ const cssChecks = [
   ],
   [
     "src/App.vue",
+    "titlebar menu button exposes real actions",
+    (content) =>
+      content.includes("appMenuOpen") &&
+      content.includes("app-menu-panel") &&
+      content.includes("toggleAppMenu") &&
+      content.includes("refreshDashboard") &&
+      content.includes("focusLogsFromMenu") &&
+      content.includes('@click.stop="toggleAppMenu"') &&
+      content.includes("刷新状态") &&
+      content.includes("查看日志"),
+  ],
+  [
+    "src/App.vue",
     "custom titlebar can initiate native window drag",
     (content) =>
       content.includes("startWindowDrag") &&
@@ -181,6 +194,14 @@ const cssChecks = [
       !content.includes(".checkmark::before"),
   ],
   [
+    "src/components/DdnsPanel.vue",
+    "domain field is not styled as an unimplemented dropdown",
+    (content) =>
+      content.includes('<input v-model="config.domain" type="text" />') &&
+      !content.includes('class="select-like"') &&
+      !content.includes('class="chevron"'),
+  ],
+  [
     "src/components/ForwardRulesPanel.vue",
     "hint footer uses Lucide icon",
     (content) =>
@@ -202,6 +223,136 @@ const cssChecks = [
     },
   ],
   [
+    "src/components/ForwardRulesPanel.vue",
+    "forward form exposes implemented TCP and UDP relay modes",
+    (content) =>
+      content.includes('const IMPLEMENTED_PROTOCOLS = ["TCP", "UDP", "TCP+UDP"] as const;') &&
+      content.includes('function normalizeProtocol(protocol: string): ForwardProtocol') &&
+      content.includes('const FORWARD_MODE = "relay";') &&
+      content.includes('const FORWARD_MODE_LABEL = "普通 TCP/UDP 转发";') &&
+      content.includes('<select v-model="editorForm.protocol">') &&
+      content.includes('v-for="protocol in IMPLEMENTED_PROTOCOLS"') &&
+      content.includes(':value="FORWARD_MODE_LABEL"') &&
+      !content.includes("NAT（默认）") &&
+      !content.includes("透明转发"),
+  ],
+  [
+    "src-tauri/src/config.rs",
+    "forward defaults match implemented TCP relay mode",
+    (content) =>
+      content.includes('fn default_protocol() -> String {\n    "TCP".into()\n}') &&
+      content.includes('fn default_mode() -> String {\n    "relay".into()\n}'),
+  ],
+  [
+    "src-tauri/src/commands.rs",
+    "forward save normalizes to implemented TCP and UDP relay modes",
+    (content) =>
+      content.includes("ensure_supported_forward_mode(&rule.mode)?;") &&
+      content.includes("fn ensure_supported_forward_mode(mode: &str) -> Result<(), String>") &&
+      content.includes("当前版本仅支持普通 TCP/UDP 转发") &&
+      content.includes("内核 NAT") &&
+      content.includes("透明源地址透传") &&
+      content.includes("normalize_forward_rule(&mut rule);"),
+  ],
+  [
+    "src-tauri/src/forward/mod.rs",
+    "system forwarding capability module is registered",
+    (content) => content.includes("pub mod system;"),
+  ],
+  [
+    "src-tauri/src/forward/system.rs",
+    "system forwarding capability boundary is explicit",
+    (content) =>
+      content.includes("pub fn capabilities_summary() -> &'static str") &&
+      content.includes("pub fn log_capabilities()") &&
+      content.includes("普通 TCP/UDP 转发已启用") &&
+      content.includes("内核 NAT") &&
+      content.includes("透明源地址透传") &&
+      content.includes("尚未接入"),
+  ],
+  [
+    "src-tauri/src/lib.rs",
+    "startup logs forwarding capability boundary",
+    (content) => content.includes("forward::system::log_capabilities();"),
+  ],
+  [
+    "src-tauri/src/config.rs",
+    "legacy forward rules are migrated to implemented relay modes",
+    (content) =>
+      content.includes("pub fn normalize_forward_protocol(protocol: &str) -> String") &&
+      content.includes('"UDP" => "UDP".to_string()') &&
+      content.includes('"TCP+UDP" | "UDP+TCP" => "TCP+UDP".to_string()') &&
+      content.includes("pub fn normalize_forward_rule(rule: &mut ForwardRule) -> bool") &&
+      content.includes('rule.mode = "relay".into();') &&
+      content.includes("fn normalize_app_config(config: &mut AppConfig) -> bool") &&
+      content.includes("normalize_forward_rule(rule)") &&
+      content.includes("已迁移旧版转发规则配置"),
+  ],
+  [
+    "src-tauri/src/forward/mod.rs",
+    "UDP forward module is registered",
+    (content) => content.includes("pub mod udp;"),
+  ],
+  [
+    "src-tauri/src/forward/manager.rs",
+    "forward manager starts TCP and UDP listeners",
+    (content) =>
+      content.includes("signature: String") &&
+      content.includes("cancels: Vec<CancellationToken>") &&
+      content.includes("fn rule_signature(rule: &ForwardRule) -> String") &&
+      content.includes("fn protocol_kinds(rule: &ForwardRule) -> Vec<ForwardProtocolKind>") &&
+      content.includes("ForwardProtocolKind::Tcp") &&
+      content.includes("ForwardProtocolKind::Udp") &&
+      content.includes("udp::spawn_forwarder(rule).await") &&
+      content.includes("active.signature == signature") &&
+      content.includes("配置已变更，正在重启监听"),
+  ],
+  [
+    "src-tauri/src/forward/tcp.rs",
+    "TCP forwarder formats IPv6 listen and target endpoints",
+    (content) =>
+      content.includes("fn format_socket_endpoint(host: &str, port: u16, default_host: &str) -> String") &&
+      content.includes('format!("[{}]:{}", normalized, port)') &&
+      content.includes('format_socket_endpoint(&rule.listen_addr, rule.listen_port, "::")') &&
+      content.includes('format_socket_endpoint(target_ip, target_port, "")'),
+  ],
+  [
+    "src-tauri/src/forward/udp.rs",
+    "UDP relay forwarder is implemented",
+    (content) =>
+      content.includes("pub async fn spawn_forwarder(rule: &ForwardRule) -> Result<CancellationToken, String>") &&
+      content.includes("UdpSocket::bind") &&
+      content.includes("recv_from") &&
+      content.includes("send_to") &&
+      content.includes("get_or_create_target_socket") &&
+      content.includes("UDP 转发规则"),
+  ],
+  [
+    "src/App.vue",
+    "runtime cards do not show fake online device count",
+    (content) =>
+      content.includes('title="运行时长"') &&
+      content.includes("formatUptime(statusData.uptime)") &&
+      content.includes('icon="uptime"') &&
+      !content.includes("在线设备") &&
+      !content.includes("online_device_count"),
+  ],
+  [
+    "src/types.ts",
+    "RuntimeStatus omits fake online device count",
+    (content) => !content.includes("online_device_count"),
+  ],
+  [
+    "src-tauri/src/config.rs",
+    "RuntimeStatus omits fake online device count",
+    (content) => !content.includes("online_device_count"),
+  ],
+  [
+    "src-tauri/src/commands.rs",
+    "runtime status omits fake online device count",
+    (content) => !content.includes("online_device_count: 0"),
+  ],
+  [
     "src-tauri/capabilities/default.json",
     "custom window controls have Tauri permissions",
     (content) =>
@@ -218,7 +369,12 @@ const cssChecks = [
 ];
 
 for (const [file, label, predicate] of cssChecks) {
-  const content = readFileSync(join(root, file), "utf8");
+  const filePath = join(root, file);
+  if (!existsSync(filePath)) {
+    missing.push(`${file}: ${label}`);
+    continue;
+  }
+  const content = readFileSync(filePath, "utf8");
   if (!predicate(content)) {
     missing.push(`${file}: ${label}`);
   }

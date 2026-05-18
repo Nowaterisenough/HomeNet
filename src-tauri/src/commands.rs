@@ -4,7 +4,8 @@ use tokio::sync::Mutex as TokioMutex;
 use uuid::Uuid;
 
 use crate::config::{
-    add_log, save_config, AppConfig, DdnsConfig, ForwardRule, LogEntry, RuntimeStatus,
+    add_log, normalize_forward_rule, save_config, AppConfig, DdnsConfig, ForwardRule, LogEntry,
+    RuntimeStatus,
 };
 use crate::ddns::NetworkInterfaceInfo;
 use crate::forward::manager::ForwardManager;
@@ -111,6 +112,23 @@ fn validate_forward_rule(rule: &ForwardRule) -> Result<(), String> {
         return Err("目标设备 IP 未填写".to_string());
     }
     Ok(())
+}
+
+fn ensure_supported_forward_mode(mode: &str) -> Result<(), String> {
+    let normalized = mode.trim().to_lowercase();
+    if normalized.is_empty() || normalized == "relay" {
+        return Ok(());
+    }
+
+    let mode_name = match normalized.as_str() {
+        "nat" => "内核 NAT",
+        "forward" | "transparent" | "tproxy" => "透明源地址透传",
+        _ => "系统级转发",
+    };
+    Err(format!(
+        "当前版本仅支持普通 TCP/UDP 转发，{} 模式尚未启用",
+        mode_name
+    ))
 }
 
 /// After rules change, re-apply the forward manager.
@@ -279,10 +297,11 @@ pub async fn save_forward_rule(
     state: State<'_, AppState>,
     mut rule: ForwardRule,
 ) -> Result<ForwardRule, String> {
+    ensure_supported_forward_mode(&rule.mode)?;
+    normalize_forward_rule(&mut rule);
     validate_forward_rule(&rule)?;
     let mut cfg = read_config(&state)?;
     let is_new = rule.id.trim().is_empty();
-    rule.protocol = rule.protocol.to_uppercase();
     if rule.status.trim().is_empty() {
         rule.status = if rule.enabled { "正常".into() } else { "已禁用".into() };
     }
