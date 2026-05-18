@@ -68,9 +68,12 @@ jobs:
             args: --target aarch64-apple-darwin --bundles app,dmg
             portableGlob: src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app
             installerGlob: src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+            updaterGlob: src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz
             artifactName: HomeNet-macos-arm64
             portableSuffix: macos-arm64-app.zip
             installerSuffix: macos-arm64.dmg
+            updaterSuffix: macos-arm64-app.tar.gz
+            updaterTargets: darwin-aarch64-app,darwin-aarch64
             portableMode: zip
           - label: Windows x64
             runner: windows-latest
@@ -78,9 +81,12 @@ jobs:
             args: --target x86_64-pc-windows-msvc --bundles nsis
             portableGlob: src-tauri/target/x86_64-pc-windows-msvc/release/homenet.exe
             installerGlob: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+            updaterGlob: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
             artifactName: HomeNet-windows-x64
             portableSuffix: windows-x64-portable.zip
             installerSuffix: windows-x64-setup.exe
+            updaterSuffix: windows-x64-updater.exe
+            updaterTargets: windows-x86_64-nsis,windows-x86_64
             portableMode: zip
 
     steps:
@@ -118,12 +124,96 @@ jobs:
           node scripts/verify-port-expression.mjs
           node scripts/verify-ci-workflow.mjs
 
+      - name: Import Apple Developer Certificate
+        if: ${{ matrix.runner == 'macos-15' && github.event_name != 'pull_request' }}
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          echo "${APPLE_CERTIFICATE}" | base64 --decode > certificate.p12
+          security create-keychain -p "${KEYCHAIN_PASSWORD}" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "${KEYCHAIN_PASSWORD}" build.keychain
+          security set-keychain-settings -t 3600 -u build.keychain
+          security import certificate.p12 -k build.keychain -P "${APPLE_CERTIFICATE_PASSWORD}" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "${KEYCHAIN_PASSWORD}" build.keychain
+          security find-identity -v -p codesigning build.keychain
+
+      - name: Resolve Apple signing identity
+        if: ${{ matrix.runner == 'macos-15' && github.event_name != 'pull_request' }}
+        shell: bash
+        run: |
+          CERT_INFO="$(security find-identity -v -p codesigning build.keychain | grep "Developer ID Application" | head -n 1 || true)"
+          if [[ -z "${CERT_INFO}" ]]; then
+            CERT_INFO="$(security find-identity -v -p codesigning build.keychain | head -n 1 || true)"
+          fi
+          if [[ -z "${CERT_INFO}" ]]; then
+            echo "No Apple signing identity found in build keychain" >&2
+            exit 1
+          fi
+          CERT_ID="$(echo "${CERT_INFO}" | awk -F '"' '{print $2}')"
+          echo "APPLE_SIGNING_IDENTITY_RESOLVED=${CERT_ID}" >> "${GITHUB_ENV}"
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMENET_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY_RESOLVED || secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
-          args: ${{ matrix.args }}
+          args: ${{ matrix.args }} ${{ github.event_name != 'pull_request' && '--config src-tauri/tauri.updater.conf.json' || '' }}
+
+      - name: Staple macOS app notarization ticket
+        if: ${{ matrix.runner == 'macos-15' && github.event_name != 'pull_request' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP_PATH="$(find src-tauri/target/aarch64-apple-darwin/release/bundle/macos -maxdepth 1 -name "*.app" -type d | head -n 1 || true)"
+          DMG_PATH="$(find src-tauri/target/aarch64-apple-darwin/release/bundle/dmg -maxdepth 1 -name "*.dmg" -type f | head -n 1 || true)"
+          if [[ -z "${APP_PATH}" ]]; then
+            echo "No macOS .app found for stapling" >&2
+            exit 1
+          fi
+          if [[ -z "${DMG_PATH}" ]]; then
+            echo "No macOS .dmg found for stapling" >&2
+            exit 1
+          fi
+
+          xcrun stapler staple "${APP_PATH}"
+          xcrun stapler staple "${DMG_PATH}"
+
+      - name: Verify macOS signing and notarization
+        if: ${{ matrix.runner == 'macos-15' && github.event_name != 'pull_request' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP_PATH="$(find src-tauri/target/aarch64-apple-darwin/release/bundle/macos -maxdepth 1 -name "*.app" -type d | head -n 1 || true)"
+          DMG_PATH="$(find src-tauri/target/aarch64-apple-darwin/release/bundle/dmg -maxdepth 1 -name "*.dmg" -type f | head -n 1 || true)"
+          if [[ -z "${APP_PATH}" ]]; then
+            echo "No macOS .app found for verification" >&2
+            exit 1
+          fi
+          if [[ -z "${DMG_PATH}" ]]; then
+            echo "No macOS .dmg found for verification" >&2
+            exit 1
+          fi
+
+          codesign --verify --deep --strict --verbose=2 "${APP_PATH}"
+          spctl -a -t exec -vv "${APP_PATH}"
+          xcrun stapler validate "${APP_PATH}"
+          codesign --verify --verbose=2 "${DMG_PATH}"
+          spctl -a -t open --context context:primary-signature -vv "${DMG_PATH}"
+          xcrun stapler validate "${DMG_PATH}"
 
       - name: Normalize package name
         shell: pwsh
@@ -155,6 +245,14 @@ jobs:
             }
           }
 
+          function Read-UpdaterSignature($source) {
+            $signaturePath = "$($source.FullName).sig"
+            if (-not (Test-Path -LiteralPath $signaturePath)) {
+              throw "Missing updater signature: ${signaturePath}"
+            }
+            return (Get-Content -Raw -LiteralPath $signaturePath).Trim()
+          }
+
           New-Item -ItemType Directory -Force -Path release-assets | Out-Null
           $portableTarget = Join-Path release-assets "HomeNet_${{ needs.metadata.outputs.release_tag }}_${{ matrix.portableSuffix }}"
           $installerTarget = Join-Path release-assets "HomeNet_${{ needs.metadata.outputs.release_tag }}_${{ matrix.installerSuffix }}"
@@ -162,6 +260,19 @@ jobs:
           Export-Artifact $portable $portableTarget "${{ matrix.portableMode }}"
           $installer = Get-FirstArtifact "${{ matrix.installerGlob }}" "安装产物"
           Export-Artifact $installer $installerTarget "file"
+          if ("${{ github.event_name }}" -ne "pull_request") {
+            $updaterTarget = Join-Path release-assets "HomeNet_${{ needs.metadata.outputs.release_tag }}_${{ matrix.updaterSuffix }}"
+            $updater = Get-FirstArtifact "${{ matrix.updaterGlob }}" "updater artifact"
+            Export-Artifact $updater $updaterTarget "file"
+            $updaterAssetName = Split-Path -Leaf $updaterTarget
+            $updaterSignature = Read-UpdaterSignature $updater
+            $fragment = [ordered]@{
+              targets = "${{ matrix.updaterTargets }}".Split(",")
+              url = "https://github.com/${{ github.repository }}/releases/download/${{ needs.metadata.outputs.release_tag }}/${updaterAssetName}"
+              signature = $updaterSignature
+            }
+            $fragment | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 -LiteralPath (Join-Path release-assets "updater-${{ matrix.artifactName }}.json")
+          }
           Get-ChildItem release-assets
 
       - name: Upload package artifact
@@ -238,6 +349,34 @@ jobs:
             }
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate updater manifest
+        shell: pwsh
+        run: |
+          $platforms = [ordered]@{}
+          $fragments = Get-ChildItem -Path release-assets -Recurse -Filter "updater-*.json"
+          if (-not $fragments) {
+            throw "No updater manifest fragments found"
+          }
+          foreach ($fragment in $fragments) {
+            $data = Get-Content -Raw -LiteralPath $fragment.FullName | ConvertFrom-Json
+            foreach ($target in $data.targets) {
+              $platforms[$target] = [ordered]@{
+                signature = $data.signature
+                url = $data.url
+              }
+            }
+            Remove-Item -LiteralPath $fragment.FullName -Force
+          }
+          $manifest = [ordered]@{
+            version = "${{ needs.metadata.outputs.release_version }}"
+            notes = @"
+${{ steps.build_changelog.outputs.changelog }}
+"@
+            pub_date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            platforms = $platforms
+          }
+          $manifest | ConvertTo-Json -Depth 8 | Set-Content -Encoding UTF8 -LiteralPath (Join-Path release-assets "latest.json")
 
       - name: Move version tag to this build
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
