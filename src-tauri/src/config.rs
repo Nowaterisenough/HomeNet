@@ -31,6 +31,9 @@ pub struct AppConfig {
     pub ddns: DdnsConfig,
 
     #[serde(default)]
+    pub device_ddns: DeviceDdnsConfig,
+
+    #[serde(default)]
     pub forward_rules: Vec<ForwardRule>,
 }
 
@@ -62,6 +65,51 @@ pub struct DdnsConfig {
 
     #[serde(default = "default_interval_minutes")]
     pub interval_minutes: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceDdnsConfig {
+    #[serde(default)]
+    pub enabled: bool,
+
+    #[serde(default = "default_provider")]
+    pub provider: String,
+
+    #[serde(default)]
+    pub access_key_id: String,
+
+    #[serde(default)]
+    pub access_key_secret: String,
+
+    #[serde(default)]
+    pub domain: String,
+
+    #[serde(default)]
+    pub sub_domain: String,
+
+    #[serde(default = "default_ttl")]
+    pub ttl: u32,
+
+    #[serde(default = "default_interval_minutes")]
+    pub interval_minutes: u32,
+
+    #[serde(default)]
+    pub device_id: String,
+
+    #[serde(default)]
+    pub device_mac: String,
+
+    #[serde(default)]
+    pub device_name: String,
+
+    #[serde(default)]
+    pub selected_ipv6: String,
+
+    #[serde(default)]
+    pub last_update_time: String,
+
+    #[serde(default)]
+    pub last_result: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -219,6 +267,7 @@ impl Default for AppConfig {
             log_level: default_log_level(),
             ipv6_interface: String::new(),
             ddns: DdnsConfig::default(),
+            device_ddns: DeviceDdnsConfig::default(),
             forward_rules: Vec::new(),
         }
     }
@@ -240,13 +289,33 @@ impl Default for DdnsConfig {
     }
 }
 
+impl Default for DeviceDdnsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            provider: default_provider(),
+            access_key_id: String::new(),
+            access_key_secret: String::new(),
+            domain: String::new(),
+            sub_domain: String::new(),
+            ttl: default_ttl(),
+            interval_minutes: default_interval_minutes(),
+            device_id: String::new(),
+            device_mac: String::new(),
+            device_name: String::new(),
+            selected_ipv6: String::new(),
+            last_update_time: String::new(),
+            last_result: String::new(),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Config path resolution
 // ---------------------------------------------------------------------------
 
 fn config_dir() -> PathBuf {
-    let base = dirs_next::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."));
+    let base = dirs_next::config_dir().unwrap_or_else(|| PathBuf::from("."));
     base.join("home-net")
 }
 
@@ -304,11 +373,7 @@ pub fn load_config() -> AppConfig {
             // Config file does not exist – create a default one.
             let default_cfg = AppConfig::default();
             if let Err(e) = save_config(&default_cfg) {
-                add_log(
-                    "warn",
-                    "配置",
-                    &format!("默认配置写入失败：{}", e),
-                );
+                add_log("warn", "配置", &format!("默认配置写入失败：{}", e));
             } else {
                 add_log("info", "配置", "已创建默认配置文件");
             }
@@ -322,21 +387,18 @@ pub fn load_config() -> AppConfig {
 pub fn save_config(config: &AppConfig) -> Result<(), String> {
     ensure_config_dir().map_err(|e| format!("创建配置目录失败：{}", e))?;
 
-    let toml_str = toml::to_string_pretty(config)
-        .map_err(|e| format!("序列化配置失败：{}", e))?;
+    let toml_str = toml::to_string_pretty(config).map_err(|e| format!("序列化配置失败：{}", e))?;
 
     let path = config_file_path();
     let tmp_path = path.with_extension("toml.tmp");
 
-    let mut f = fs::File::create(&tmp_path)
-        .map_err(|e| format!("创建临时配置文件失败：{}", e))?;
+    let mut f = fs::File::create(&tmp_path).map_err(|e| format!("创建临时配置文件失败：{}", e))?;
     f.write_all(toml_str.as_bytes())
         .map_err(|e| format!("写入临时配置文件失败：{}", e))?;
     f.flush()
         .map_err(|e| format!("刷新临时配置文件失败：{}", e))?;
 
-    fs::rename(&tmp_path, &path)
-        .map_err(|e| format!("替换配置文件失败：{}", e))?;
+    fs::rename(&tmp_path, &path).map_err(|e| format!("替换配置文件失败：{}", e))?;
 
     add_log("info", "配置", "配置已保存到磁盘");
     Ok(())
@@ -395,5 +457,56 @@ pub fn clear_logs() {
     let buffer = get_log_buffer();
     if let Ok(mut guard) = buffer.lock() {
         guard.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn device_ddns_default_uses_ddns_defaults_and_empty_device_fields() {
+        let config = DeviceDdnsConfig::default();
+
+        assert!(!config.enabled);
+        assert_eq!(config.provider, "aliyun");
+        assert_eq!(config.ttl, 600);
+        assert_eq!(config.interval_minutes, 10);
+        assert_eq!(config.device_id, "");
+        assert_eq!(config.device_mac, "");
+        assert_eq!(config.device_name, "");
+        assert_eq!(config.selected_ipv6, "");
+        assert_eq!(config.last_update_time, "");
+        assert_eq!(config.last_result, "");
+    }
+
+    #[test]
+    fn app_config_deserializes_when_device_ddns_is_absent() {
+        let toml = r#"
+version = "0.1.0"
+auto_start = false
+start_minimized = false
+log_level = "info"
+ipv6_interface = ""
+forward_rules = []
+
+[ddns]
+enabled = false
+provider = "aliyun"
+access_key_id = ""
+access_key_secret = ""
+domain = ""
+sub_domain = ""
+record_type = "AAAA"
+ttl = 600
+interval_minutes = 10
+"#;
+
+        let config: AppConfig = toml::from_str(toml).expect("missing device_ddns uses default");
+
+        assert!(!config.device_ddns.enabled);
+        assert_eq!(config.device_ddns.provider, "aliyun");
+        assert_eq!(config.device_ddns.ttl, 600);
+        assert_eq!(config.device_ddns.interval_minutes, 10);
     }
 }

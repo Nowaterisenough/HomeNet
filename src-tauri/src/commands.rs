@@ -1,13 +1,15 @@
+use chrono::Local;
 use std::sync::Mutex;
 use tauri::State;
 use tokio::sync::Mutex as TokioMutex;
 use uuid::Uuid;
 
 use crate::config::{
-    add_log, normalize_forward_rule, save_config, AppConfig, DdnsConfig, ForwardRule, LogEntry,
-    RuntimeStatus,
+    add_log, normalize_forward_rule, save_config, AppConfig, DdnsConfig, DeviceDdnsConfig,
+    ForwardRule, LogEntry, RuntimeStatus,
 };
 use crate::ddns::NetworkInterfaceInfo;
+use crate::device_discovery::LanDevice;
 use crate::forward::manager::ForwardManager;
 
 // ---------------------------------------------------------------------------
@@ -57,6 +59,163 @@ fn validate_ddns_config(config: &DdnsConfig) -> Result<(), String> {
         return Err("主域名或子域名未配置".to_string());
     }
     Ok(())
+}
+
+pub(crate) fn device_ddns_domain(config: &DeviceDdnsConfig) -> String {
+    if config.domain.trim().is_empty() || config.sub_domain.trim().is_empty() {
+        "未配置域名".to_string()
+    } else {
+        format!("{}.{}", config.sub_domain.trim(), config.domain.trim())
+    }
+}
+
+pub(crate) fn validate_device_ddns_config(config: &DeviceDdnsConfig) -> Result<(), String> {
+    if config.access_key_id.trim().is_empty() || config.access_key_secret.trim().is_empty() {
+        return Err("AccessKey ID 或 Secret 未配置".to_string());
+    }
+    if config.domain.trim().is_empty() || config.sub_domain.trim().is_empty() {
+        return Err("主域名或子域名未配置".to_string());
+    }
+    if config.device_id.trim().is_empty() && config.device_mac.trim().is_empty() {
+        return Err("请选择要更新 DDNS 的设备".to_string());
+    }
+    Ok(())
+}
+
+pub(crate) fn to_device_ddns_aliyun_config(config: &DeviceDdnsConfig) -> DdnsConfig {
+    DdnsConfig {
+        enabled: config.enabled,
+        provider: config.provider.clone(),
+        access_key_id: config.access_key_id.clone(),
+        access_key_secret: config.access_key_secret.clone(),
+        domain: config.domain.clone(),
+        sub_domain: config.sub_domain.clone(),
+        record_type: "AAAA".to_string(),
+        ttl: config.ttl,
+        interval_minutes: config.interval_minutes,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DeviceDdnsOperationIdentity {
+    enabled: bool,
+    provider: String,
+    access_key_id: String,
+    access_key_secret: String,
+    domain: String,
+    sub_domain: String,
+    ttl: u32,
+    interval_minutes: u32,
+    device_id: String,
+    device_mac: String,
+    selected_ipv6: String,
+}
+
+pub(crate) fn device_ddns_identity(
+    config: &DeviceDdnsConfig,
+) -> DeviceDdnsOperationIdentity {
+    DeviceDdnsOperationIdentity {
+        enabled: config.enabled,
+        provider: config.provider.trim().to_string(),
+        access_key_id: config.access_key_id.trim().to_string(),
+        access_key_secret: config.access_key_secret.trim().to_string(),
+        domain: config.domain.trim().to_string(),
+        sub_domain: config.sub_domain.trim().to_string(),
+        ttl: config.ttl,
+        interval_minutes: config.interval_minutes,
+        device_id: config.device_id.trim().to_string(),
+        device_mac: config.device_mac.trim().to_ascii_lowercase(),
+        selected_ipv6: config.selected_ipv6.trim().to_string(),
+    }
+}
+
+pub(crate) fn device_ddns_identity_matches(
+    config: &DeviceDdnsConfig,
+    identity: &DeviceDdnsOperationIdentity,
+) -> bool {
+    device_ddns_identity(config) == *identity
+}
+
+pub(crate) fn apply_device_ddns_result_if_current(
+    state: &AppState,
+    identity: &DeviceDdnsOperationIdentity,
+    selected_ipv6: Option<String>,
+    last_result: String,
+) -> Result<bool, String> {
+    let mut guard = state
+        .config
+        .lock()
+        .map_err(|e| format!("写入设备 DDNS 结果失败：{}", e))?;
+
+    if !device_ddns_identity_matches(&guard.device_ddns, identity) {
+        return Ok(false);
+    }
+
+    let mut cfg = guard.clone();
+    if let Some(selected_ipv6) = selected_ipv6 {
+        cfg.device_ddns.selected_ipv6 = selected_ipv6;
+    }
+    cfg.device_ddns.last_update_time = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    cfg.device_ddns.last_result = last_result;
+    save_config(&cfg)?;
+    *guard = cfg;
+    Ok(true)
+}
+
+fn device_matches_config(device: &LanDevice, config: &DeviceDdnsConfig) -> bool {
+    let device_id = config.device_id.trim();
+    let device_mac = config.device_mac.trim();
+
+    (!device_id.is_empty() && device.id == device_id)
+        || (!device_mac.is_empty() && device.mac.eq_ignore_ascii_case(device_mac))
+}
+
+fn first_global_ipv6(device: &LanDevice) -> Option<&str> {
+    device
+        .global_ipv6
+        .iter()
+        .chain(device.ipv6.iter())
+        .map(|value| value.trim())
+        .find(|value| crate::device_discovery::is_global_ipv6(value))
+}
+
+pub(crate) fn resolve_device_ipv6(
+    config: &DeviceDdnsConfig,
+    devices: &[LanDevice],
+) -> Result<String, String> {
+    let device = devices
+        .iter()
+        .find(|device| device_matches_config(device, config))
+        .ok_or_else(|| "未找到匹配的局域网设备".to_string())?;
+
+    let selected_ipv6 = config.selected_ipv6.trim();
+    if !selected_ipv6.is_empty() {
+        let selected_is_available = device
+            .global_ipv6
+            .iter()
+            .chain(device.ipv6.iter())
+            .any(|value| value.trim() == selected_ipv6)
+            && crate::device_discovery::is_global_ipv6(selected_ipv6);
+
+        if selected_is_available {
+            return Ok(selected_ipv6.to_string());
+        }
+    }
+
+    first_global_ipv6(device)
+        .map(|value| value.to_string())
+        .ok_or_else(|| format!("设备 {} 没有可用的公网 IPv6", device.display_name))
+}
+
+pub(crate) async fn update_device_ddns_record(
+    config: &DeviceDdnsConfig,
+    devices: &[LanDevice],
+) -> Result<(String, String), String> {
+    validate_device_ddns_config(config)?;
+    let ipv6 = resolve_device_ipv6(config, devices)?;
+    let client = crate::ddns::aliyun::AliyunDdns::new(to_device_ddns_aliyun_config(config));
+    let result = client.update_record("", &ipv6).await?;
+    Ok((ipv6, result))
 }
 
 fn latest_ddns_update_time() -> String {
@@ -287,6 +446,127 @@ pub async fn set_ipv6_interface(
 }
 
 #[tauri::command]
+pub async fn list_lan_devices() -> Result<Vec<LanDevice>, String> {
+    Ok(crate::device_discovery::discover_lan_devices())
+}
+
+#[tauri::command]
+pub async fn get_device_ddns_config(
+    state: State<'_, AppState>,
+) -> Result<DeviceDdnsConfig, String> {
+    let cfg = read_config(&state)?;
+    Ok(cfg.device_ddns)
+}
+
+#[tauri::command]
+pub async fn save_device_ddns_config(
+    state: State<'_, AppState>,
+    config: DeviceDdnsConfig,
+) -> Result<(), String> {
+    let mut cfg = read_config(&state)?;
+    let domain = device_ddns_domain(&config);
+    cfg.device_ddns = config;
+    write_config(&state, &cfg)?;
+    add_log(
+        "info",
+        "设备DDNS",
+        &format!("设备 DDNS 配置已保存：{}", domain),
+    );
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_device_ddns_current_record(state: State<'_, AppState>) -> Result<String, String> {
+    let cfg = read_config(&state)?;
+    validate_device_ddns_config(&cfg.device_ddns)?;
+    let client =
+        crate::ddns::aliyun::AliyunDdns::new(to_device_ddns_aliyun_config(&cfg.device_ddns));
+    client.describe_record().await
+}
+
+#[tauri::command]
+pub async fn trigger_device_ddns_update(
+    state: State<'_, AppState>,
+    config: Option<DeviceDdnsConfig>,
+) -> Result<String, String> {
+    let device_config = {
+        let cfg = read_config(&state)?;
+        config.unwrap_or(cfg.device_ddns)
+    };
+    let identity = device_ddns_identity(&device_config);
+
+    if !device_config.enabled {
+        return Err("设备 DDNS 未启用".to_string());
+    }
+    validate_device_ddns_config(&device_config)?;
+
+    let devices = crate::device_discovery::discover_lan_devices();
+    let domain = device_ddns_domain(&device_config);
+    let update_result = update_device_ddns_record(&device_config, &devices).await;
+
+    match update_result {
+        Ok((ipv6, result)) => {
+            match apply_device_ddns_result_if_current(
+                &state,
+                &identity,
+                Some(ipv6.clone()),
+                result.clone(),
+            ) {
+                Ok(true) => {}
+                Ok(false) => add_log(
+                    "warn",
+                    "设备DDNS",
+                    &format!(
+                        "设备 DDNS 配置已变化，跳过本次手动更新结果写入：{}",
+                        domain
+                    ),
+                ),
+                Err(error) => add_log(
+                    "error",
+                    "设备DDNS",
+                    &format!("设备 DDNS 手动更新结果写入失败：{}，{}", domain, error),
+                ),
+            }
+
+            add_log(
+                "info",
+                "设备DDNS",
+                &format!("设备 DDNS 手动更新完成：{} -> {}，{}", domain, ipv6, result),
+            );
+            Ok(result)
+        }
+        Err(error) => {
+            match apply_device_ddns_result_if_current(&state, &identity, None, error.clone()) {
+                Ok(true) => {}
+                Ok(false) => add_log(
+                    "warn",
+                    "设备DDNS",
+                    &format!(
+                        "设备 DDNS 配置已变化，跳过本次手动失败结果写入：{}",
+                        domain
+                    ),
+                ),
+                Err(save_error) => add_log(
+                    "error",
+                    "设备DDNS",
+                    &format!(
+                        "设备 DDNS 手动失败结果写入失败：{}，{}",
+                        domain, save_error
+                    ),
+                ),
+            }
+
+            add_log(
+                "error",
+                "设备DDNS",
+                &format!("设备 DDNS 手动更新失败：{}，{}", domain, error),
+            );
+            Err(error)
+        }
+    }
+}
+
+#[tauri::command]
 pub async fn list_forward_rules(state: State<'_, AppState>) -> Result<Vec<ForwardRule>, String> {
     let cfg = read_config(&state)?;
     Ok(cfg.forward_rules)
@@ -440,4 +720,138 @@ pub fn record_start_time() {
 
 fn start_time_secs() -> u64 {
     START_TIME.get().copied().unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lan_device(id: &str, mac: &str, global_ipv6: Vec<&str>) -> LanDevice {
+        let global_ipv6 = global_ipv6
+            .into_iter()
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>();
+
+        LanDevice {
+            id: id.to_string(),
+            display_name: id.to_string(),
+            hostname: String::new(),
+            mac: mac.to_string(),
+            ipv4: Vec::new(),
+            ipv6: global_ipv6.clone(),
+            global_ipv6,
+            online: true,
+            source: "test".to_string(),
+            last_seen: "2026-05-18T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn resolve_device_ipv6_accepts_selected_global_ipv6_when_present() {
+        let config = DeviceDdnsConfig {
+            device_id: "device-1".to_string(),
+            selected_ipv6: "2408:8200::10".to_string(),
+            ..DeviceDdnsConfig::default()
+        };
+        let devices = vec![lan_device(
+            "device-1",
+            "aa:bb:cc:dd:ee:ff",
+            vec!["2408:8200::10", "2408:8200::11"],
+        )];
+
+        assert_eq!(
+            resolve_device_ipv6(&config, &devices),
+            Ok("2408:8200::10".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_device_ipv6_falls_back_to_first_global_ipv6_for_device_id_match() {
+        let config = DeviceDdnsConfig {
+            device_id: "device-1".to_string(),
+            ..DeviceDdnsConfig::default()
+        };
+        let devices = vec![lan_device(
+            "device-1",
+            "aa:bb:cc:dd:ee:ff",
+            vec!["2408:8200::10", "2408:8200::11"],
+        )];
+
+        assert_eq!(
+            resolve_device_ipv6(&config, &devices),
+            Ok("2408:8200::10".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_device_ipv6_returns_error_when_device_is_missing() {
+        let config = DeviceDdnsConfig {
+            device_id: "missing-device".to_string(),
+            ..DeviceDdnsConfig::default()
+        };
+        let devices = vec![lan_device(
+            "device-1",
+            "aa:bb:cc:dd:ee:ff",
+            vec!["2408:8200::10"],
+        )];
+
+        assert!(resolve_device_ipv6(&config, &devices).is_err());
+    }
+
+    #[test]
+    fn resolve_device_ipv6_falls_back_when_selected_ipv6_disappeared() {
+        let config = DeviceDdnsConfig {
+            device_id: "device-1".to_string(),
+            selected_ipv6: "2408:8200::old".to_string(),
+            ..DeviceDdnsConfig::default()
+        };
+        let devices = vec![lan_device(
+            "device-1",
+            "aa:bb:cc:dd:ee:ff",
+            vec!["2408:8200::new"],
+        )];
+
+        assert_eq!(
+            resolve_device_ipv6(&config, &devices),
+            Ok("2408:8200::new".to_string())
+        );
+    }
+
+    #[test]
+    fn device_ddns_identity_ignores_runtime_result_fields() {
+        let original = DeviceDdnsConfig {
+            enabled: true,
+            provider: "aliyun".to_string(),
+            access_key_id: "ak".to_string(),
+            access_key_secret: "secret".to_string(),
+            domain: "example.com".to_string(),
+            sub_domain: "host".to_string(),
+            ttl: 600,
+            interval_minutes: 10,
+            device_id: "device-1".to_string(),
+            device_mac: "AA:BB:CC:DD:EE:FF".to_string(),
+            selected_ipv6: "2408:8200::1".to_string(),
+            last_update_time: "old".to_string(),
+            last_result: "old result".to_string(),
+            ..DeviceDdnsConfig::default()
+        };
+        let current = DeviceDdnsConfig {
+            selected_ipv6: "2408:8200::2".to_string(),
+            last_update_time: "new".to_string(),
+            last_result: "new result".to_string(),
+            ..original.clone()
+        };
+
+        let identity = device_ddns_identity(&original);
+
+        assert!(!device_ddns_identity_matches(&current, &identity));
+
+        let current_same_identity = DeviceDdnsConfig {
+            last_update_time: "new".to_string(),
+            last_result: "new result".to_string(),
+            ..original.clone()
+        };
+
+        assert!(device_ddns_identity_matches(&current_same_identity, &identity));
+    }
 }
