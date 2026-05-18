@@ -109,7 +109,6 @@ pub struct RuntimeStatus {
     pub last_update_time: String,
     pub rule_count: u32,
     pub enabled_rule_count: u32,
-    pub online_device_count: u32,
     pub uptime: u64,
 }
 

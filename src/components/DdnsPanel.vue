@@ -298,10 +298,7 @@ onMounted(() => {
 
       <label class="field-row">
         <span>主域名</span>
-        <div class="select-like">
-          <input v-model="config.domain" type="text" />
-          <span class="chevron"></span>
-        </div>
+        <input v-model="config.domain" type="text" />
       </label>
 
       <label class="field-row">
@@ -507,14 +504,12 @@ input[readonly] {
 }
 
 .secret-field,
-.copy-field,
-.select-like {
+.copy-field {
   position: relative;
 }
 
 .secret-field input,
-.copy-field input,
-.select-like input {
+.copy-field input {
   padding-right: 42px;
 }
 
@@ -539,17 +534,6 @@ input[readonly] {
 
 .icon-button svg {
   display: block;
-}
-
-.chevron {
-  position: absolute;
-  right: 13px;
-  top: 50%;
-  width: 9px;
-  height: 9px;
-  border-right: 1.8px solid #6b7280;
-  border-bottom: 1.8px solid #6b7280;
-  transform: translateY(-70%) rotate(45deg);
 }
 
 .actions {

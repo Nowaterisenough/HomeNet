@@ -40,7 +40,6 @@ export interface RuntimeStatus {
   last_update_time: string;
   rule_count: number;
   enabled_rule_count: number;
-  online_device_count: number;
   uptime: number;
 }
 

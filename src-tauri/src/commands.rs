@@ -169,7 +169,6 @@ pub async fn get_runtime_status(state: State<'_, AppState>) -> Result<RuntimeSta
         last_update_time: latest_ddns_update_time(),
         rule_count: cfg.forward_rules.len() as u32,
         enabled_rule_count: enabled_count as u32,
-        online_device_count: 0,
         uptime,
     })
 }

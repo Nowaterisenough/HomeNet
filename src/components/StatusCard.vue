@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { Component } from "vue";
-import { Globe, Monitor, ShieldCheck, Workflow } from "@lucide/vue";
+import { Clock3, Globe, Monitor, ShieldCheck, Workflow } from "@lucide/vue";
 
 const props = defineProps<{
   title: string;
@@ -16,6 +16,7 @@ const iconMap: Record<string, Component> = {
   shield: ShieldCheck,
   rules: Workflow,
   devices: Monitor,
+  uptime: Clock3,
 };
 
 const iconComponent = computed(() => iconMap[props.icon]);
@@ -106,6 +107,11 @@ const iconComponent = computed(() => iconMap[props.icon]);
 .icon-devices {
   background: #e3fbfb;
   color: #14b8a6;
+}
+
+.icon-uptime {
+  background: #fff7e6;
+  color: #d97706;
 }
 
 .icon-disc svg {

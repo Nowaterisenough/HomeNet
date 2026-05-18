@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
-import { Check, ChevronDown, Copy, Menu } from "@lucide/vue";
+import { Check, ChevronDown, Copy, Menu, RefreshCw, ScrollText } from "@lucide/vue";
 import StatusCard from "./components/StatusCard.vue";
 import DdnsPanel from "./components/DdnsPanel.vue";
 import ForwardRulesPanel from "./components/ForwardRulesPanel.vue";
@@ -16,7 +16,6 @@ const emptyStatus: RuntimeStatus = {
   last_update_time: "暂无",
   rule_count: 0,
   enabled_rule_count: 0,
-  online_device_count: 0,
   uptime: 0,
 };
 
@@ -25,6 +24,8 @@ const networkInterfaces = ref<NetworkInterfaceInfo[]>([]);
 const selectedIpv6Interface = ref("");
 const ipv6BindingSaving = ref(false);
 const ipv6DropdownOpen = ref(false);
+const appMenuOpen = ref(false);
+const appMenuRef = ref<HTMLElement | null>(null);
 const ipv6SelectRef = ref<HTMLElement | null>(null);
 const logSection = ref<HTMLElement | null>(null);
 const logsFocused = ref(false);
@@ -218,6 +219,18 @@ function ddnsStatusType(): "normal" | "warning" | "error" | "success" {
   return "normal";
 }
 
+function formatUptime(seconds: number): string {
+  const totalSeconds = Math.max(0, Math.floor(Number(seconds) || 0));
+  const minutes = Math.floor(totalSeconds / 60);
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+
+  if (totalSeconds < 60) return `${totalSeconds} 秒`;
+  if (minutes < 60) return `${minutes} 分钟`;
+  if (hours < 24) return `${hours} 小时 ${minutes % 60} 分钟`;
+  return `${days} 天 ${hours % 24} 小时`;
+}
+
 function handleRuntimeRefresh() {
   void loadRuntimeStatus();
 }
@@ -228,6 +241,21 @@ function handleFocusLogs() {
   window.setTimeout(() => {
     logsFocused.value = false;
   }, 1400);
+}
+
+function toggleAppMenu() {
+  appMenuOpen.value = !appMenuOpen.value;
+}
+
+async function refreshDashboard() {
+  appMenuOpen.value = false;
+  await Promise.all([loadRuntimeStatus(), loadIpv6Binding()]);
+  notifyLogsChanged();
+}
+
+function focusLogsFromMenu() {
+  appMenuOpen.value = false;
+  handleFocusLogs();
 }
 
 async function minimizeWindow() {
@@ -256,6 +284,13 @@ function closeIpv6DropdownOnOutside(event: MouseEvent) {
   ipv6DropdownOpen.value = false;
 }
 
+function closeAppMenuOnOutside(event: MouseEvent) {
+  if (!appMenuOpen.value) return;
+  const target = event.target as Node | null;
+  if (target && appMenuRef.value?.contains(target)) return;
+  appMenuOpen.value = false;
+}
+
 async function restoreReferenceWindow() {
   try {
     if (await appWindow.isMaximized()) {
@@ -274,6 +309,7 @@ onMounted(() => {
   window.addEventListener("homenet:refresh-status", handleRuntimeRefresh);
   window.addEventListener("homenet:focus-logs", handleFocusLogs);
   document.addEventListener("mousedown", closeIpv6DropdownOnOutside);
+  document.addEventListener("mousedown", closeAppMenuOnOutside);
   restoreReferenceWindow();
   loadRuntimeStatus();
   loadIpv6Binding();
@@ -285,6 +321,7 @@ onUnmounted(() => {
   window.removeEventListener("homenet:refresh-status", handleRuntimeRefresh);
   window.removeEventListener("homenet:focus-logs", handleFocusLogs);
   document.removeEventListener("mousedown", closeIpv6DropdownOnOutside);
+  document.removeEventListener("mousedown", closeAppMenuOnOutside);
   if (runtimeTimer !== null) {
     clearInterval(runtimeTimer);
     runtimeTimer = null;
@@ -300,9 +337,28 @@ onUnmounted(() => {
   <div class="window-frame">
     <header class="titlebar" @mousedown="startWindowDrag">
       <div class="titlebar-left">
-        <button class="menu-button" aria-label="打开菜单">
-          <Menu :size="19" :stroke-width="2.4" />
-        </button>
+        <div ref="appMenuRef" class="app-menu">
+          <button
+            class="menu-button"
+            type="button"
+            aria-label="打开菜单"
+            aria-haspopup="menu"
+            :aria-expanded="appMenuOpen"
+            @click.stop="toggleAppMenu"
+          >
+            <Menu :size="19" :stroke-width="2.4" />
+          </button>
+          <div v-if="appMenuOpen" class="app-menu-panel" role="menu">
+            <button class="app-menu-item" type="button" role="menuitem" @click="refreshDashboard">
+              <RefreshCw :size="15" :stroke-width="2.2" />
+              刷新状态
+            </button>
+            <button class="app-menu-item" type="button" role="menuitem" @click="focusLogsFromMenu">
+              <ScrollText :size="15" :stroke-width="2.2" />
+              查看日志
+            </button>
+          </div>
+        </div>
         <h1>HomeNet · DDNS 与端口转发</h1>
       </div>
       <div class="window-controls">
@@ -443,11 +499,11 @@ onUnmounted(() => {
             icon="rules"
           />
           <StatusCard
-            title="在线设备"
-            :value="String(statusData.online_device_count)"
-            subtitle="局域网设备在线"
+            title="运行时长"
+            :value="formatUptime(statusData.uptime)"
+            subtitle="应用已运行"
             status="success"
-            icon="devices"
+            icon="uptime"
           />
         </section>
 
@@ -574,6 +630,10 @@ button {
   gap: 14px;
 }
 
+.app-menu {
+  position: relative;
+}
+
 .titlebar h1 {
   font-size: 16px;
   font-weight: 700;
@@ -597,6 +657,46 @@ button {
 
 .menu-button svg {
   color: #4b5563;
+}
+
+.app-menu-panel {
+  position: absolute;
+  z-index: 20;
+  left: 0;
+  top: 36px;
+  width: 142px;
+  padding: 5px;
+  border: 1px solid #d8e0eb;
+  border-radius: 7px;
+  background: #ffffff;
+  box-shadow: 0 12px 28px rgba(20, 35, 66, 0.16);
+}
+
+.app-menu-item {
+  width: 100%;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #283142;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: left;
+}
+
+.app-menu-item:hover,
+.app-menu-item:focus-visible {
+  outline: none;
+  background: #eef6ff;
+  color: #1d4ed8;
+}
+
+.app-menu-item svg {
+  flex: 0 0 auto;
 }
 
 .window-controls {
