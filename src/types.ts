@@ -57,3 +57,33 @@ export interface LogEntry {
   module: string;
   message: string;
 }
+
+export interface DeviceDdnsConfig {
+  enabled: boolean;
+  provider: string;
+  access_key_id: string;
+  access_key_secret: string;
+  domain: string;
+  sub_domain: string;
+  ttl: number;
+  interval_minutes: number;
+  device_id: string;
+  device_mac: string;
+  device_name: string;
+  selected_ipv6: string;
+  last_update_time: string;
+  last_result: string;
+}
+
+export interface LanDevice {
+  id: string;
+  display_name: string;
+  hostname: string;
+  mac: string;
+  ipv4: string[];
+  ipv6: string[];
+  global_ipv6: string[];
+  online: boolean;
+  source: string;
+  last_seen: string;
+}

@@ -5,6 +5,7 @@ import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { Check, ChevronDown, Copy } from "@lucide/vue";
 import StatusCard from "./components/StatusCard.vue";
 import DdnsPanel from "./components/DdnsPanel.vue";
+import DeviceDdnsPanel from "./components/DeviceDdnsPanel.vue";
 import ForwardRulesPanel from "./components/ForwardRulesPanel.vue";
 import LogPanel from "./components/LogPanel.vue";
 import type { NetworkInterfaceInfo, RuntimeStatus } from "./types";
@@ -507,7 +508,10 @@ onUnmounted(() => {
         </section>
 
         <section class="section-panels" aria-label="配置面板">
-          <DdnsPanel />
+          <div class="ddns-stack">
+            <DeviceDdnsPanel />
+            <DdnsPanel />
+          </div>
           <ForwardRulesPanel />
         </section>
 
@@ -746,20 +750,28 @@ button {
   padding: 16px 24px 20px;
   overflow: hidden;
   display: grid;
-  grid-template-rows: 118px minmax(0, 1fr) 234px;
-  gap: 18px;
+  grid-template-rows: 112px minmax(0, 1fr) 168px;
+  gap: 14px;
 }
 
 .section-cards {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 18px;
+  gap: 14px;
 }
 
 .section-panels {
   min-height: 0;
   display: grid;
   grid-template-columns: 430px minmax(0, 1fr);
+  gap: 12px;
+}
+
+.ddns-stack {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: 368px minmax(0, 1fr);
   gap: 12px;
 }
 

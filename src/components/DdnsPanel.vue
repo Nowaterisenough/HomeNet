@@ -386,17 +386,17 @@ onMounted(() => {
 }
 
 .panel-header {
-  flex: 0 0 68px;
-  height: 68px;
+  flex: 0 0 52px;
+  height: 52px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 16px;
+  padding: 0 14px;
   border-bottom: 1px solid #e1e8f2;
 }
 
 .panel-header h2 {
-  font-size: 20px;
+  font-size: 17px;
   line-height: 1.2;
   font-weight: 800;
   color: #151922;
@@ -431,6 +431,7 @@ onMounted(() => {
 }
 
 .status-message {
+  flex: 0 0 auto;
   margin: 10px 16px 0;
   padding: 8px 10px;
   border-radius: 6px;
@@ -453,18 +454,35 @@ onMounted(() => {
 }
 
 .form-grid {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 7px;
-  padding: 14px 16px 10px;
+  gap: 5px;
+  padding: 10px 14px 8px;
+}
+
+.form-grid::-webkit-scrollbar {
+  width: 8px;
+}
+
+.form-grid::-webkit-scrollbar-thumb {
+  border: 2px solid rgba(255, 255, 255, 0.94);
+  border-radius: 999px;
+  background: #c9d5e5;
+}
+
+.form-grid::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .field-row {
   display: grid;
-  grid-template-columns: 128px minmax(0, 1fr);
+  grid-template-columns: 112px minmax(0, 1fr);
   align-items: center;
-  gap: 12px;
-  min-height: 36px;
+  gap: 10px;
+  min-height: 30px;
   color: #1f2430;
 }
 
@@ -476,13 +494,13 @@ onMounted(() => {
 input,
 select {
   width: 100%;
-  height: 36px;
+  height: 30px;
   border: 1px solid #d7e0eb;
   border-radius: 5px;
   background: var(--color-input-bg, #ffffff);
   color: #222936;
   padding: 0 9px;
-  font-size: 13px;
+  font-size: 12px;
   outline: none;
   box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.03);
   transition:
@@ -539,16 +557,17 @@ input[readonly] {
 }
 
 .actions {
+  flex: 0 0 auto;
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
-  gap: 9px;
-  padding: 0 16px 11px;
+  gap: 7px;
+  padding: 0 14px 8px;
 }
 
 .btn {
-  height: 38px;
+  height: 32px;
   border-radius: 5px;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 700;
   border: 1px solid transparent;
   transition:
@@ -585,13 +604,14 @@ input[readonly] {
 }
 
 .panel-footer {
-  min-height: 40px;
+  flex: 0 0 auto;
+  min-height: 34px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
   margin-top: auto;
-  padding: 0 16px;
+  padding: 0 14px;
   border-top: 1px solid #e1e8f2;
   color: #697386;
   font-size: 12px;
