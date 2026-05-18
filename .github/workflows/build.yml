@@ -17,6 +17,7 @@ jobs:
     name: Prepare release metadata
     runs-on: ubuntu-latest
     outputs:
+      release_version: ${{ steps.release.outputs.release_version }}
       release_tag: ${{ steps.release.outputs.release_tag }}
       release_name: ${{ steps.release.outputs.release_name }}
       changelog_to: ${{ steps.release.outputs.changelog_to }}
@@ -24,6 +25,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
 
       - name: Resolve release metadata
         id: release
@@ -31,13 +39,17 @@ jobs:
         run: |
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             release_tag="${GITHUB_REF_NAME}"
+            release_version="${release_tag#v}"
             changelog_to="${GITHUB_REF_NAME}"
           else
-            version="$(node -e "console.log(JSON.parse(require('fs').readFileSync('package.json', 'utf8')).version)")"
-            release_tag="v${version}"
+            base_version="$(node -e "const version = JSON.parse(require('fs').readFileSync('package.json', 'utf8')).version.split('.'); console.log(version.slice(0, 2).join('.'))")"
+            commit_count="$(git rev-list --count HEAD)"
+            release_version="${base_version}.${commit_count}"
+            release_tag="v${release_version}"
             changelog_to="${GITHUB_SHA}"
           fi
 
+          echo "release_version=${release_version}" >> "${GITHUB_OUTPUT}"
           echo "release_tag=${release_tag}" >> "${GITHUB_OUTPUT}"
           echo "release_name=HomeNet ${release_tag}" >> "${GITHUB_OUTPUT}"
           echo "changelog_to=${changelog_to}" >> "${GITHUB_OUTPUT}"
@@ -94,6 +106,11 @@ jobs:
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Apply release version
+        env:
+          HOMENET_RELEASE_VERSION: ${{ needs.metadata.outputs.release_version }}
+        run: node scripts/apply-release-version.mjs
 
       - name: Verify static checks
         run: |

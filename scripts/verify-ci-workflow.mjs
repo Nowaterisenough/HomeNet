@@ -3,11 +3,13 @@ import { join } from "node:path";
 
 const root = process.cwd();
 let workflow = "";
+let versionScript = "";
 try {
   workflow = readFileSync(join(root, ".github/workflows/build.yml"), "utf8");
+  versionScript = readFileSync(join(root, "scripts/apply-release-version.mjs"), "utf8");
 } catch {
   console.error("CI workflow checks failed:");
-  console.error("- Missing .github/workflows/build.yml");
+  console.error("- Missing .github/workflows/build.yml or scripts/apply-release-version.mjs");
   process.exit(1);
 }
 
@@ -19,10 +21,16 @@ const requiredSnippets = [
   "contents: write",
   "metadata:",
   "name: Prepare release metadata",
+  "release_version: ${{ steps.release.outputs.release_version }}",
   "release_tag: ${{ steps.release.outputs.release_tag }}",
   "release_name: ${{ steps.release.outputs.release_name }}",
   "changelog_to: ${{ steps.release.outputs.changelog_to }}",
-  "release_tag=\"v${version}\"",
+  "fetch-depth: 0",
+  "base_version=",
+  "git rev-list --count HEAD",
+  "release_version=\"${base_version}.${commit_count}\"",
+  "release_tag=\"v${release_version}\"",
+  "echo \"release_version=${release_version}\"",
   "release_name=HomeNet ${release_tag}",
   "macos-15",
   "aarch64-apple-darwin",
@@ -34,6 +42,9 @@ const requiredSnippets = [
   "installerGlob:",
   "portableMode: zip",
   "needs: metadata",
+  "Apply release version",
+  "HOMENET_RELEASE_VERSION: ${{ needs.metadata.outputs.release_version }}",
+  "node scripts/apply-release-version.mjs",
   "release:",
   "if: ${{ github.event_name != 'pull_request' }}",
   "- metadata",
@@ -81,6 +92,19 @@ const requiredSnippets = [
 ];
 
 const missing = requiredSnippets.filter((snippet) => !workflow.includes(snippet));
+const requiredVersionScriptSnippets = [
+  "HOMENET_RELEASE_VERSION",
+  "/^\\d+\\.\\d+\\.\\d+$/",
+  'updateJsonVersion("package.json")',
+  'updateJsonVersion("src-tauri/tauri.conf.json")',
+  'replaceFile("src-tauri/Cargo.toml"',
+  'replaceFile("src-tauri/Cargo.lock"',
+  'name = "homenet"',
+  "Applied HomeNet release version",
+];
+const missingVersionScript = requiredVersionScriptSnippets.filter(
+  (snippet) => !versionScript.includes(snippet),
+);
 const forbiddenSnippets = [
   "网络管家",
   "鍔熻兘",
@@ -92,6 +116,7 @@ const forbiddenSnippets = [
   "name: homenet ${{ github.ref_name }}",
   "name: HomeNet ${{ github.ref_name }}",
   "if: ${{ startsWith(github.ref, 'refs/tags/') }}",
+  "release_tag=\"v${version}\"",
   "homenet_${{ github.ref_name }}_",
   "artifactName: homenet-",
   "--no-bundle",
@@ -102,10 +127,13 @@ const forbiddenSnippets = [
 ];
 const forbidden = forbiddenSnippets.filter((snippet) => workflow.includes(snippet));
 
-if (missing.length > 0 || forbidden.length > 0) {
+if (missing.length > 0 || missingVersionScript.length > 0 || forbidden.length > 0) {
   console.error("CI workflow checks failed:");
   for (const snippet of missing) {
     console.error(`- Missing ${snippet}`);
+  }
+  for (const snippet of missingVersionScript) {
+    console.error(`- Missing version script ${snippet}`);
   }
   for (const snippet of forbidden) {
     console.error(`- Forbidden ${snippet}`);
