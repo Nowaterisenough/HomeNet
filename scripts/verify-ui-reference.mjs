@@ -96,9 +96,9 @@ const cssChecks = [
   ],
   [
     "src/App.vue",
-    "reference vertical rhythm",
+    "device DDNS compact vertical rhythm",
     (content) =>
-      content.includes("grid-template-rows: 118px minmax(0, 1fr) 234px;"),
+      content.includes("grid-template-rows: 112px minmax(0, 1fr) 168px;"),
   ],
   [
     "src/App.vue",
