@@ -386,7 +386,8 @@ onMounted(() => {
 }
 
 .panel-header {
-  height: 56px;
+  flex: 0 0 68px;
+  height: 68px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -395,7 +396,8 @@ onMounted(() => {
 }
 
 .panel-header h2 {
-  font-size: 18px;
+  font-size: 20px;
+  line-height: 1.2;
   font-weight: 800;
   color: #151922;
 }
