@@ -28,6 +28,8 @@ const ipv6SelectRef = ref<HTMLElement | null>(null);
 const logSection = ref<HTMLElement | null>(null);
 const logsFocused = ref(false);
 const copiedPublicIp = ref<"ipv4" | "ipv6" | null>(null);
+const autoStartEnabled = ref(false);
+const autoStartSaving = ref(false);
 const appWindow = getCurrentWindow();
 const DESIGN_WIDTH = 1586;
 const DESIGN_HEIGHT = 992;
@@ -120,6 +122,14 @@ async function loadRuntimeStatus() {
   }
 }
 
+async function loadAutoStart() {
+  try {
+    autoStartEnabled.value = await invoke<boolean>("get_auto_start");
+  } catch {
+    autoStartEnabled.value = false;
+  }
+}
+
 async function loadNetworkInterfaces() {
   try {
     networkInterfaces.value = await invoke<NetworkInterfaceInfo[]>("list_network_interfaces");
@@ -142,6 +152,24 @@ async function loadIpv6Binding() {
 
 function notifyLogsChanged() {
   window.dispatchEvent(new CustomEvent("homenet:logs-refresh"));
+}
+
+async function toggleAutoStart(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const previous = autoStartEnabled.value;
+  const enabled = input.checked;
+
+  autoStartEnabled.value = enabled;
+  autoStartSaving.value = true;
+  try {
+    await invoke("set_auto_start", { enabled });
+    notifyLogsChanged();
+  } catch (e) {
+    autoStartEnabled.value = previous;
+    console.warn("设置开机自启失败:", e);
+  } finally {
+    autoStartSaving.value = false;
+  }
 }
 
 function looksLikeGlobalIpv6(value: string): boolean {
@@ -252,7 +280,7 @@ async function closeWindow() {
 async function startWindowDrag(event: MouseEvent) {
   if (event.button !== 0) return;
   const target = event.target as HTMLElement | null;
-  if (target?.closest("button, input, select, textarea, a")) return;
+  if (target?.closest("button, input, select, textarea, a, label")) return;
   try {
     await appWindow.startDragging();
   } catch (e) {
@@ -287,6 +315,7 @@ onMounted(() => {
   document.addEventListener("mousedown", closeIpv6DropdownOnOutside);
   restoreReferenceWindow();
   loadRuntimeStatus();
+  loadAutoStart();
   loadIpv6Binding();
   runtimeTimer = setInterval(loadRuntimeStatus, 10000);
 });
@@ -313,19 +342,37 @@ onUnmounted(() => {
       <div class="titlebar-left">
         <h1>HomeNet · DDNS 与端口转发</h1>
       </div>
-      <div class="window-controls">
-        <button
-          class="control control-minimize"
-          type="button"
-          aria-label="最小化"
-          @click="minimizeWindow"
-        ></button>
-        <button
-          class="control control-close"
-          type="button"
-          aria-label="关闭"
-          @click="closeWindow"
-        ></button>
+      <div class="titlebar-actions">
+        <label
+          class="autostart-option"
+          :class="{ saving: autoStartSaving }"
+          title="系统启动后自动运行 HomeNet"
+          @mousedown.stop
+        >
+          <input
+            class="autostart-checkbox"
+            type="checkbox"
+            aria-label="开机自启"
+            :checked="autoStartEnabled"
+            :disabled="autoStartSaving"
+            @change="toggleAutoStart"
+          />
+          <span>开机自启</span>
+        </label>
+        <div class="window-controls">
+          <button
+            class="control control-minimize"
+            type="button"
+            aria-label="最小化"
+            @click="minimizeWindow"
+          ></button>
+          <button
+            class="control control-close"
+            type="button"
+            aria-label="关闭"
+            @click="closeWindow"
+          ></button>
+        </div>
       </div>
     </header>
 
@@ -587,6 +634,42 @@ button {
   font-weight: 700;
   letter-spacing: 0;
   color: #121722;
+}
+
+.titlebar-actions {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+.autostart-option {
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 2px;
+  color: #374151;
+  font-size: 13px;
+  font-weight: 700;
+  user-select: none;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.autostart-option.saving {
+  cursor: wait;
+  opacity: 0.62;
+}
+
+.autostart-checkbox {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--color-primary, #2563eb);
+  cursor: pointer;
+}
+
+.autostart-checkbox:disabled {
+  cursor: not-allowed;
 }
 
 .window-controls {
