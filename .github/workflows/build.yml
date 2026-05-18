@@ -352,6 +352,8 @@ jobs:
 
       - name: Generate updater manifest
         shell: pwsh
+        env:
+          RELEASE_CHANGELOG: ${{ steps.build_changelog.outputs.changelog }}
         run: |
           $platforms = [ordered]@{}
           $fragments = Get-ChildItem -Path release-assets -Recurse -Filter "updater-*.json"
@@ -370,9 +372,7 @@ jobs:
           }
           $manifest = [ordered]@{
             version = "${{ needs.metadata.outputs.release_version }}"
-            notes = @"
-${{ steps.build_changelog.outputs.changelog }}
-"@
+            notes = $env:RELEASE_CHANGELOG
             pub_date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
             platforms = $platforms
           }
