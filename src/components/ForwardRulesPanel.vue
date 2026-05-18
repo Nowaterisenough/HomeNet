@@ -764,6 +764,7 @@ onMounted(() => {
 
 .rules-table .empty-row td {
   height: 112px;
+  border-bottom: 0;
   color: #8a94a6;
   text-align: center;
   font-weight: 600;

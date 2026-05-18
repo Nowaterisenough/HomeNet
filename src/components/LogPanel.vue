@@ -183,6 +183,7 @@ onUnmounted(() => {
 }
 
 .empty-state {
+  flex: 1 1 auto;
   display: grid;
   place-items: center;
   min-height: 132px;
@@ -190,8 +191,30 @@ onUnmounted(() => {
 }
 
 .log-table {
+  flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
+  padding-bottom: 10px;
+  scrollbar-gutter: stable;
+  scrollbar-color: #b8c5d6 #eef3f9;
+}
+
+.log-table::-webkit-scrollbar {
+  width: 10px;
+}
+
+.log-table::-webkit-scrollbar-track {
+  background: #eef3f9;
+}
+
+.log-table::-webkit-scrollbar-thumb {
+  border: 2px solid #eef3f9;
+  border-radius: 999px;
+  background: #b8c5d6;
+}
+
+.log-table::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
 }
 
 .log-row {

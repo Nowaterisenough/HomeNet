@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
-import { Check, ChevronDown, Copy, Menu, RefreshCw, ScrollText } from "@lucide/vue";
+import { Check, ChevronDown, Copy } from "@lucide/vue";
 import StatusCard from "./components/StatusCard.vue";
 import DdnsPanel from "./components/DdnsPanel.vue";
 import ForwardRulesPanel from "./components/ForwardRulesPanel.vue";
@@ -24,8 +24,6 @@ const networkInterfaces = ref<NetworkInterfaceInfo[]>([]);
 const selectedIpv6Interface = ref("");
 const ipv6BindingSaving = ref(false);
 const ipv6DropdownOpen = ref(false);
-const appMenuOpen = ref(false);
-const appMenuRef = ref<HTMLElement | null>(null);
 const ipv6SelectRef = ref<HTMLElement | null>(null);
 const logSection = ref<HTMLElement | null>(null);
 const logsFocused = ref(false);
@@ -243,21 +241,6 @@ function handleFocusLogs() {
   }, 1400);
 }
 
-function toggleAppMenu() {
-  appMenuOpen.value = !appMenuOpen.value;
-}
-
-async function refreshDashboard() {
-  appMenuOpen.value = false;
-  await Promise.all([loadRuntimeStatus(), loadIpv6Binding()]);
-  notifyLogsChanged();
-}
-
-function focusLogsFromMenu() {
-  appMenuOpen.value = false;
-  handleFocusLogs();
-}
-
 async function minimizeWindow() {
   await appWindow.minimize();
 }
@@ -284,13 +267,6 @@ function closeIpv6DropdownOnOutside(event: MouseEvent) {
   ipv6DropdownOpen.value = false;
 }
 
-function closeAppMenuOnOutside(event: MouseEvent) {
-  if (!appMenuOpen.value) return;
-  const target = event.target as Node | null;
-  if (target && appMenuRef.value?.contains(target)) return;
-  appMenuOpen.value = false;
-}
-
 async function restoreReferenceWindow() {
   try {
     if (await appWindow.isMaximized()) {
@@ -309,7 +285,6 @@ onMounted(() => {
   window.addEventListener("homenet:refresh-status", handleRuntimeRefresh);
   window.addEventListener("homenet:focus-logs", handleFocusLogs);
   document.addEventListener("mousedown", closeIpv6DropdownOnOutside);
-  document.addEventListener("mousedown", closeAppMenuOnOutside);
   restoreReferenceWindow();
   loadRuntimeStatus();
   loadIpv6Binding();
@@ -321,7 +296,6 @@ onUnmounted(() => {
   window.removeEventListener("homenet:refresh-status", handleRuntimeRefresh);
   window.removeEventListener("homenet:focus-logs", handleFocusLogs);
   document.removeEventListener("mousedown", closeIpv6DropdownOnOutside);
-  document.removeEventListener("mousedown", closeAppMenuOnOutside);
   if (runtimeTimer !== null) {
     clearInterval(runtimeTimer);
     runtimeTimer = null;
@@ -337,28 +311,6 @@ onUnmounted(() => {
   <div class="window-frame">
     <header class="titlebar" @mousedown="startWindowDrag">
       <div class="titlebar-left">
-        <div ref="appMenuRef" class="app-menu">
-          <button
-            class="menu-button"
-            type="button"
-            aria-label="打开菜单"
-            aria-haspopup="menu"
-            :aria-expanded="appMenuOpen"
-            @click.stop="toggleAppMenu"
-          >
-            <Menu :size="19" :stroke-width="2.4" />
-          </button>
-          <div v-if="appMenuOpen" class="app-menu-panel" role="menu">
-            <button class="app-menu-item" type="button" role="menuitem" @click="refreshDashboard">
-              <RefreshCw :size="15" :stroke-width="2.2" />
-              刷新状态
-            </button>
-            <button class="app-menu-item" type="button" role="menuitem" @click="focusLogsFromMenu">
-              <ScrollText :size="15" :stroke-width="2.2" />
-              查看日志
-            </button>
-          </div>
-        </div>
         <h1>HomeNet · DDNS 与端口转发</h1>
       </div>
       <div class="window-controls">
@@ -630,73 +582,11 @@ button {
   gap: 14px;
 }
 
-.app-menu {
-  position: relative;
-}
-
 .titlebar h1 {
   font-size: 16px;
   font-weight: 700;
   letter-spacing: 0;
   color: #121722;
-}
-
-.menu-button {
-  width: 30px;
-  height: 30px;
-  display: inline-flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  border: 1px solid #d8e0eb;
-  border-radius: 6px;
-  background: #ffffff;
-  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.08);
-}
-
-.menu-button svg {
-  color: #4b5563;
-}
-
-.app-menu-panel {
-  position: absolute;
-  z-index: 20;
-  left: 0;
-  top: 36px;
-  width: 142px;
-  padding: 5px;
-  border: 1px solid #d8e0eb;
-  border-radius: 7px;
-  background: #ffffff;
-  box-shadow: 0 12px 28px rgba(20, 35, 66, 0.16);
-}
-
-.app-menu-item {
-  width: 100%;
-  height: 32px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 9px;
-  border: 0;
-  border-radius: 5px;
-  background: transparent;
-  color: #283142;
-  font-size: 12px;
-  font-weight: 700;
-  text-align: left;
-}
-
-.app-menu-item:hover,
-.app-menu-item:focus-visible {
-  outline: none;
-  background: #eef6ff;
-  color: #1d4ed8;
-}
-
-.app-menu-item svg {
-  flex: 0 0 auto;
 }
 
 .window-controls {
@@ -869,9 +759,7 @@ button {
   outline: none;
   background: linear-gradient(180deg, #ffffff 0%, #f6faff 100%);
   color: #111827;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.9),
-    0 0 0 3px rgba(37, 99, 235, 0.1);
+  box-shadow: none;
   transition:
     border-color 0.15s ease,
     box-shadow 0.15s ease,
@@ -886,7 +774,7 @@ button {
 .ipv6-select.open .ipv6-select-trigger,
 .ipv6-select-trigger:focus-visible {
   border-color: #6ea0ff;
-  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.16);
+  box-shadow: none;
 }
 
 .ipv6-select-trigger:disabled {
@@ -919,16 +807,14 @@ button {
   z-index: 50;
   top: calc(100% + 6px);
   left: -58px;
-  width: 310px;
+  width: calc(100% + 58px);
   max-height: 234px;
   overflow-y: auto;
   padding: 5px;
   border: 1px solid #bfd0e8;
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.98);
-  box-shadow:
-    0 18px 38px rgba(15, 23, 42, 0.16),
-    0 4px 10px rgba(15, 23, 42, 0.08);
+  box-shadow: none;
 }
 
 .ipv6-select-option {

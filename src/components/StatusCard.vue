@@ -174,22 +174,38 @@ h3 {
 }
 
 .has-control {
-  padding-top: 14px;
-  padding-bottom: 12px;
+  padding-top: 12px;
+  padding-bottom: 8px;
+}
+
+.has-control h3 {
+  font-size: 14px;
+  line-height: 1.2;
 }
 
 .has-control .card-value {
-  margin-top: 4px;
+  margin-top: 3px;
   font-size: 19px;
 }
 
+.icon-ipv6 ~ .card-copy .card-value {
+  font-size: 12px;
+  line-height: 1.18;
+  white-space: normal;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  text-overflow: clip;
+}
+
 .has-control .card-subtitle {
-  margin-top: 5px;
-  font-size: 11px;
+  margin-top: 3px;
+  font-size: 10.5px;
+  line-height: 1.2;
 }
 
 .card-control {
-  margin-top: 5px;
+  margin-top: 4px;
   min-width: 0;
 }
 </style>

@@ -102,23 +102,22 @@ const cssChecks = [
   ],
   [
     "src/App.vue",
-    "uses Lucide menu icon",
+    "titlebar menu button removed",
     (content) =>
       content.includes('from "@lucide/vue"') &&
-      content.includes("<Menu"),
+      !content.includes("<Menu") &&
+      !content.includes("appMenuOpen"),
   ],
   [
     "src/App.vue",
-    "titlebar menu button exposes real actions",
+    "titlebar menu panel removed",
     (content) =>
-      content.includes("appMenuOpen") &&
-      content.includes("app-menu-panel") &&
-      content.includes("toggleAppMenu") &&
-      content.includes("refreshDashboard") &&
-      content.includes("focusLogsFromMenu") &&
-      content.includes('@click.stop="toggleAppMenu"') &&
-      content.includes("刷新状态") &&
-      content.includes("查看日志"),
+      !content.includes("appMenuOpen") &&
+      !content.includes("app-menu-panel") &&
+      !content.includes("toggleAppMenu") &&
+      !content.includes("refreshDashboard") &&
+      !content.includes("focusLogsFromMenu") &&
+      !content.includes('@click.stop="toggleAppMenu"'),
   ],
   [
     "src/App.vue",
