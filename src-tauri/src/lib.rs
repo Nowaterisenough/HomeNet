@@ -67,8 +67,9 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 let window_clone = window.clone();
                 window.on_window_event(move |event| {
-                    if let tauri::WindowEvent::CloseRequested { .. } = event {
-                        window_clone.hide().unwrap();
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = window_clone.hide();
                         config::add_log("debug", "系统", "主窗口已隐藏到系统托盘");
                     }
                 });
