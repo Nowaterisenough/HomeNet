@@ -43,6 +43,13 @@ export interface RuntimeStatus {
   uptime: number;
 }
 
+export interface AppUpdateResult {
+  status: "up_to_date" | "installed" | string;
+  current_version: string;
+  latest_version: string;
+  message: string;
+}
+
 export interface NetworkInterfaceInfo {
   name: string;
   ipv4: string[];

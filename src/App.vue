@@ -2,13 +2,13 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
-import { Check, ChevronDown, Copy } from "@lucide/vue";
+import { Check, ChevronDown, Copy, RefreshCw } from "@lucide/vue";
 import StatusCard from "./components/StatusCard.vue";
 import DdnsPanel from "./components/DdnsPanel.vue";
 import DeviceDdnsPanel from "./components/DeviceDdnsPanel.vue";
 import ForwardRulesPanel from "./components/ForwardRulesPanel.vue";
 import LogPanel from "./components/LogPanel.vue";
-import type { NetworkInterfaceInfo, RuntimeStatus } from "./types";
+import type { AppUpdateResult, NetworkInterfaceInfo, RuntimeStatus } from "./types";
 
 const emptyStatus: RuntimeStatus = {
   public_ipv4: "",
@@ -31,6 +31,9 @@ const logsFocused = ref(false);
 const copiedPublicIp = ref<"ipv4" | "ipv6" | null>(null);
 const autoStartEnabled = ref(false);
 const autoStartSaving = ref(false);
+const updateChecking = ref(false);
+const updateStatusMessage = ref("");
+const updateStatusType = ref<"normal" | "success" | "error">("normal");
 const appWindow = getCurrentWindow();
 const DESIGN_WIDTH = 1586;
 const DESIGN_HEIGHT = 992;
@@ -170,6 +173,28 @@ async function toggleAutoStart(event: Event) {
     console.warn("设置开机自启失败:", e);
   } finally {
     autoStartSaving.value = false;
+  }
+}
+
+async function installAppUpdate() {
+  if (updateChecking.value) return;
+  updateChecking.value = true;
+  updateStatusType.value = "normal";
+  updateStatusMessage.value = "正在检查更新";
+
+  try {
+    const result = await invoke<AppUpdateResult>("install_app_update");
+    updateStatusMessage.value = result.message;
+    updateStatusType.value = result.status === "installed" ? "success" : "normal";
+    notifyLogsChanged();
+
+    if (result.status !== "installed") {
+      updateChecking.value = false;
+    }
+  } catch (e) {
+    updateStatusMessage.value = `更新失败：${String(e)}`;
+    updateStatusType.value = "error";
+    updateChecking.value = false;
   }
 }
 
@@ -342,8 +367,30 @@ onUnmounted(() => {
     <header class="titlebar" @mousedown="startWindowDrag">
       <div class="titlebar-left">
         <h1>HomeNet · DDNS 与端口转发</h1>
+        <span
+          v-if="updateStatusMessage"
+          class="update-status"
+          :class="`update-${updateStatusType}`"
+        >
+          {{ updateStatusMessage }}
+        </span>
       </div>
       <div class="titlebar-actions">
+        <button
+          class="update-button"
+          type="button"
+          title="检查并静默安装更新"
+          :disabled="updateChecking"
+          @click="installAppUpdate"
+          @mousedown.stop
+        >
+          <RefreshCw
+            :class="{ spinning: updateChecking }"
+            :size="14"
+            :stroke-width="2.4"
+          />
+          <span>{{ updateChecking ? "更新中" : "检测更新" }}</span>
+        </button>
         <label
           class="autostart-option"
           :class="{ saving: autoStartSaving }"
@@ -640,10 +687,65 @@ button {
   color: #121722;
 }
 
+.update-status {
+  max-width: 420px;
+  overflow: hidden;
+  color: #5f6877;
+  font-size: 12px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.update-success {
+  color: #15803d;
+}
+
+.update-error {
+  color: #b91c1c;
+}
+
 .titlebar-actions {
   display: flex;
   align-items: center;
   gap: 20px;
+}
+
+.update-button {
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  border: 1px solid #c8d8ef;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #1f4f9a;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.update-button:hover:not(:disabled),
+.update-button:focus-visible {
+  border-color: #8fb5ff;
+  outline: none;
+  background: #f8fbff;
+}
+
+.update-button:disabled {
+  cursor: wait;
+  opacity: 0.68;
+}
+
+.spinning {
+  animation: update-spin 0.8s linear infinite;
+}
+
+@keyframes update-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .autostart-option {

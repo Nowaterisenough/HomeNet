@@ -43,6 +43,7 @@ pub fn run() {
     // Build and run the Tauri application.
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![
             commands::get_runtime_status,
@@ -67,6 +68,7 @@ pub fn run() {
             commands::clear_logs,
             commands::get_auto_start,
             commands::set_auto_start,
+            commands::install_app_update,
         ])
         .setup(|app| {
             // -- close-to-tray: hide window instead of closing ----------

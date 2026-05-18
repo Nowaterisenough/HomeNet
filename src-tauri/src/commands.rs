@@ -1,6 +1,8 @@
 use chrono::Local;
+use semver::Version;
 use std::sync::Mutex;
-use tauri::State;
+use tauri::{AppHandle, State};
+use tauri_plugin_updater::UpdaterExt;
 use tokio::sync::Mutex as TokioMutex;
 use uuid::Uuid;
 
@@ -19,6 +21,18 @@ use crate::forward::manager::ForwardManager;
 pub struct AppState {
     pub config: Mutex<AppConfig>,
     pub forward_manager: TokioMutex<ForwardManager>,
+}
+
+const UPDATE_ENDPOINT: &str =
+    "https://github.com/Nowaterisenough/HomeNet/releases/latest/download/latest.json";
+const UPDATE_PUBLIC_KEY: Option<&str> = option_env!("HOMENET_UPDATER_PUBLIC_KEY");
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AppUpdateResult {
+    pub status: String,
+    pub current_version: String,
+    pub latest_version: String,
+    pub message: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -41,6 +55,24 @@ fn write_config(state: &AppState, new_cfg: &AppConfig) -> Result<(), String> {
         .map_err(|e| format!("写入配置失败：{}", e))?;
     *guard = new_cfg.clone();
     Ok(())
+}
+
+fn parse_release_version(value: &str) -> Option<Version> {
+    Version::parse(value.trim().trim_start_matches('v')).ok()
+}
+
+pub(crate) fn is_release_version_newer(current_version: &str, latest_version: &str) -> bool {
+    let Some(current) = parse_release_version(current_version) else {
+        return false;
+    };
+    let Some(latest) = parse_release_version(latest_version) else {
+        return false;
+    };
+    latest > current
+}
+
+fn update_error_message(error: impl std::fmt::Display) -> String {
+    format!("检查或安装更新失败：{}", error)
 }
 
 fn ddns_domain(config: &DdnsConfig) -> String {
@@ -704,6 +736,74 @@ pub async fn set_auto_start(
     Ok(())
 }
 
+#[tauri::command]
+pub async fn install_app_update(app: AppHandle) -> Result<AppUpdateResult, String> {
+    let Some(public_key) = UPDATE_PUBLIC_KEY.filter(|value| !value.trim().is_empty()) else {
+        return Err(
+            "更新功能缺少签名公钥；请在发布构建中设置 HOMENET_UPDATER_PUBLIC_KEY".to_string(),
+        );
+    };
+
+    let endpoint: url::Url = UPDATE_ENDPOINT
+        .parse()
+        .map_err(|e| format!("更新源地址无效：{}", e))?;
+    let updater = app
+        .updater_builder()
+        .pubkey(public_key)
+        .endpoints(vec![endpoint])
+        .map_err(update_error_message)?
+        .build()
+        .map_err(update_error_message)?;
+
+    let update = updater.check().await.map_err(update_error_message)?;
+    let current_version = env!("CARGO_PKG_VERSION").to_string();
+
+    let Some(update) = update else {
+        return Ok(AppUpdateResult {
+            status: "up_to_date".to_string(),
+            current_version: current_version.clone(),
+            latest_version: current_version,
+            message: "当前已经是最新版本".to_string(),
+        });
+    };
+
+    let latest_version = update.version.clone();
+    if !is_release_version_newer(&current_version, &latest_version) {
+        return Ok(AppUpdateResult {
+            status: "up_to_date".to_string(),
+            current_version,
+            latest_version,
+            message: "当前已经是最新版本".to_string(),
+        });
+    }
+
+    add_log(
+        "info",
+        "更新",
+        &format!("发现新版本 {}，开始后台下载并安装", latest_version),
+    );
+
+    update
+        .download_and_install(|_, _| {}, || {})
+        .await
+        .map_err(update_error_message)?;
+
+    add_log(
+        "info",
+        "更新",
+        &format!("版本 {} 已安装，正在重启应用", latest_version),
+    );
+
+    app.request_restart();
+
+    Ok(AppUpdateResult {
+        status: "installed".to_string(),
+        current_version,
+        latest_version: latest_version.clone(),
+        message: format!("版本 {} 已安装，正在重启应用", latest_version),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Record process start time (used for uptime calculation)
 // ---------------------------------------------------------------------------
@@ -853,5 +953,23 @@ mod tests {
         };
 
         assert!(device_ddns_identity_matches(&current_same_identity, &identity));
+    }
+
+    #[test]
+    fn release_version_comparison_accepts_github_tag_prefix() {
+        assert!(is_release_version_newer("0.1.4", "v0.1.5"));
+        assert!(is_release_version_newer("0.1.4", "0.2.0"));
+    }
+
+    #[test]
+    fn release_version_comparison_rejects_same_or_older_versions() {
+        assert!(!is_release_version_newer("0.1.4", "v0.1.4"));
+        assert!(!is_release_version_newer("0.1.4", "v0.1.3"));
+    }
+
+    #[test]
+    fn release_version_comparison_rejects_invalid_versions() {
+        assert!(!is_release_version_newer("0.1.4", "latest"));
+        assert!(!is_release_version_newer("dev", "v0.1.5"));
     }
 }
