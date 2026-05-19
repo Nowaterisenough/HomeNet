@@ -124,7 +124,30 @@ fn discover_neighbor_devices() -> Vec<LanDevice> {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn discover_neighbor_devices() -> Vec<LanDevice> {
+    use std::process::Command;
+
+    let arp_output = Command::new("arp").arg("-an").output();
+    let ndp_output = Command::new("ndp").arg("-an").output();
+    let arp_stdout = arp_output
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).to_string())
+        .unwrap_or_default();
+    let ndp_stdout = ndp_output
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).to_string())
+        .unwrap_or_default();
+
+    merge_neighbor_rows_with_source(
+        parse_macos_neighbor_tables(&arp_stdout, &ndp_stdout),
+        "macos-neighbor",
+    )
+}
+
+#[cfg(all(not(windows), not(target_os = "macos")))]
 fn discover_neighbor_devices() -> Vec<LanDevice> {
     Vec::new()
 }
@@ -151,6 +174,10 @@ fn parse_powershell_neighbor_json(value: &str) -> Vec<NeighborRow> {
 }
 
 fn merge_neighbor_rows(rows: Vec<NeighborRow>) -> Vec<LanDevice> {
+    merge_neighbor_rows_with_source(rows, "windows-neighbor")
+}
+
+fn merge_neighbor_rows_with_source(rows: Vec<NeighborRow>, source: &str) -> Vec<LanDevice> {
     let now = Utc::now().to_rfc3339();
     let mut devices_by_key: HashMap<String, LanDevice> = HashMap::new();
     let mut ordered_keys = Vec::new();
@@ -186,7 +213,7 @@ fn merge_neighbor_rows(rows: Vec<NeighborRow>) -> Vec<LanDevice> {
                 ipv6: Vec::new(),
                 global_ipv6: Vec::new(),
                 online: false,
-                source: "windows-neighbor".to_string(),
+                source: source.to_string(),
                 last_seen: now.clone(),
             }
         });
@@ -199,6 +226,122 @@ fn merge_neighbor_rows(rows: Vec<NeighborRow>) -> Vec<LanDevice> {
         .into_iter()
         .filter_map(|key| devices_by_key.remove(&key))
         .collect()
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn parse_macos_neighbor_tables(arp_output: &str, ndp_output: &str) -> Vec<NeighborRow> {
+    parse_macos_arp_output(arp_output)
+        .into_iter()
+        .chain(parse_macos_ndp_output(ndp_output))
+        .filter(NeighborRow::is_usable)
+        .collect()
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn parse_macos_arp_output(value: &str) -> Vec<NeighborRow> {
+    value.lines().filter_map(parse_macos_arp_line).collect()
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn parse_macos_arp_line(line: &str) -> Option<NeighborRow> {
+    let line = line.trim();
+    let ip_address = extract_parenthesized_ip(line)?;
+    if ip_address.parse::<Ipv4Addr>().is_err() {
+        return None;
+    }
+
+    let tokens: Vec<&str> = line.split_whitespace().collect();
+    let at_index = tokens.iter().position(|token| *token == "at")?;
+    let link_layer_address = tokens.get(at_index + 1)?;
+    let interface_alias = token_after(&tokens, "on").unwrap_or_default();
+
+    Some(NeighborRow {
+        ip_address,
+        link_layer_address: link_layer_address.to_string(),
+        state: "Reachable".to_string(),
+        interface_alias,
+        _address_family: Some(Value::String("IPv4".to_string())),
+    })
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn parse_macos_ndp_output(value: &str) -> Vec<NeighborRow> {
+    value.lines().filter_map(parse_macos_ndp_line).collect()
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn parse_macos_ndp_line(line: &str) -> Option<NeighborRow> {
+    let line = line.trim();
+    if line.is_empty() {
+        return None;
+    }
+
+    if line.contains(" at ") {
+        return parse_macos_parenthesized_ndp_line(line);
+    }
+
+    let mut tokens = line.split_whitespace();
+    let ip_address = strip_ipv6_zone(tokens.next()?);
+    if ip_address.parse::<Ipv6Addr>().is_err() {
+        return None;
+    }
+
+    let link_layer_address = tokens.next()?;
+    let interface_alias = tokens.next().unwrap_or_default().to_string();
+
+    Some(NeighborRow {
+        ip_address,
+        link_layer_address: link_layer_address.to_string(),
+        state: "Reachable".to_string(),
+        interface_alias,
+        _address_family: Some(Value::String("IPv6".to_string())),
+    })
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn parse_macos_parenthesized_ndp_line(line: &str) -> Option<NeighborRow> {
+    let ip_address = strip_ipv6_zone(&extract_parenthesized_ip(line)?);
+    if ip_address.parse::<Ipv6Addr>().is_err() {
+        return None;
+    }
+
+    let tokens: Vec<&str> = line.split_whitespace().collect();
+    let at_index = tokens.iter().position(|token| *token == "at")?;
+    let link_layer_address = tokens.get(at_index + 1)?;
+    let interface_alias = token_after(&tokens, "on").unwrap_or_default();
+
+    Some(NeighborRow {
+        ip_address,
+        link_layer_address: link_layer_address.to_string(),
+        state: "Reachable".to_string(),
+        interface_alias,
+        _address_family: Some(Value::String("IPv6".to_string())),
+    })
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn extract_parenthesized_ip(line: &str) -> Option<String> {
+    let start = line.find('(')? + 1;
+    let end = line[start..].find(')')? + start;
+    Some(line[start..end].to_string())
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn token_after(tokens: &[&str], target: &str) -> Option<String> {
+    tokens
+        .iter()
+        .position(|token| *token == target)
+        .and_then(|index| tokens.get(index + 1))
+        .map(|value| value.to_string())
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn strip_ipv6_zone(value: &str) -> String {
+    value
+        .split_once('%')
+        .map(|(ip, _)| ip)
+        .unwrap_or(value)
+        .to_string()
 }
 
 fn discover_local_interface_devices() -> Vec<LanDevice> {
@@ -250,6 +393,36 @@ fn add_ip_to_device(device: &mut LanDevice, ip: &str) {
 }
 
 fn normalize_mac(value: &str) -> Option<String> {
+    let trimmed = value
+        .trim()
+        .trim_matches(|ch| matches!(ch, '(' | ')' | '[' | ']' | '<' | '>' | ','));
+
+    if trimmed.contains(':') || trimmed.contains('-') {
+        let parts: Vec<&str> = trimmed
+            .split(|ch| matches!(ch, ':' | '-'))
+            .filter(|part| !part.is_empty())
+            .collect();
+
+        if parts.len() == 6
+            && parts
+                .iter()
+                .all(|part| part.len() <= 2 && part.chars().all(|ch| ch.is_ascii_hexdigit()))
+        {
+            let octets: Option<Vec<String>> = parts
+                .iter()
+                .map(|part| {
+                    u8::from_str_radix(part, 16)
+                        .ok()
+                        .map(|octet| format!("{octet:02x}"))
+                })
+                .collect();
+
+            if let Some(octets) = octets {
+                return Some(octets.join(":"));
+            }
+        }
+    }
+
     let hex: String = value
         .chars()
         .filter(|ch| ch.is_ascii_hexdigit())
@@ -348,6 +521,43 @@ mod tests {
         );
         assert_eq!(normalize_mac(""), None);
         assert_eq!(normalize_mac("not-a-mac"), None);
+    }
+
+    #[test]
+    fn normalizes_single_digit_mac_octets() {
+        assert_eq!(
+            normalize_mac("88:c9:b3:b3:2:58"),
+            Some("88:c9:b3:b3:02:58".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_macos_arp_and_ndp_neighbors_by_mac() {
+        let arp = r#"
+? (192.168.100.143) at 88:c9:b3:b3:2:58 on en0 ifscope [ethernet]
+? (192.168.100.255) at ff:ff:ff:ff:ff:ff on en0 ifscope [ethernet]
+"#;
+        let ndp = r#"
+Neighbor                             Linklayer Address  Netif Expire    S Flags
+240e:358:abcd:1234:1111:2222:3333:4444 88:c9:b3:b3:2:58 en0 23h59m59s S R
+fe80::1%en0                          88:c9:b3:b3:2:58 en0 23h59m59s S R
+ff02::1                              33:33:00:00:00:01 en0 permanent  R
+"#;
+
+        let devices = merge_neighbor_rows(parse_macos_neighbor_tables(arp, ndp));
+
+        assert_eq!(devices.len(), 1);
+        let device = &devices[0];
+        assert_eq!(device.mac, "88:c9:b3:b3:02:58");
+        assert_eq!(device.ipv4, vec!["192.168.100.143"]);
+        assert_eq!(
+            device.ipv6,
+            vec!["240e:358:abcd:1234:1111:2222:3333:4444", "fe80::1"]
+        );
+        assert_eq!(
+            device.global_ipv6,
+            vec!["240e:358:abcd:1234:1111:2222:3333:4444"]
+        );
     }
 
     #[test]
