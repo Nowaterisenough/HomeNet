@@ -105,12 +105,8 @@ pub fn is_global_ipv6(value: &str) -> bool {
 
 #[cfg(windows)]
 fn discover_neighbor_devices() -> Vec<LanDevice> {
-    use std::process::Command;
-
     let script = "Get-NetNeighbor -AddressFamily IPv4,IPv6 | Where-Object { $_.IPAddress -and $_.LinkLayerAddress -and $_.State -ne 'Unreachable' } | Select-Object IPAddress,LinkLayerAddress,State,InterfaceAlias,AddressFamily | ConvertTo-Json -Compress";
-    let output = Command::new("powershell")
-        .args(["-NoProfile", "-Command", script])
-        .output();
+    let output = powershell_output(script);
 
     match output {
         Ok(output) if output.status.success() => {
@@ -119,6 +115,23 @@ fn discover_neighbor_devices() -> Vec<LanDevice> {
         }
         _ => Vec::new(),
     }
+}
+
+fn powershell_args(script: &str) -> [&str; 5] {
+    ["-NoProfile", "-WindowStyle", "Hidden", "-Command", script]
+}
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+#[cfg(windows)]
+fn powershell_output(script: &str) -> std::io::Result<std::process::Output> {
+    use std::os::windows::process::CommandExt;
+
+    std::process::Command::new("powershell")
+        .args(powershell_args(script))
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
 }
 
 #[cfg(target_os = "macos")]
@@ -415,13 +428,8 @@ fn discover_local_interface_devices() -> Vec<LanDevice> {
 
 #[cfg(windows)]
 fn local_interface_mac_map() -> HashMap<String, String> {
-    use std::process::Command;
-
-    let script =
-        "Get-NetAdapter | Select-Object Name,MacAddress | ConvertTo-Json -Compress";
-    let output = Command::new("powershell")
-        .args(["-NoProfile", "-Command", script])
-        .output();
+    let script = "Get-NetAdapter | Select-Object Name,MacAddress | ConvertTo-Json -Compress";
+    let output = powershell_output(script);
 
     let stdout = output
         .ok()
@@ -922,10 +930,23 @@ lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> mtu 16384
             Vec::new(),
         );
 
-        let devices =
-            merge_local_and_neighbor_devices(vec![local], vec![duplicate_neighbor]);
+        let devices = merge_local_and_neighbor_devices(vec![local], vec![duplicate_neighbor]);
 
         assert_eq!(devices.len(), 1);
         assert_eq!(devices[0].id, "local-machine");
+    }
+
+    #[test]
+    fn powershell_args_request_hidden_window() {
+        assert_eq!(
+            powershell_args("$PSVersionTable.PSVersion"),
+            [
+                "-NoProfile",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                "$PSVersionTable.PSVersion"
+            ]
+        );
     }
 }

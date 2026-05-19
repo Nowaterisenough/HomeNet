@@ -47,18 +47,31 @@ pub fn is_autostart_enabled() -> bool {
 // ---------------------------------------------------------------------------
 
 #[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+#[cfg(target_os = "windows")]
+fn command_output_without_window(
+    command: &mut std::process::Command,
+) -> std::io::Result<std::process::Output> {
+    use std::os::windows::process::CommandExt;
+
+    command.creation_flags(CREATE_NO_WINDOW).output()
+}
+
+#[cfg(target_os = "windows")]
 fn set_autostart_windows(enabled: bool) -> Result<(), String> {
-    let exe_path = std::env::current_exe()
-        .map_err(|e| format!("无法获取程序路径: {}", e))?;
+    let exe_path = std::env::current_exe().map_err(|e| format!("无法获取程序路径: {}", e))?;
     let exe_str = exe_path.to_string_lossy().to_string();
 
     let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
     let value_name = "HomeNet";
 
     if enabled {
-        let output = std::process::Command::new("reg")
-            .args(["add", key, "/v", value_name, "/t", "REG_SZ", "/d", &exe_str, "/f"])
-            .output()
+        let mut command = std::process::Command::new("reg");
+        command.args([
+            "add", key, "/v", value_name, "/t", "REG_SZ", "/d", &exe_str, "/f",
+        ]);
+        let output = command_output_without_window(&mut command)
             .map_err(|e| format!("注册表写入失败: {}", e))?;
 
         if output.status.success() {
@@ -69,9 +82,9 @@ fn set_autostart_windows(enabled: bool) -> Result<(), String> {
             Err(format!("注册表写入失败: {}", stderr))
         }
     } else {
-        let output = std::process::Command::new("reg")
-            .args(["delete", key, "/v", value_name, "/f"])
-            .output()
+        let mut command = std::process::Command::new("reg");
+        command.args(["delete", key, "/v", value_name, "/f"]);
+        let output = command_output_without_window(&mut command)
             .map_err(|e| format!("注册表删除失败: {}", e))?;
 
         if output.status.success() || !is_autostart_enabled_windows() {
@@ -86,9 +99,14 @@ fn set_autostart_windows(enabled: bool) -> Result<(), String> {
 
 #[cfg(target_os = "windows")]
 fn is_autostart_enabled_windows() -> bool {
-    let output = std::process::Command::new("reg")
-        .args(["query", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run", "/v", "HomeNet"])
-        .output()
+    let mut command = std::process::Command::new("reg");
+    command.args([
+        "query",
+        r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+        "/v",
+        "HomeNet",
+    ]);
+    let output = command_output_without_window(&mut command)
         .map(|o| o.status.success())
         .unwrap_or(false);
     output
