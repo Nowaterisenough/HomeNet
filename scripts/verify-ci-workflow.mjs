@@ -4,14 +4,12 @@ import { join } from "node:path";
 const root = process.cwd();
 let workflow = "";
 let versionScript = "";
-let updaterConfig = "";
 try {
   workflow = readFileSync(join(root, ".github/workflows/build.yml"), "utf8");
   versionScript = readFileSync(join(root, "scripts/apply-release-version.mjs"), "utf8");
-  updaterConfig = readFileSync(join(root, "src-tauri/tauri.updater.conf.json"), "utf8");
 } catch {
   console.error("CI workflow checks failed:");
-  console.error("- Missing .github/workflows/build.yml, scripts/apply-release-version.mjs, or src-tauri/tauri.updater.conf.json");
+  console.error("- Missing .github/workflows/build.yml or scripts/apply-release-version.mjs");
   process.exit(1);
 }
 
@@ -38,37 +36,6 @@ const requiredSnippets = [
   "aarch64-apple-darwin",
   "windows-latest",
   "tauri-apps/tauri-action@v0.6.2",
-  "updaterGlob:",
-  "updaterSuffix:",
-  "updaterTargets:",
-  "HOMENET_UPDATER_PUBLIC_KEY: ${{ steps.release_settings.outputs.updater_enabled == 'true' && secrets.TAURI_SIGNING_PUBLIC_KEY || '' }}",
-  "--config src-tauri/tauri.updater.conf.json",
-  "github.event_name",
-  "Import Apple Developer Certificate",
-  "Resolve Apple signing identity",
-  "KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}",
-  "security import certificate.p12",
-  "APPLE_SIGNING_IDENTITY_RESOLVED",
-  "TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}",
-  "TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ steps.release_settings.outputs.updater_enabled == 'true' && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}",
-  "APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}",
-  "APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}",
-  "APPLE_SIGNING_IDENTITY: ${{ steps.release_settings.outputs.macos_signing_enabled == 'true' && env.APPLE_SIGNING_IDENTITY_RESOLVED || '' }}",
-  "APPLE_ID: ${{ secrets.APPLE_ID }}",
-  "APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}",
-  "APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}",
-  "Staple macOS app notarization ticket",
-  "Verify macOS signing and notarization",
-  "xcrun stapler staple",
-  "codesign --verify --deep --strict --verbose=2",
-  "spctl -a -t exec -vv",
-  "xcrun stapler validate",
-  "spctl -a -t open --context context:primary-signature -vv",
-  "Read-UpdaterSignature",
-  "Generate updater manifest",
-  "latest.json",
-  "darwin-aarch64-app,darwin-aarch64",
-  "windows-x86_64-nsis,windows-x86_64",
   "--bundles app,dmg",
   "--bundles nsis",
   "portableGlob:",
@@ -78,17 +45,6 @@ const requiredSnippets = [
   "Apply release version",
   "HOMENET_RELEASE_VERSION: ${{ needs.metadata.outputs.release_version }}",
   "node scripts/apply-release-version.mjs",
-  "Resolve release settings",
-  "id: release_settings",
-  "updater_enabled",
-  "macos_signing_enabled",
-  "tauri_config_args",
-  "Write-Warning \"TAURI_SIGNING_PUBLIC_KEY and TAURI_SIGNING_PRIVATE_KEY must be set together",
-  "Write-Warning \"Apple signing secrets are partially configured",
-  "if: ${{ steps.release_settings.outputs.macos_signing_enabled == 'true' }}",
-  "steps.release_settings.outputs.tauri_config_args",
-  "if (\"${{ steps.release_settings.outputs.updater_enabled }}\" -eq \"true\")",
-  "if: ${{ steps.release_settings.outputs.updater_enabled == 'true' }}",
   "release:",
   "if: ${{ github.event_name != 'pull_request' }}",
   "- metadata",
@@ -136,13 +92,6 @@ const requiredSnippets = [
 ];
 
 const missing = requiredSnippets.filter((snippet) => !workflow.includes(snippet));
-const requiredTauriConfigSnippets = [
-  '"createUpdaterArtifacts": true',
-  '"installMode": "quiet"',
-];
-const missingTauriConfig = requiredTauriConfigSnippets.filter(
-  (snippet) => !updaterConfig.includes(snippet),
-);
 const requiredVersionScriptSnippets = [
   "HOMENET_RELEASE_VERSION",
   "/^\\d+\\.\\d+\\.\\d+$/",
@@ -175,23 +124,49 @@ const forbiddenSnippets = [
   "assetMode:",
   "artifactGlob:",
   "windows-x64-portable.exe",
+  "updaterGlob:",
+  "updaterSuffix:",
+  "updaterTargets:",
+  "HOMENET_UPDATER_PUBLIC_KEY",
+  "TAURI_SIGNING_PRIVATE_KEY",
+  "TAURI_SIGNING_PRIVATE_KEY_PASSWORD",
+  "--config src-tauri/tauri.updater.conf.json",
+  "src-tauri/tauri.updater.conf.json",
+  "Import Apple Developer Certificate",
+  "Resolve Apple signing identity",
+  "APPLE_CERTIFICATE",
+  "APPLE_CERTIFICATE_PASSWORD",
+  "APPLE_SIGNING_IDENTITY",
+  "APPLE_ID",
+  "APPLE_PASSWORD",
+  "APPLE_TEAM_ID",
+  "KEYCHAIN_PASSWORD",
+  "security import certificate.p12",
+  "xcrun stapler",
+  "codesign --verify",
+  "spctl -a",
+  "Read-UpdaterSignature",
+  "Generate updater manifest",
+  "latest.json",
+  "Resolve release settings",
+  "updater_enabled",
+  "macos_signing_enabled",
+  "tauri_config_args",
   "Write-Error \"TAURI_SIGNING_PUBLIC_KEY and TAURI_SIGNING_PRIVATE_KEY must be set together",
   "Write-Error \"Apple signing secrets are partially configured",
+  "Write-Warning \"TAURI_SIGNING_PUBLIC_KEY and TAURI_SIGNING_PRIVATE_KEY must be set together",
+  "Write-Warning \"Apple signing secrets are partially configured",
 ];
 const forbidden = forbiddenSnippets.filter((snippet) => workflow.includes(snippet));
 
 if (
   missing.length > 0 ||
-  missingTauriConfig.length > 0 ||
   missingVersionScript.length > 0 ||
   forbidden.length > 0
 ) {
   console.error("CI workflow checks failed:");
   for (const snippet of missing) {
     console.error(`- Missing ${snippet}`);
-  }
-  for (const snippet of missingTauriConfig) {
-    console.error(`- Missing Tauri config ${snippet}`);
   }
   for (const snippet of missingVersionScript) {
     console.error(`- Missing version script ${snippet}`);
