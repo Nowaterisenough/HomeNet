@@ -432,9 +432,73 @@ fn local_interface_mac_map() -> HashMap<String, String> {
     parse_local_interface_mac_json(&stdout)
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn local_interface_mac_map() -> HashMap<String, String> {
+    use std::process::Command;
+
+    let stdout = Command::new("ifconfig")
+        .arg("-a")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).to_string())
+        .unwrap_or_default();
+
+    parse_macos_ifconfig_mac_map(&stdout)
+}
+
+#[cfg(all(not(windows), not(target_os = "macos")))]
 fn local_interface_mac_map() -> HashMap<String, String> {
     HashMap::new()
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn parse_macos_ifconfig_mac_map(value: &str) -> HashMap<String, String> {
+    let mut result = HashMap::new();
+    let mut current_interface = String::new();
+
+    for line in value.lines() {
+        if let Some(interface_name) = parse_macos_ifconfig_interface_name(line) {
+            current_interface = interface_name;
+            continue;
+        }
+
+        if current_interface.is_empty() {
+            continue;
+        }
+
+        let mut tokens = line.split_whitespace();
+        if tokens.next() != Some("ether") {
+            continue;
+        }
+
+        let Some(mac) = tokens
+            .next()
+            .and_then(normalize_mac)
+            .filter(|mac| is_usable_mac(mac))
+        else {
+            continue;
+        };
+
+        result.insert(current_interface.clone(), mac);
+    }
+
+    result
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn parse_macos_ifconfig_interface_name(line: &str) -> Option<String> {
+    if line.starts_with(char::is_whitespace) {
+        return None;
+    }
+
+    let (name, _) = line.split_once(':')?;
+    let name = name.trim();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
 }
 
 fn parse_local_interface_mac_json(value: &str) -> HashMap<String, String> {
@@ -791,6 +855,29 @@ ff02::1                              33:33:00:00:00:01 en0 permanent  R
         );
 
         assert_eq!(rows.get("以太网"), Some(&"aa:bb:cc:dd:ee:ff".to_string()));
+    }
+
+    #[test]
+    fn parses_macos_ifconfig_mac_addresses_by_interface_name() {
+        let output = r#"
+en0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500
+	options=6460<TSO4,TSO6,CHANNEL_IO,PARTIAL_CSUM,ZEROINVERT_CSUM>
+	ether 88:c9:b3:b3:2:58
+	inet6 fe80::1234%en0 prefixlen 64 secured scopeid 0xb
+	inet 192.168.100.143 netmask 0xffffff00 broadcast 192.168.100.255
+	status: active
+awdl0: flags=8943<UP,BROADCAST,RUNNING,PROMISC,SIMPLEX,MULTICAST> mtu 1484
+	ether 36:7f:4a:11:22:33
+	status: active
+lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> mtu 16384
+	inet 127.0.0.1 netmask 0xff000000
+"#;
+
+        let rows = parse_macos_ifconfig_mac_map(output);
+
+        assert_eq!(rows.get("en0"), Some(&"88:c9:b3:b3:02:58".to_string()));
+        assert_eq!(rows.get("awdl0"), Some(&"36:7f:4a:11:22:33".to_string()));
+        assert!(!rows.contains_key("lo0"));
     }
 
     #[test]
