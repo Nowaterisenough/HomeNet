@@ -4,12 +4,14 @@ import { join } from "node:path";
 const root = process.cwd();
 let workflow = "";
 let versionScript = "";
+let manifestScript = "";
 try {
   workflow = readFileSync(join(root, ".github/workflows/build.yml"), "utf8");
   versionScript = readFileSync(join(root, "scripts/apply-release-version.mjs"), "utf8");
+  manifestScript = readFileSync(join(root, "scripts/generate-updater-manifest.mjs"), "utf8");
 } catch {
   console.error("CI workflow checks failed:");
-  console.error("- Missing .github/workflows/build.yml or scripts/apply-release-version.mjs");
+  console.error("- Missing .github/workflows/build.yml or release helper scripts");
   process.exit(1);
 }
 
@@ -40,11 +42,21 @@ const requiredSnippets = [
   "--bundles nsis",
   "portableGlob:",
   "installerGlob:",
+  "updaterGlob:",
+  "updaterSuffix:",
   "portableMode: zip",
   "needs: metadata",
   "Apply release version",
   "HOMENET_RELEASE_VERSION: ${{ needs.metadata.outputs.release_version }}",
   "node scripts/apply-release-version.mjs",
+  "node --test scripts/generate-updater-manifest.test.mjs",
+  "Validate updater signing secrets",
+  "HOMENET_UPDATER_PUBLIC_KEY: ${{ secrets.HOMENET_UPDATER_PUBLIC_KEY }}",
+  "TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}",
+  "TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}",
+  "Build Tauri app with updater artifacts",
+  "--config src-tauri/tauri.updater.conf.json",
+  "未找到更新签名",
   "release:",
   "if: ${{ github.event_name != 'pull_request' }}",
   "- metadata",
@@ -80,8 +92,10 @@ const requiredSnippets = [
   "HomeNet_${{ needs.metadata.outputs.release_tag }}_${{ matrix.installerSuffix }}",
   "portableSuffix: macos-arm64-app.zip",
   "installerSuffix: macos-arm64.dmg",
+  "updaterSuffix: macos-arm64-app.tar.gz",
   "portableSuffix: windows-x64-portable.zip",
   "installerSuffix: windows-x64-setup.exe",
+  "updaterSuffix: windows-x64-setup.exe",
   "artifactName: HomeNet-macos-arm64",
   "artifactName: HomeNet-windows-x64",
   "actions/upload-artifact@v4",
@@ -89,6 +103,10 @@ const requiredSnippets = [
   "actions/setup-node@v4",
   "dtolnay/rust-toolchain@stable",
   "pnpm install --frozen-lockfile",
+  "Generate updater manifest",
+  "HOMENET_RELEASE_TAG: ${{ needs.metadata.outputs.release_tag }}",
+  "HOMENET_RELEASE_NOTES: ${{ steps.build_changelog.outputs.changelog }}",
+  "node scripts/generate-updater-manifest.mjs",
 ];
 
 const missing = requiredSnippets.filter((snippet) => !workflow.includes(snippet));
@@ -104,6 +122,22 @@ const requiredVersionScriptSnippets = [
 ];
 const missingVersionScript = requiredVersionScriptSnippets.filter(
   (snippet) => !versionScript.includes(snippet),
+);
+const requiredManifestScriptSnippets = [
+  "buildUpdaterManifest",
+  "writeUpdaterManifest",
+  "windows-x86_64-nsis",
+  "windows-x86_64",
+  "darwin-aarch64-app",
+  "darwin-aarch64",
+  "latest.json",
+  "Missing updater signature",
+  "GITHUB_REPOSITORY",
+  "HOMENET_RELEASE_VERSION",
+  "HOMENET_RELEASE_TAG",
+];
+const missingManifestScript = requiredManifestScriptSnippets.filter(
+  (snippet) => !manifestScript.includes(snippet),
 );
 const forbiddenSnippets = [
   "网络管家",
@@ -124,14 +158,7 @@ const forbiddenSnippets = [
   "assetMode:",
   "artifactGlob:",
   "windows-x64-portable.exe",
-  "updaterGlob:",
-  "updaterSuffix:",
   "updaterTargets:",
-  "HOMENET_UPDATER_PUBLIC_KEY",
-  "TAURI_SIGNING_PRIVATE_KEY",
-  "TAURI_SIGNING_PRIVATE_KEY_PASSWORD",
-  "--config src-tauri/tauri.updater.conf.json",
-  "src-tauri/tauri.updater.conf.json",
   "Import Apple Developer Certificate",
   "Resolve Apple signing identity",
   "APPLE_CERTIFICATE",
@@ -146,8 +173,6 @@ const forbiddenSnippets = [
   "codesign --verify",
   "spctl -a",
   "Read-UpdaterSignature",
-  "Generate updater manifest",
-  "latest.json",
   "Resolve release settings",
   "updater_enabled",
   "macos_signing_enabled",
@@ -162,6 +187,7 @@ const forbidden = forbiddenSnippets.filter((snippet) => workflow.includes(snippe
 if (
   missing.length > 0 ||
   missingVersionScript.length > 0 ||
+  missingManifestScript.length > 0 ||
   forbidden.length > 0
 ) {
   console.error("CI workflow checks failed:");
@@ -170,6 +196,9 @@ if (
   }
   for (const snippet of missingVersionScript) {
     console.error(`- Missing version script ${snippet}`);
+  }
+  for (const snippet of missingManifestScript) {
+    console.error(`- Missing manifest script ${snippet}`);
   }
   for (const snippet of forbidden) {
     console.error(`- Forbidden ${snippet}`);

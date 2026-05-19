@@ -68,9 +68,11 @@ jobs:
             args: --target aarch64-apple-darwin --bundles app,dmg
             portableGlob: src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app
             installerGlob: src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+            updaterGlob: src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz
             artifactName: HomeNet-macos-arm64
             portableSuffix: macos-arm64-app.zip
             installerSuffix: macos-arm64.dmg
+            updaterSuffix: macos-arm64-app.tar.gz
             portableMode: zip
           - label: Windows x64
             runner: windows-latest
@@ -78,9 +80,11 @@ jobs:
             args: --target x86_64-pc-windows-msvc --bundles nsis
             portableGlob: src-tauri/target/x86_64-pc-windows-msvc/release/homenet.exe
             installerGlob: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+            updaterGlob: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
             artifactName: HomeNet-windows-x64
             portableSuffix: windows-x64-portable.zip
             installerSuffix: windows-x64-setup.exe
+            updaterSuffix: windows-x64-setup.exe
             portableMode: zip
 
     steps:
@@ -117,13 +121,43 @@ jobs:
           node scripts/verify-ui-reference.mjs
           node scripts/verify-port-expression.mjs
           node scripts/verify-ci-workflow.mjs
+          node --test scripts/generate-updater-manifest.test.mjs
 
       - name: Build Tauri app
+        if: ${{ github.event_name == 'pull_request' }}
         uses: tauri-apps/tauri-action@v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           args: ${{ matrix.args }}
+
+      - name: Validate updater signing secrets
+        if: ${{ github.event_name != 'pull_request' }}
+        shell: bash
+        env:
+          HOMENET_UPDATER_PUBLIC_KEY: ${{ secrets.HOMENET_UPDATER_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [[ -z "${HOMENET_UPDATER_PUBLIC_KEY}" ]]; then
+            echo "HOMENET_UPDATER_PUBLIC_KEY secret is required for updater-enabled release builds." >&2
+            exit 1
+          fi
+          if [[ -z "${TAURI_SIGNING_PRIVATE_KEY}" ]]; then
+            echo "TAURI_SIGNING_PRIVATE_KEY secret is required for updater-enabled release builds." >&2
+            exit 1
+          fi
+
+      - name: Build Tauri app with updater artifacts
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: tauri-apps/tauri-action@v0.6.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMENET_UPDATER_PUBLIC_KEY: ${{ secrets.HOMENET_UPDATER_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          args: ${{ matrix.args }} --config src-tauri/tauri.updater.conf.json
 
       - name: Normalize package name
         shell: pwsh
@@ -162,6 +196,21 @@ jobs:
           Export-Artifact $portable $portableTarget "${{ matrix.portableMode }}"
           $installer = Get-FirstArtifact "${{ matrix.installerGlob }}" "安装产物"
           Export-Artifact $installer $installerTarget "file"
+          if ("${{ github.event_name }}" -ne "pull_request") {
+            $updater = Get-FirstArtifact "${{ matrix.updaterGlob }}" "更新包"
+            $updaterTarget = Join-Path release-assets "HomeNet_${{ needs.metadata.outputs.release_tag }}_${{ matrix.updaterSuffix }}"
+            if ($updater.FullName -ne $installer.FullName) {
+              Export-Artifact $updater $updaterTarget "file"
+            } elseif ($updaterTarget -ne $installerTarget) {
+              Copy-Item -LiteralPath $installerTarget -Destination $updaterTarget -Force
+            }
+
+            $signatureSource = "$($updater.FullName).sig"
+            if (-not (Test-Path -LiteralPath $signatureSource)) {
+              throw "未找到更新签名: ${signatureSource}"
+            }
+            Copy-Item -LiteralPath $signatureSource -Destination "$updaterTarget.sig" -Force
+          }
           Get-ChildItem release-assets
 
       - name: Upload package artifact
@@ -238,6 +287,14 @@ jobs:
             }
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate updater manifest
+        env:
+          HOMENET_RELEASE_VERSION: ${{ needs.metadata.outputs.release_version }}
+          HOMENET_RELEASE_TAG: ${{ needs.metadata.outputs.release_tag }}
+          HOMENET_RELEASE_NOTES: ${{ steps.build_changelog.outputs.changelog }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: node scripts/generate-updater-manifest.mjs
 
       - name: Move version tag to this build
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
