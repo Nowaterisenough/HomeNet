@@ -77,8 +77,10 @@ const availableIpOptions = computed(() => {
 });
 const previewRows = computed(() => {
   const current = draft.value;
-  if (!selectedRow.value || !current?.domain.trim() || !current.sub_domain.trim()) return [];
-  return [[deviceDisplayNameForDraft(), `${current.sub_domain.trim()}.${current.domain.trim()}`]];
+  const domain = current?.domain.trim() ?? "";
+  const sub = current?.sub_domain.trim() ?? "";
+  if (!selectedRow.value || !domain) return [];
+  return [[deviceDisplayNameForDraft(), sub ? `${sub}.${domain}` : domain]];
 });
 
 function uniqueStrings(values: string[]): string[] {
@@ -137,8 +139,10 @@ function configForDevice(device: LanDevice): DeviceDdnsConfig | null {
 }
 
 function configuredDomain(config: DeviceDdnsConfig | null): string {
-  if (!config?.domain.trim() || !config.sub_domain.trim()) return "-";
-  return `${config.sub_domain.trim()}.${config.domain.trim()}`;
+  const domain = config?.domain.trim() ?? "";
+  const sub = config?.sub_domain.trim() ?? "";
+  if (!domain) return "-";
+  return sub ? `${sub}.${domain}` : domain;
 }
 
 function mapLanDevice(device: LanDevice, index: number): DeviceRow {
@@ -253,13 +257,13 @@ function validateDraft(requireEnabled: boolean): string {
   if (!current.access_key_id.trim() || !current.access_key_secret.trim()) {
     return "请填写完整的 AccessKey ID 和 Secret";
   }
-  if (!current.domain.trim() || !current.sub_domain.trim()) {
-    return "请填写主域名和子域名";
+  if (!current.domain.trim()) {
+    return "请填写主域名";
   }
   if (!["A", "AAAA"].includes(current.record_type.trim().toUpperCase())) {
     return "记录类型仅支持 A 或 AAAA";
   }
-  if (current.sub_domain.includes(",")) return "每台设备请填写一个独立子域名";
+  if (current.sub_domain.trim().includes(",")) return "每台设备请填写一个独立子域名";
   return "";
 }
 
@@ -275,6 +279,7 @@ function buildPayload(): DeviceDdnsConfig | null {
   return {
     ...current,
     provider: current.provider || defaultConfig.provider,
+    sub_domain: current.sub_domain.trim(),
     record_type: recordType,
     ttl: Number(current.ttl) || defaultConfig.ttl,
     interval_minutes: Number(current.interval_minutes) || defaultConfig.interval_minutes,
@@ -522,7 +527,7 @@ onMounted(() => {
             <input v-model="draft.access_key_id" type="text" autocomplete="off" />
           </label>
           <label>
-            <span>子域名</span>
+            <span>子域名（可选）</span>
             <input v-model="draft.sub_domain" type="text" />
           </label>
           <label>

@@ -66,6 +66,25 @@ impl AliyunDdns {
         }
     }
 
+    fn record_rr(config: &DdnsConfig) -> String {
+        let sub_domain = config.sub_domain.trim();
+        if sub_domain.is_empty() {
+            "@".to_string()
+        } else {
+            sub_domain.to_string()
+        }
+    }
+
+    fn record_fqdn(config: &DdnsConfig) -> String {
+        let domain = config.domain.trim();
+        let sub_domain = config.sub_domain.trim();
+        if sub_domain.is_empty() {
+            domain.to_string()
+        } else {
+            format!("{}.{}", sub_domain, domain)
+        }
+    }
+
     pub fn acme_challenge_rr(identifier: &str, dns_domain: &str) -> Result<String, String> {
         let identifier = identifier
             .trim()
@@ -138,7 +157,7 @@ impl AliyunDdns {
             return Err("AccessKey ID 或 Secret 未配置".to_string());
         }
 
-        let sub_domain = format!("{}.{}", self.config.sub_domain, self.config.domain);
+        let sub_domain = Self::record_fqdn(&self.config);
         match self.describe_sub_domain_records(&sub_domain, None).await {
             Ok(records) => {
                 add_log(
@@ -161,7 +180,7 @@ impl AliyunDdns {
 
     /// Fetch the current DNS record value for the configured subdomain.
     pub async fn describe_record(&self) -> Result<String, String> {
-        let sub_domain = format!("{}.{}", self.config.sub_domain, self.config.domain);
+        let sub_domain = Self::record_fqdn(&self.config);
         let records = self
             .describe_sub_domain_records(&sub_domain, Some(&self.config.record_type))
             .await?;
@@ -188,7 +207,8 @@ impl AliyunDdns {
             ipv4
         };
 
-        let sub_domain = format!("{}.{}", self.config.sub_domain, self.config.domain);
+        let sub_domain = Self::record_fqdn(&self.config);
+        let rr = Self::record_rr(&self.config);
 
         // Query existing record
         let records = self
@@ -196,7 +216,7 @@ impl AliyunDdns {
             .await?;
 
         if let Some(record) = records.into_iter().find(|r| {
-            r.rr == self.config.sub_domain && r.record_type == self.config.record_type
+            r.rr == rr && r.record_type == self.config.record_type
         }) {
             if record.value == target_ip {
                 add_log(
@@ -261,7 +281,7 @@ impl AliyunDdns {
     async fn update_domain_record(&self, record_id: &str, value: &str) -> Result<(), String> {
         self.update_domain_record_with(
             record_id,
-            &self.config.sub_domain,
+            &Self::record_rr(&self.config),
             &self.config.record_type,
             value,
             self.config.ttl,
@@ -299,7 +319,7 @@ impl AliyunDdns {
     async fn add_domain_record(&self, value: &str) -> Result<(), String> {
         self.add_domain_record_with(
             &self.config.domain,
-            &self.config.sub_domain,
+            &Self::record_rr(&self.config),
             &self.config.record_type,
             value,
             self.config.ttl,
@@ -543,5 +563,29 @@ mod tests {
             .expect_err("outside zone should be rejected");
 
         assert!(error.contains("DNS 主域名"));
+    }
+
+    #[test]
+    fn empty_sub_domain_targets_root_domain_record() {
+        let config = DdnsConfig {
+            domain: "example.com".to_string(),
+            sub_domain: "  ".to_string(),
+            ..DdnsConfig::default()
+        };
+
+        assert_eq!(AliyunDdns::record_rr(&config), "@");
+        assert_eq!(AliyunDdns::record_fqdn(&config), "example.com");
+    }
+
+    #[test]
+    fn non_empty_sub_domain_targets_named_record() {
+        let config = DdnsConfig {
+            domain: "example.com".to_string(),
+            sub_domain: "home".to_string(),
+            ..DdnsConfig::default()
+        };
+
+        assert_eq!(AliyunDdns::record_rr(&config), "home");
+        assert_eq!(AliyunDdns::record_fqdn(&config), "home.example.com");
     }
 }

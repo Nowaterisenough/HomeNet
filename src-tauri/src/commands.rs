@@ -292,34 +292,45 @@ fn shell_quote(value: &str) -> String {
 }
 
 fn ddns_domain(config: &DdnsConfig) -> String {
-    if config.domain.trim().is_empty() || config.sub_domain.trim().is_empty() {
+    let domain = config.domain.trim();
+    let sub_domain = config.sub_domain.trim();
+    if domain.is_empty() {
         "未配置域名".to_string()
+    } else if sub_domain.is_empty() {
+        domain.to_string()
     } else {
-        format!("{}.{}", config.sub_domain.trim(), config.domain.trim())
+        format!("{}.{}", sub_domain, domain)
     }
 }
+
 fn validate_ddns_config(config: &DdnsConfig) -> Result<(), String> {
     if config.access_key_id.trim().is_empty() || config.access_key_secret.trim().is_empty() {
         return Err("AccessKey ID 或 Secret 未配置".to_string());
     }
-    if config.domain.trim().is_empty() || config.sub_domain.trim().is_empty() {
-        return Err("主域名或子域名未配置".to_string());
+    if config.domain.trim().is_empty() {
+        return Err("主域名未配置".to_string());
     }
     Ok(())
 }
+
 pub(crate) fn device_ddns_domain(config: &DeviceDdnsConfig) -> String {
-    if config.domain.trim().is_empty() || config.sub_domain.trim().is_empty() {
+    let domain = config.domain.trim();
+    let sub_domain = config.sub_domain.trim();
+    if domain.is_empty() {
         "未配置域名".to_string()
+    } else if sub_domain.is_empty() {
+        domain.to_string()
     } else {
-        format!("{}.{}", config.sub_domain.trim(), config.domain.trim())
+        format!("{}.{}", sub_domain, domain)
     }
 }
+
 pub(crate) fn validate_device_ddns_config(config: &DeviceDdnsConfig) -> Result<(), String> {
     if config.access_key_id.trim().is_empty() || config.access_key_secret.trim().is_empty() {
         return Err("AccessKey ID 或 Secret 未配置".to_string());
     }
-    if config.domain.trim().is_empty() || config.sub_domain.trim().is_empty() {
-        return Err("主域名或子域名未配置".to_string());
+    if config.domain.trim().is_empty() {
+        return Err("主域名未配置".to_string());
     }
     let record_type = config.record_type.trim().to_uppercase();
     if record_type != "A" && record_type != "AAAA" {
@@ -330,6 +341,7 @@ pub(crate) fn validate_device_ddns_config(config: &DeviceDdnsConfig) -> Result<(
     }
     Ok(())
 }
+
 pub(crate) fn to_device_ddns_aliyun_config(config: &DeviceDdnsConfig) -> DdnsConfig {
     DdnsConfig {
         enabled: config.enabled,
@@ -1857,6 +1869,35 @@ mod tests {
         ));
         assert_eq!(app_config.device_ddns_configs.len(), 1);
         assert_eq!(app_config.device_ddns_configs[0].device_id, "router");
+    }
+
+    #[test]
+    fn empty_ddns_sub_domain_uses_root_domain_and_validates() {
+        let config = DdnsConfig {
+            access_key_id: "ak".to_string(),
+            access_key_secret: "secret".to_string(),
+            domain: "example.com".to_string(),
+            sub_domain: "  ".to_string(),
+            ..DdnsConfig::default()
+        };
+
+        assert_eq!(ddns_domain(&config), "example.com");
+        assert!(validate_ddns_config(&config).is_ok());
+    }
+
+    #[test]
+    fn empty_device_ddns_sub_domain_uses_root_domain_and_validates() {
+        let config = DeviceDdnsConfig {
+            access_key_id: "ak".to_string(),
+            access_key_secret: "secret".to_string(),
+            domain: "example.com".to_string(),
+            sub_domain: "  ".to_string(),
+            device_mac: "aa:bb:cc:dd:ee:ff".to_string(),
+            ..DeviceDdnsConfig::default()
+        };
+
+        assert_eq!(device_ddns_domain(&config), "example.com");
+        assert!(validate_device_ddns_config(&config).is_ok());
     }
 
     #[test]

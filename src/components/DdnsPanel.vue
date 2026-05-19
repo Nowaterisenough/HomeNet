@@ -32,9 +32,11 @@ const statusMessage = ref("");
 const messageType = ref<"info" | "success" | "error">("info");
 
 const previewRows = computed(() => {
-  if (!config.value.domain.trim() || !subDomain.value.trim()) return [];
+  const domain = config.value.domain.trim();
+  const sub = subDomain.value.trim();
+  if (!domain) return [];
   const deviceName = config.value.device_name.trim() || "已绑定设备";
-  return [[deviceName, `${subDomain.value.trim()}.${config.value.domain.trim()}`]];
+  return [[deviceName, sub ? `${sub}.${domain}` : domain]];
 });
 
 function normalizeConfig(data: Partial<DeviceDdnsConfig> | null | undefined): DeviceDdnsConfig {
@@ -77,10 +79,10 @@ function validateConfig(): string {
   if (!config.value.access_key_id.trim() || !config.value.access_key_secret.trim()) {
     return "请填写完整的 AccessKey ID 和 Secret";
   }
-  if (!config.value.domain.trim() || !subDomain.value.trim()) {
-    return "请填写主域名和子域名";
+  if (!config.value.domain.trim()) {
+    return "请填写主域名";
   }
-  if (subDomain.value.includes(",")) {
+  if (subDomain.value.trim().includes(",")) {
     return "当前后端按单设备 DDNS 生效，请填写一个子域名";
   }
   return "";
@@ -171,7 +173,7 @@ onMounted(() => {
           </select>
         </label>
         <label>
-          <span>子域名</span>
+          <span>子域名（可选）</span>
           <input v-model="subDomain" type="text" />
         </label>
         <label>
