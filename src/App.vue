@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Menu } from "@lucide/vue";
 import StatusCard from "./components/StatusCard.vue";
 import DeviceDdnsPanel from "./components/DeviceDdnsPanel.vue";
@@ -32,9 +32,6 @@ const appVersion = ref("0.1.4");
 const updateStatusMessage = ref("");
 const updateStatusType = ref<"normal" | "success" | "error">("normal");
 
-const DESIGN_WIDTH = 1600;
-const DESIGN_HEIGHT = 1000;
-const referenceWindowSize = new LogicalSize(DESIGN_WIDTH, DESIGN_HEIGHT);
 let runtimeTimer: ReturnType<typeof setInterval> | null = null;
 let deviceTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -95,19 +92,6 @@ const statusCards = computed(() => [
     status: "normal" as const,
   },
 ]);
-
-function syncUiScale() {
-  const scale = Math.min(
-    window.innerWidth / DESIGN_WIDTH,
-    window.innerHeight / DESIGN_HEIGHT,
-  );
-  const frameX = Math.max(0, (window.innerWidth - DESIGN_WIDTH * scale) / 2);
-  const frameY = Math.max(0, (window.innerHeight - DESIGN_HEIGHT * scale) / 2);
-
-  document.documentElement.style.setProperty("--ui-scale", scale.toFixed(4));
-  document.documentElement.style.setProperty("--frame-x", `${frameX.toFixed(2)}px`);
-  document.documentElement.style.setProperty("--frame-y", `${frameY.toFixed(2)}px`);
-}
 
 function displayValue(value: string): string {
   return value?.trim() ? value : "--";
@@ -243,24 +227,7 @@ function currentTauriWindow() {
   }
 }
 
-async function restoreReferenceWindow() {
-  try {
-    const appWindow = currentTauriWindow();
-    if (!appWindow) return;
-    if (await appWindow.isMaximized()) {
-      await appWindow.unmaximize();
-    }
-    await appWindow.setSize(referenceWindowSize);
-    await appWindow.center();
-  } catch {
-    // Browser preview and restricted window managers do not expose Tauri sizing APIs.
-  }
-}
-
 onMounted(() => {
-  syncUiScale();
-  window.addEventListener("resize", syncUiScale);
-  restoreReferenceWindow();
   loadRuntimeStatus();
   loadDeviceSummary();
   loadAutoStart();
@@ -271,7 +238,6 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
-  window.removeEventListener("resize", syncUiScale);
   window.removeEventListener("homenet:refresh-status", loadRuntimeStatus);
   window.removeEventListener("homenet:devices-refresh", loadDeviceSummary);
   if (runtimeTimer !== null) {
@@ -372,11 +338,6 @@ onUnmounted(() => {
 }
 
 :root {
-  --design-width: 1600px;
-  --design-height: 1000px;
-  --ui-scale: 1;
-  --frame-x: 0px;
-  --frame-y: 0px;
   --color-window-bg: #f7f9fc;
   --color-card-bg: #ffffff;
   --color-primary: #1769f6;
@@ -423,7 +384,9 @@ body {
 }
 
 #app {
-  height: 100%;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
 }
 
 button,
@@ -444,15 +407,13 @@ select {
 
 <style scoped>
 .window-frame {
-  width: var(--design-width);
-  height: var(--design-height);
+  width: 100vw;
+  height: 100vh;
   overflow: hidden;
-  transform: translate(var(--frame-x), var(--frame-y)) scale(var(--ui-scale));
-  transform-origin: top left;
-  border: 1px solid #b9c6d8;
-  border-radius: 8px;
+  border: 0;
+  border-radius: 0;
   background: var(--color-window-bg);
-  box-shadow: 0 18px 55px rgba(24, 42, 72, 0.18);
+  box-shadow: none;
 }
 
 .titlebar {
@@ -587,9 +548,9 @@ select {
 }
 
 .main-content {
-  height: calc(var(--design-height) - var(--titlebar-height));
+  height: calc(100vh - var(--titlebar-height));
   display: grid;
-  grid-template-rows: 106px 594px 188px;
+  grid-template-rows: 106px minmax(0, 1fr) minmax(150px, 0.34fr);
   gap: 12px;
   padding: 6px 18px 18px;
   overflow: hidden;
@@ -605,8 +566,8 @@ select {
 .dashboard-grid {
   min-height: 0;
   display: grid;
-  grid-template-columns: 684px minmax(0, 1fr);
-  grid-template-rows: 304px 278px;
+  grid-template-columns: minmax(560px, 0.95fr) minmax(620px, 1.05fr);
+  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
   gap: 12px;
 }
 
