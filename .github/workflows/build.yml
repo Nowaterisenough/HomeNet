@@ -124,8 +124,57 @@ jobs:
           node scripts/verify-port-expression.mjs
           node scripts/verify-ci-workflow.mjs
 
+      - name: Resolve release settings
+        id: release_settings
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          function Test-Set($value) {
+            return -not [string]::IsNullOrWhiteSpace($value)
+          }
+
+          $isPullRequest = "${{ github.event_name }}" -eq "pull_request"
+          $isMacOS = "${{ matrix.runner }}" -eq "macos-15"
+          $hasUpdaterPublicKey = Test-Set $env:TAURI_SIGNING_PUBLIC_KEY
+          $hasUpdaterPrivateKey = Test-Set $env:TAURI_SIGNING_PRIVATE_KEY
+          if ((-not $isPullRequest) -and ($hasUpdaterPublicKey -xor $hasUpdaterPrivateKey)) {
+            Write-Error "TAURI_SIGNING_PUBLIC_KEY and TAURI_SIGNING_PRIVATE_KEY must be set together to generate updater artifacts."
+            exit 1
+          }
+
+          $updaterEnabled = (-not $isPullRequest) -and $hasUpdaterPublicKey -and $hasUpdaterPrivateKey
+          $appleSecrets = [ordered]@{
+            APPLE_CERTIFICATE = $env:APPLE_CERTIFICATE
+            APPLE_CERTIFICATE_PASSWORD = $env:APPLE_CERTIFICATE_PASSWORD
+            KEYCHAIN_PASSWORD = $env:KEYCHAIN_PASSWORD
+            APPLE_ID = $env:APPLE_ID
+            APPLE_PASSWORD = $env:APPLE_PASSWORD
+            APPLE_TEAM_ID = $env:APPLE_TEAM_ID
+          }
+          $missingAppleSecrets = @($appleSecrets.GetEnumerator() | Where-Object { -not (Test-Set $_.Value) } | ForEach-Object { $_.Key })
+          $presentAppleSecrets = @($appleSecrets.GetEnumerator() | Where-Object { Test-Set $_.Value } | ForEach-Object { $_.Key })
+          if ((-not $isPullRequest) -and $isMacOS -and $presentAppleSecrets.Count -gt 0 -and $missingAppleSecrets.Count -gt 0) {
+            Write-Error "Apple signing secrets are partially configured. Set all of APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, KEYCHAIN_PASSWORD, APPLE_ID, APPLE_PASSWORD, and APPLE_TEAM_ID, or remove them all to build unsigned macOS artifacts."
+            exit 1
+          }
+
+          $macosSigningEnabled = (-not $isPullRequest) -and $isMacOS -and ($missingAppleSecrets.Count -eq 0)
+          $tauriConfigArgs = if ($updaterEnabled) { "--config src-tauri/tauri.updater.conf.json" } else { "" }
+
+          "updater_enabled=$($updaterEnabled.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          "macos_signing_enabled=$($macosSigningEnabled.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          "tauri_config_args=$tauriConfigArgs" >> $env:GITHUB_OUTPUT
+
       - name: Import Apple Developer Certificate
-        if: ${{ matrix.runner == 'macos-15' && github.event_name != 'pull_request' }}
+        if: ${{ steps.release_settings.outputs.macos_signing_enabled == 'true' }}
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -141,7 +190,7 @@ jobs:
           security find-identity -v -p codesigning build.keychain
 
       - name: Resolve Apple signing identity
-        if: ${{ matrix.runner == 'macos-15' && github.event_name != 'pull_request' }}
+        if: ${{ steps.release_settings.outputs.macos_signing_enabled == 'true' }}
         shell: bash
         run: |
           CERT_INFO="$(security find-identity -v -p codesigning build.keychain | grep "Developer ID Application" | head -n 1 || true)"
@@ -159,20 +208,20 @@ jobs:
         uses: tauri-apps/tauri-action@v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HOMENET_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY_RESOLVED || secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          HOMENET_UPDATER_PUBLIC_KEY: ${{ steps.release_settings.outputs.updater_enabled == 'true' && secrets.TAURI_SIGNING_PUBLIC_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ steps.release_settings.outputs.updater_enabled == 'true' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ steps.release_settings.outputs.updater_enabled == 'true' && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
+          APPLE_CERTIFICATE: ${{ steps.release_settings.outputs.macos_signing_enabled == 'true' && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ steps.release_settings.outputs.macos_signing_enabled == 'true' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ steps.release_settings.outputs.macos_signing_enabled == 'true' && env.APPLE_SIGNING_IDENTITY_RESOLVED || '' }}
+          APPLE_ID: ${{ steps.release_settings.outputs.macos_signing_enabled == 'true' && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ steps.release_settings.outputs.macos_signing_enabled == 'true' && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ steps.release_settings.outputs.macos_signing_enabled == 'true' && secrets.APPLE_TEAM_ID || '' }}
         with:
-          args: ${{ matrix.args }} ${{ github.event_name != 'pull_request' && '--config src-tauri/tauri.updater.conf.json' || '' }}
+          args: ${{ matrix.args }} ${{ steps.release_settings.outputs.tauri_config_args }}
 
       - name: Staple macOS app notarization ticket
-        if: ${{ matrix.runner == 'macos-15' && github.event_name != 'pull_request' }}
+        if: ${{ steps.release_settings.outputs.macos_signing_enabled == 'true' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -192,7 +241,7 @@ jobs:
           xcrun stapler staple "${DMG_PATH}"
 
       - name: Verify macOS signing and notarization
-        if: ${{ matrix.runner == 'macos-15' && github.event_name != 'pull_request' }}
+        if: ${{ steps.release_settings.outputs.macos_signing_enabled == 'true' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -260,7 +309,7 @@ jobs:
           Export-Artifact $portable $portableTarget "${{ matrix.portableMode }}"
           $installer = Get-FirstArtifact "${{ matrix.installerGlob }}" "安装产物"
           Export-Artifact $installer $installerTarget "file"
-          if ("${{ github.event_name }}" -ne "pull_request") {
+          if ("${{ steps.release_settings.outputs.updater_enabled }}" -eq "true") {
             $updaterTarget = Join-Path release-assets "HomeNet_${{ needs.metadata.outputs.release_tag }}_${{ matrix.updaterSuffix }}"
             $updater = Get-FirstArtifact "${{ matrix.updaterGlob }}" "updater artifact"
             Export-Artifact $updater $updaterTarget "file"
@@ -350,7 +399,29 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Resolve release settings
+        id: release_settings
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          function Test-Set($value) {
+            return -not [string]::IsNullOrWhiteSpace($value)
+          }
+
+          $hasUpdaterPublicKey = Test-Set $env:TAURI_SIGNING_PUBLIC_KEY
+          $hasUpdaterPrivateKey = Test-Set $env:TAURI_SIGNING_PRIVATE_KEY
+          if ($hasUpdaterPublicKey -xor $hasUpdaterPrivateKey) {
+            Write-Error "TAURI_SIGNING_PUBLIC_KEY and TAURI_SIGNING_PRIVATE_KEY must be set together to generate updater artifacts."
+            exit 1
+          }
+
+          $updaterEnabled = $hasUpdaterPublicKey -and $hasUpdaterPrivateKey
+          "updater_enabled=$($updaterEnabled.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+
       - name: Generate updater manifest
+        if: ${{ steps.release_settings.outputs.updater_enabled == 'true' }}
         shell: pwsh
         env:
           RELEASE_CHANGELOG: ${{ steps.build_changelog.outputs.changelog }}
