@@ -1,8 +1,25 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { Check, RefreshCw, Router, Save, ShieldCheck, Zap } from "@lucide/vue";
+import { Pencil, RefreshCw, Save, Search, Trash2, UserPlus, Zap } from "@lucide/vue";
 import type { DeviceDdnsConfig, LanDevice } from "../types";
+import { useDraggableModal } from "../composables/useDraggableModal";
+
+interface DeviceRow {
+  id: string;
+  name: string;
+  nativeName: string;
+  ip: string;
+  mac: string;
+  online: boolean;
+  configured: boolean;
+  enabled: boolean;
+  domain: string;
+  lastSync: string;
+  selectedIpv6: string;
+  raw: LanDevice;
+  config: DeviceDdnsConfig | null;
+}
 
 const defaultConfig: DeviceDdnsConfig = {
   enabled: false,
@@ -11,545 +28,684 @@ const defaultConfig: DeviceDdnsConfig = {
   access_key_secret: "",
   domain: "",
   sub_domain: "",
+  record_type: "AAAA",
   ttl: 600,
   interval_minutes: 10,
   device_id: "",
   device_mac: "",
   device_name: "",
   selected_ipv6: "",
+  selected_ip: "",
   last_update_time: "",
   last_result: "",
+  last_online: false,
 };
 
 const devices = ref<LanDevice[]>([]);
-const config = ref<DeviceDdnsConfig>({ ...defaultConfig });
-const selectedIpv6 = ref("");
-const currentRecord = ref("");
-const loadingDevices = ref(false);
-const loadingConfig = ref(false);
-const saving = ref(false);
-const updating = ref(false);
+const configs = ref<DeviceDdnsConfig[]>([]);
+const selectedId = ref("");
+const draft = ref<DeviceDdnsConfig | null>(null);
+const configDialogOpen = ref(false);
+const searchQuery = ref("");
+const loading = ref(false);
+const mutating = ref(false);
+const syncing = ref(false);
 const statusMessage = ref("");
 const messageType = ref<"info" | "success" | "error">("info");
-let statusTimeoutId: ReturnType<typeof window.setTimeout> | null = null;
+const { modalStyle, resetModalPosition, startModalDrag } = useDraggableModal();
 
-const busy = computed(() => loadingConfig.value || loadingDevices.value || saving.value || updating.value);
-
-const selectedDevice = computed(() =>
-  devices.value.find(
-    (device) =>
-      device.id === config.value.device_id ||
-      (!!config.value.device_mac && device.mac === config.value.device_mac),
-  ),
-);
-
-const bindableDeviceCount = computed(
-  () => devices.value.filter((device) => device.global_ipv6.length > 0).length,
-);
-
-const deviceSummary = computed(() => {
-  if (loadingDevices.value) return "正在发现局域网设备";
-  return `${devices.value.length} 台设备，${bindableDeviceCount.value} 台可绑定公网 IPv6`;
+const rows = computed(() => devices.value.map(mapLanDevice));
+const selectedRow = computed(() => rows.value.find((row) => row.id === selectedId.value) ?? null);
+const selectedCount = computed(() => (selectedRow.value ? 1 : 0));
+const filteredDevices = computed(() => {
+  const query = searchQuery.value.trim().toLowerCase();
+  if (!query) return rows.value;
+  return rows.value.filter((device) =>
+    [device.name, device.nativeName, device.ip, device.mac, device.domain, device.selectedIpv6].some(
+      (value) => value.toLowerCase().includes(query),
+    ),
+  );
+});
+const availableIpOptions = computed(() => {
+  const row = selectedRow.value;
+  const current = draft.value;
+  if (!row || !current) return [];
+  if (current.record_type.trim().toUpperCase() === "A") {
+    return uniqueStrings(row.raw.ipv4);
+  }
+  return uniqueStrings(row.raw.global_ipv6.concat(row.raw.ipv6).filter((ip) => ip.includes(":")));
+});
+const previewRows = computed(() => {
+  const current = draft.value;
+  if (!selectedRow.value || !current?.domain.trim() || !current.sub_domain.trim()) return [];
+  return [[deviceDisplayNameForDraft(), `${current.sub_domain.trim()}.${current.domain.trim()}`]];
 });
 
-const footerText = computed(() => {
-  if (currentRecord.value) return `当前解析：${currentRecord.value}`;
-  if (config.value.last_result) return config.value.last_result;
-  if (config.value.last_update_time) return `最近更新：${config.value.last_update_time}`;
-  return "暂无设备 DDNS 更新记录";
-});
+function uniqueStrings(values: string[]): string[] {
+  return values.reduce<string[]>((result, value) => {
+    const trimmed = value.trim();
+    if (trimmed && !result.includes(trimmed)) result.push(trimmed);
+    return result;
+  }, []);
+}
+
+function displayName(device: LanDevice, index: number): string {
+  return device.hostname || device.display_name || `LAN-DEVICE-${index + 1}`;
+}
+
+function primaryIp(device: LanDevice): string {
+  return device.ipv4[0] || device.global_ipv6[0] || device.ipv6[0] || "-";
+}
+
+function firstGlobalIpv6(device: LanDevice): string {
+  return device.global_ipv6[0] || device.ipv6.find((ip) => ip.includes(":")) || "";
+}
 
 function normalizeConfig(data: Partial<DeviceDdnsConfig> | null | undefined): DeviceDdnsConfig {
   return {
     ...defaultConfig,
     ...data,
+    enabled: data?.enabled ?? defaultConfig.enabled,
     provider: data?.provider || defaultConfig.provider,
+    access_key_id: data?.access_key_id || "",
+    access_key_secret: data?.access_key_secret || "",
+    domain: data?.domain || "",
+    sub_domain: data?.sub_domain || "",
+    record_type: data?.record_type?.trim().toUpperCase() === "A" ? "A" : "AAAA",
     ttl: Number(data?.ttl) || defaultConfig.ttl,
     interval_minutes: Number(data?.interval_minutes) || defaultConfig.interval_minutes,
+    device_id: data?.device_id || "",
+    device_mac: data?.device_mac || "",
+    device_name: data?.device_name || "",
+    selected_ipv6: data?.selected_ipv6 || "",
+    selected_ip: data?.selected_ip || data?.selected_ipv6 || "",
+    last_update_time: data?.last_update_time || "",
+    last_result: data?.last_result || "",
+    last_online: data?.last_online ?? defaultConfig.last_online,
   };
 }
 
-function primaryIpv6(device: LanDevice): string {
-  return device.global_ipv6[0] || "";
+function configMatchesDevice(config: DeviceDdnsConfig, device: LanDevice): boolean {
+  const configId = config.device_id.trim();
+  if (configId && configId === device.id) return true;
+  const configMac = config.device_mac.trim();
+  return !!configMac && !!device.mac && configMac.toLowerCase() === device.mac.toLowerCase();
 }
 
-function deviceTitle(device: LanDevice): string {
-  return device.hostname || device.display_name || device.mac || device.ipv4[0] || "未知设备";
+function configForDevice(device: LanDevice): DeviceDdnsConfig | null {
+  return configs.value.find((config) => configMatchesDevice(config, device)) ?? null;
 }
 
-function deviceSubtitle(device: LanDevice): string {
-  const ipv4 = device.ipv4[0] || "无 IPv4";
-  const ipv6 = device.global_ipv6[0] || "无公网 IPv6";
-  return `${ipv4} / ${ipv6}`;
+function configuredDomain(config: DeviceDdnsConfig | null): string {
+  if (!config?.domain.trim() || !config.sub_domain.trim()) return "-";
+  return `${config.sub_domain.trim()}.${config.domain.trim()}`;
 }
 
-function isSelected(device: LanDevice): boolean {
-  return selectedDevice.value?.id === device.id;
+function mapLanDevice(device: LanDevice, index: number): DeviceRow {
+  const config = configForDevice(device);
+  const nativeName = displayName(device, index);
+  return {
+    id: device.id || device.mac || nativeName,
+    name: config?.device_name.trim() || nativeName,
+    nativeName,
+    ip: primaryIp(device),
+    mac: device.mac || "-",
+    online: device.online,
+    configured: Boolean(config),
+    enabled: Boolean(config?.enabled),
+    domain: configuredDomain(config),
+    lastSync: config?.last_update_time || "-",
+    selectedIpv6: config?.selected_ip || config?.selected_ipv6 || firstGlobalIpv6(device) || "-",
+    raw: device,
+    config,
+  };
 }
 
-function hasConfiguredDevice(): boolean {
-  return Boolean(config.value.device_id.trim() || config.value.device_mac.trim());
+function deviceDisplayNameForDraft(): string {
+  const row = selectedRow.value;
+  if (!row || !draft.value) return "";
+  return draft.value.device_name.trim() || row.nativeName;
 }
 
-function notifyLogsRefresh() {
-  window.dispatchEvent(new CustomEvent("homenet:logs-refresh"));
+function buildDraft(row: DeviceRow): DeviceDdnsConfig {
+  const existing = row.config;
+  const template = existing ?? configs.value[0] ?? defaultConfig;
+  return normalizeConfig({
+    ...template,
+    enabled: existing?.enabled ?? true,
+    device_id: row.raw.id,
+    device_mac: row.raw.mac,
+    device_name: existing?.device_name || row.name || row.nativeName,
+    record_type: existing?.record_type || "AAAA",
+    selected_ip: existing?.selected_ip || existing?.selected_ipv6 || firstGlobalIpv6(row.raw),
+    selected_ipv6: existing?.selected_ipv6 || existing?.selected_ip || firstGlobalIpv6(row.raw),
+    last_update_time: existing?.last_update_time || "",
+    last_result: existing?.last_result || "",
+    last_online: existing?.last_online ?? false,
+    sub_domain: existing?.sub_domain || "",
+  });
 }
 
-function clearStatusTimeout() {
-  if (statusTimeoutId !== null) {
-    window.clearTimeout(statusTimeoutId);
-    statusTimeoutId = null;
-  }
+function syncDraftWithSelection() {
+  const row = selectedRow.value;
+  draft.value = row ? buildDraft(row) : null;
 }
 
-function scheduleSuccessClear(message: string) {
-  clearStatusTimeout();
-  statusTimeoutId = window.setTimeout(() => {
-    if (messageType.value === "success" && statusMessage.value === message) {
-      statusMessage.value = "";
-    }
-    statusTimeoutId = null;
-  }, 5000);
-}
-
-function setStatus(message: string, type: "info" | "success" | "error") {
-  clearStatusTimeout();
-  statusMessage.value = message;
-  messageType.value = type;
-  if (type === "success") {
-    scheduleSuccessClear(message);
-  }
-}
-
-function reconcileSelectedIpv6() {
-  const matched = selectedDevice.value;
-  if (matched) {
-    if (matched.global_ipv6.includes(selectedIpv6.value)) {
-      config.value.selected_ipv6 = selectedIpv6.value;
-      return;
-    }
-
-    selectedIpv6.value = matched.global_ipv6.includes(config.value.selected_ipv6)
-      ? config.value.selected_ipv6
-      : primaryIpv6(matched);
-    config.value.selected_ipv6 = selectedIpv6.value;
-    return;
-  }
-
-  if (!hasConfiguredDevice()) {
-    selectedIpv6.value = "";
-    config.value.selected_ipv6 = "";
-  }
-}
-
-function selectDevice(device: LanDevice) {
-  if (busy.value || device.global_ipv6.length === 0) return;
-
-  config.value.device_id = device.id;
-  config.value.device_mac = device.mac;
-  config.value.device_name = deviceTitle(device);
-  config.value.selected_ipv6 = primaryIpv6(device);
-  reconcileSelectedIpv6();
-  statusMessage.value = "";
-}
-
-function validateConfig(requireEnabled: boolean): string {
-  if (requireEnabled && !config.value.enabled) {
-    return "设备 DDNS 未启用";
-  }
-  if (!config.value.access_key_id.trim() || !config.value.access_key_secret.trim()) {
-    return "请填写完整的 AccessKey ID 和 Secret";
-  }
-  if (!config.value.domain.trim() || !config.value.sub_domain.trim()) {
-    return "请填写主域名和子域名";
-  }
-  if (!hasConfiguredDevice()) {
-    return "请选择一台有公网 IPv6 的设备";
-  }
-  if (!selectedIpv6.value.trim()) {
-    return "选中设备没有公网 IPv6";
-  }
-  if (selectedDevice.value && !selectedDevice.value.global_ipv6.includes(selectedIpv6.value)) {
-    return "设备 IPv6 已过期，请重新选择";
-  }
-  return "";
+async function loadConfigs() {
+  configs.value = (await invoke<DeviceDdnsConfig[]>("list_device_ddns_configs")).map(normalizeConfig);
 }
 
 async function loadDevices() {
-  if (loadingDevices.value || saving.value || updating.value) return;
-
-  loadingDevices.value = true;
+  loading.value = true;
   try {
+    await loadConfigs();
     devices.value = await invoke<LanDevice[]>("list_lan_devices");
-    reconcileSelectedIpv6();
-  } catch (e: any) {
+    const current = rows.value.find((row) => row.id === selectedId.value);
+    const next = current ?? rows.value.find((row) => row.configured) ?? rows.value[0] ?? null;
+    selectedId.value = next?.id ?? "";
+    syncDraftWithSelection();
+    statusMessage.value = "";
+    window.dispatchEvent(new CustomEvent("homenet:devices-refresh"));
+  } catch (e) {
     devices.value = [];
-    setStatus(`设备发现失败：${String(e)}`, "error");
+    configs.value = [];
+    selectedId.value = "";
+    draft.value = null;
+    statusMessage.value = `读取局域网设备失败：${String(e)}`;
+    messageType.value = "error";
   } finally {
-    loadingDevices.value = false;
+    loading.value = false;
   }
 }
 
-async function loadConfig() {
-  if (loadingConfig.value) return;
-
-  loadingConfig.value = true;
-  try {
-    const data = await invoke<DeviceDdnsConfig>("get_device_ddns_config");
-    config.value = normalizeConfig(data);
-    selectedIpv6.value = config.value.selected_ipv6;
-    reconcileSelectedIpv6();
-  } catch (e: any) {
-    config.value = { ...defaultConfig };
-    setStatus(`加载设备 DDNS 配置失败：${String(e)}`, "error");
-  } finally {
-    loadingConfig.value = false;
-  }
+function selectRow(row: DeviceRow) {
+  selectedId.value = row.id;
 }
 
-async function loadCurrentRecord() {
-  const hasAccount = config.value.access_key_id.trim() && config.value.access_key_secret.trim();
-  const hasDomain = config.value.domain.trim() && config.value.sub_domain.trim();
-  if (!hasAccount || !hasDomain || !hasConfiguredDevice()) {
-    currentRecord.value = "";
-    return;
-  }
-
-  try {
-    currentRecord.value = await invoke<string>("get_device_ddns_current_record");
-  } catch {
-    currentRecord.value = "";
-  }
+function toggleDevice(row: DeviceRow, checked: boolean) {
+  selectedId.value = checked ? row.id : "";
 }
 
-async function persistConfig(showSuccess: boolean, allowWhileUpdating = false) {
-  if (loadingConfig.value || saving.value || (updating.value && !allowWhileUpdating)) {
-    return false;
-  }
+function openConfigDialog(row: DeviceRow) {
+  selectedId.value = row.id;
+  draft.value = buildDraft(row);
+  resetModalPosition();
+  configDialogOpen.value = true;
+}
 
-  reconcileSelectedIpv6();
-  const error = config.value.enabled ? validateConfig(false) : "";
+function closeConfigDialog() {
+  configDialogOpen.value = false;
+  syncDraftWithSelection();
+}
+
+function notifyDataChanged() {
+  window.dispatchEvent(new CustomEvent("homenet:logs-refresh"));
+  window.dispatchEvent(new CustomEvent("homenet:refresh-status"));
+  window.dispatchEvent(new CustomEvent("homenet:devices-refresh"));
+}
+
+function validateDraft(requireEnabled: boolean): string {
+  const current = draft.value;
+  const row = selectedRow.value;
+  if (!row || !current) return "请选择要配置的局域网设备";
+  if (!row.raw.mac.trim()) return "绑定设备必须有 MAC 地址";
+  if (requireEnabled && !current.enabled) return "请先启用同步";
+  if (!current.access_key_id.trim() || !current.access_key_secret.trim()) {
+    return "请填写完整的 AccessKey ID 和 Secret";
+  }
+  if (!current.domain.trim() || !current.sub_domain.trim()) {
+    return "请填写主域名和子域名";
+  }
+  if (!["A", "AAAA"].includes(current.record_type.trim().toUpperCase())) {
+    return "记录类型仅支持 A 或 AAAA";
+  }
+  if (current.sub_domain.includes(",")) return "每台设备请填写一个独立子域名";
+  return "";
+}
+
+function buildPayload(): DeviceDdnsConfig | null {
+  const row = selectedRow.value;
+  const current = draft.value;
+  if (!row || !current) return null;
+  const recordType = current.record_type.trim().toUpperCase() === "A" ? "A" : "AAAA";
+  const selectedIp =
+    current.selected_ip ||
+    (recordType === "A" ? row.raw.ipv4[0] : firstGlobalIpv6(row.raw)) ||
+    "";
+  return {
+    ...current,
+    provider: current.provider || defaultConfig.provider,
+    record_type: recordType,
+    ttl: Number(current.ttl) || defaultConfig.ttl,
+    interval_minutes: Number(current.interval_minutes) || defaultConfig.interval_minutes,
+    device_id: row.raw.id,
+    device_mac: row.raw.mac,
+    device_name: deviceDisplayNameForDraft(),
+    selected_ip: selectedIp,
+    selected_ipv6: recordType === "AAAA" ? selectedIp : "",
+  };
+}
+
+async function saveSelectedConfig(showSuccess = true): Promise<DeviceDdnsConfig | null> {
+  const error = validateDraft(false);
   if (error) {
-    setStatus(error, "error");
-    return false;
+    statusMessage.value = error;
+    messageType.value = "error";
+    return null;
   }
 
-  config.value.selected_ipv6 = selectedIpv6.value;
-  const payload: DeviceDdnsConfig = { ...config.value };
-  saving.value = true;
+  const payload = buildPayload();
+  if (!payload) return null;
+
+  mutating.value = true;
   try {
     await invoke("save_device_ddns_config", { config: payload });
-    notifyLogsRefresh();
+    await loadConfigs();
+    syncDraftWithSelection();
     if (showSuccess) {
-      setStatus("设备 DDNS 配置已保存", "success");
+      statusMessage.value = "设备 DDNS 绑定已保存";
+      messageType.value = "success";
+      configDialogOpen.value = false;
     }
-    return true;
-  } catch (e: any) {
-    setStatus(`保存失败：${String(e)}`, "error");
-    return false;
+    notifyDataChanged();
+    return payload;
+  } catch (e) {
+    statusMessage.value = `保存设备 DDNS 绑定失败：${String(e)}`;
+    messageType.value = "error";
+    return null;
   } finally {
-    saving.value = false;
+    mutating.value = false;
+    window.setTimeout(() => (statusMessage.value = ""), 4200);
   }
 }
 
-async function saveConfig() {
-  await persistConfig(true);
-}
+async function unbindSelected() {
+  const row = selectedRow.value;
+  if (!row) return;
 
-async function triggerUpdate() {
-  if (loadingConfig.value || loadingDevices.value || saving.value || updating.value) {
-    return;
-  }
-
-  reconcileSelectedIpv6();
-  const error = validateConfig(true);
-  if (error) {
-    setStatus(error, "error");
-    return;
-  }
-
-  updating.value = true;
-  clearStatusTimeout();
-  statusMessage.value = "";
+  mutating.value = true;
   try {
-    const saved = await persistConfig(false, true);
-    if (!saved) return;
-
-    const payload: DeviceDdnsConfig = {
-      ...config.value,
-      selected_ipv6: selectedIpv6.value,
-    };
-    const result = await invoke<string>("trigger_device_ddns_update", {
-      config: payload,
+    await invoke("delete_device_ddns_config", {
+      deviceId: row.raw.id,
+      deviceMac: row.raw.mac,
     });
-    setStatus(result || "设备 DDNS 更新完成", "success");
-    await loadConfig();
-    await loadCurrentRecord();
-    notifyLogsRefresh();
-  } catch (e: any) {
-    setStatus(`更新失败：${String(e)}`, "error");
+    await loadConfigs();
+    syncDraftWithSelection();
+    statusMessage.value = "设备 DDNS 绑定已解除";
+    messageType.value = "success";
+    notifyDataChanged();
+  } catch (e) {
+    statusMessage.value = `解除设备 DDNS 绑定失败：${String(e)}`;
+    messageType.value = "error";
   } finally {
-    updating.value = false;
+    mutating.value = false;
+    window.setTimeout(() => (statusMessage.value = ""), 4200);
   }
 }
 
-async function toggleEnabled(event: Event) {
-  if (busy.value) return;
+async function syncNow() {
+  const error = validateDraft(true);
+  if (error) {
+    statusMessage.value = error;
+    messageType.value = "error";
+    return;
+  }
 
-  const input = event.target as HTMLInputElement;
-  const previous = config.value.enabled;
-  config.value.enabled = input.checked;
-
-  const saved = await persistConfig(false);
-  if (!saved) {
-    config.value.enabled = previous;
+  syncing.value = true;
+  try {
+    const payload = await saveSelectedConfig(false);
+    if (!payload) return;
+    const result = await invoke<string>("trigger_device_ddns_update", { config: payload });
+    await loadConfigs();
+    syncDraftWithSelection();
+    statusMessage.value = result || "设备 DDNS 已同步";
+    messageType.value = "success";
+    notifyDataChanged();
+  } catch (e) {
+    statusMessage.value = `设备 DDNS 同步失败：${String(e)}`;
+    messageType.value = "error";
+  } finally {
+    syncing.value = false;
+    window.setTimeout(() => (statusMessage.value = ""), 5200);
   }
 }
 
-onMounted(async () => {
-  await loadConfig();
-  await loadDevices();
-  reconcileSelectedIpv6();
-  await loadCurrentRecord();
-});
+watch(selectedRow, syncDraftWithSelection);
 
-onUnmounted(() => {
-  clearStatusTimeout();
+onMounted(() => {
+  loadDevices();
 });
 </script>
 
 <template>
-  <section class="panel device-ddns-panel">
-    <header class="panel-header">
-      <div class="title-block">
-        <h2>局域网设备 DDNS</h2>
-        <p>{{ deviceSummary }}</p>
-      </div>
-      <div class="header-actions">
-        <label class="toggle-switch" aria-label="启用设备 DDNS">
-          <input
-            type="checkbox"
-            :checked="config.enabled"
-            :disabled="busy"
-            @change="toggleEnabled"
-          />
-          <span class="toggle-slider"></span>
-        </label>
-        <button
-          class="icon-button"
-          type="button"
-          title="刷新设备"
-          aria-label="刷新设备"
-          :disabled="busy"
-          @click="loadDevices"
-        >
-          <RefreshCw :size="15" :stroke-width="2.2" />
-        </button>
-      </div>
-    </header>
-
-    <p v-if="statusMessage" class="status-message" :class="`msg-${messageType}`">
-      {{ statusMessage }}
-    </p>
-
-    <div class="device-layout">
-      <div class="device-list" role="listbox" aria-label="局域网设备">
-        <button
-          v-for="device in devices"
-          :key="device.id"
-          class="device-row"
-          :class="{
-            selected: isSelected(device),
-            disabled: busy || device.global_ipv6.length === 0,
-          }"
-          type="button"
-          role="option"
-          :aria-selected="isSelected(device)"
-          :disabled="busy || device.global_ipv6.length === 0"
-          :title="deviceSubtitle(device)"
-          @click="selectDevice(device)"
-        >
-          <Router class="device-icon" :size="16" :stroke-width="2.2" />
-          <span class="device-copy">
-            <strong>{{ deviceTitle(device) }}</strong>
-            <span>{{ deviceSubtitle(device) }}</span>
-          </span>
-          <Check v-if="isSelected(device)" class="device-check" :size="15" :stroke-width="2.4" />
-        </button>
-        <div v-if="devices.length === 0" class="empty-state">
-          {{ loadingDevices ? "正在发现设备..." : "未发现局域网设备" }}
+  <div class="device-ddns-stack">
+    <section class="panel devices-list-panel">
+      <header class="panel-header">
+        <h2>局域网设备与 DDNS 绑定</h2>
+        <div class="toolbar">
+          <button class="btn btn-secondary" type="button" :disabled="loading" @click="loadDevices">
+            <RefreshCw :class="{ spinning: loading }" :size="13" :stroke-width="2.2" />
+            扫描设备
+          </button>
+          <button class="btn btn-secondary" type="button" :disabled="loading" @click="loadDevices">
+            <RefreshCw :size="13" :stroke-width="2.2" />
+            刷新
+          </button>
+          <button class="btn btn-secondary" type="button" :disabled="loading" @click="loadDevices">
+            <UserPlus :size="13" :stroke-width="2.2" />
+            导入邻居
+          </button>
+          <label class="search-box">
+            <Search :size="13" :stroke-width="2.1" />
+            <input v-model="searchQuery" type="search" placeholder="搜索设备名称、IP 或 MAC" />
+          </label>
         </div>
+      </header>
+
+      <p v-if="statusMessage" class="status-message" :class="`msg-${messageType}`">
+        {{ statusMessage }}
+      </p>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>选择</th>
+              <th>设备名称</th>
+              <th>IP 地址</th>
+              <th>MAC 地址</th>
+              <th>在线状态</th>
+              <th>DDNS 状态</th>
+              <th>域名地址</th>
+              <th>可用 IP</th>
+              <th>最后同步</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-if="filteredDevices.length === 0">
+              <td class="empty-cell" colspan="10">
+                {{ loading ? "正在扫描局域网设备" : "暂无局域网设备" }}
+              </td>
+            </tr>
+            <tr
+              v-for="device in filteredDevices"
+              v-else
+              :key="device.id"
+              :class="{ 'selected-row': selectedId === device.id }"
+              @click="selectRow(device)"
+            >
+              <td>
+                <input
+                  type="checkbox"
+                  :checked="selectedId === device.id"
+                  :disabled="mutating"
+                  @click.stop
+                  @change="toggleDevice(device, ($event.target as HTMLInputElement).checked)"
+                />
+              </td>
+              <td :title="device.nativeName">{{ device.name }}</td>
+              <td>{{ device.ip }}</td>
+              <td>{{ device.mac }}</td>
+              <td>
+                <span class="state-pill" :class="device.online ? 'pill-online' : 'pill-offline'">
+                  {{ device.online ? "在线" : "离线" }}
+                </span>
+              </td>
+              <td>
+                <span
+                  class="bind-pill"
+                  :class="device.configured ? 'pill-bound' : 'pill-unbound'"
+                >
+                  {{ device.configured ? (device.enabled ? "已启用" : "已配置") : "未配置" }}
+                </span>
+              </td>
+              <td>{{ device.domain }}</td>
+              <td>{{ device.selectedIpv6 }}</td>
+              <td>{{ device.lastSync }}</td>
+              <td>
+                <button class="icon-action" type="button" title="编辑 DDNS" @click.stop="openConfigDialog(device)">
+                  <Pencil :size="13" :stroke-width="2.1" />
+                </button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
       </div>
 
-      <div class="device-form">
-        <label>
-          <span>AccessKey ID</span>
-          <input v-model="config.access_key_id" type="text" autocomplete="off" :disabled="busy" />
-        </label>
-        <label>
-          <span>AccessKey Secret</span>
-          <input
-            v-model="config.access_key_secret"
-            type="password"
-            autocomplete="off"
-            :disabled="busy"
-          />
-        </label>
-        <label>
-          <span>主域名</span>
-          <input v-model="config.domain" type="text" placeholder="example.com" :disabled="busy" />
-        </label>
-        <label>
-          <span>子域名</span>
-          <input v-model="config.sub_domain" type="text" placeholder="nas" :disabled="busy" />
-        </label>
-        <label>
-          <span>设备 IPv6</span>
-          <select v-model="selectedIpv6" :disabled="busy || !selectedDevice">
-            <option value="">请选择公网 IPv6</option>
-            <option v-for="ip in selectedDevice?.global_ipv6 ?? []" :key="ip" :value="ip">
-              {{ ip }}
-            </option>
-          </select>
-        </label>
-        <label>
-          <span>TTL / 间隔</span>
-          <div class="split-inputs">
-            <input
-              v-model.number="config.ttl"
-              type="number"
-              min="1"
-              max="86400"
-              title="TTL（秒）"
-              :disabled="busy"
-            />
-            <input
-              v-model.number="config.interval_minutes"
-              type="number"
-              min="1"
-              max="1440"
-              title="更新间隔（分钟）"
-              :disabled="busy"
-            />
+      <footer class="panel-footer">
+        <strong>已选择 {{ selectedCount }} 台设备</strong>
+        <div class="footer-actions">
+          <button
+            class="btn btn-secondary"
+            type="button"
+            :disabled="mutating || !selectedRow?.configured"
+            @click="unbindSelected"
+          >
+            <Trash2 :size="13" :stroke-width="2.1" />
+            解除绑定
+          </button>
+          <button
+            class="btn btn-primary"
+            type="button"
+            :disabled="!selectedRow"
+            @click="selectedRow && openConfigDialog(selectedRow)"
+          >
+            <Pencil :size="13" :stroke-width="2.1" />
+            编辑绑定
+          </button>
+        </div>
+      </footer>
+    </section>
+
+    <div v-if="configDialogOpen && selectedRow && draft" class="modal-backdrop" @click.self="closeConfigDialog">
+      <section class="modal-dialog binding-panel" :style="modalStyle">
+        <header class="modal-header draggable-header" @pointerdown="startModalDrag">
+          <h2>设备 DDNS 解析配置</h2>
+          <button class="btn btn-secondary" type="button" @pointerdown.stop @click="closeConfigDialog">关闭</button>
+        </header>
+
+      <div class="binding-layout">
+        <div class="form-grid">
+          <label>
+            <span>DDNS 服务商</span>
+            <select v-model="draft.provider">
+              <option value="aliyun">阿里云</option>
+            </select>
+          </label>
+          <label>
+            <span>设备名称</span>
+            <input v-model="draft.device_name" type="text" />
+          </label>
+          <label>
+            <span>AccessKey ID</span>
+            <input v-model="draft.access_key_id" type="text" autocomplete="off" />
+          </label>
+          <label>
+            <span>子域名</span>
+            <input v-model="draft.sub_domain" type="text" />
+          </label>
+          <label>
+            <span>AccessKey Secret</span>
+            <input v-model="draft.access_key_secret" type="password" autocomplete="off" />
+          </label>
+          <label class="toggle-row">
+            <span>启用同步</span>
+            <input v-model="draft.enabled" type="checkbox" />
+          </label>
+          <label>
+            <span>主域名</span>
+            <input v-model="draft.domain" type="text" />
+          </label>
+          <label>
+            <span>记录类型</span>
+            <select v-model="draft.record_type">
+              <option value="AAAA">AAAA - IPv6</option>
+              <option value="A">A - IPv4</option>
+            </select>
+          </label>
+          <label>
+            <span>可用 IP</span>
+            <select v-model="draft.selected_ip">
+              <option value="">自动选择</option>
+              <option v-for="ip in availableIpOptions" :key="ip" :value="ip">{{ ip }}</option>
+            </select>
+          </label>
+          <label>
+            <span>最短 TTL</span>
+            <input v-model.number="draft.ttl" type="number" min="60" max="86400" />
+          </label>
+          <label>
+            <span>绑定设备</span>
+            <input :value="selectedRow.raw.mac || '未获取到 MAC 地址'" type="text" disabled />
+          </label>
+          <label>
+            <span>同步间隔</span>
+            <input v-model.number="draft.interval_minutes" type="number" min="1" max="1440" />
+          </label>
+        </div>
+
+        <aside class="preview-card">
+          <h3>当前生效预览</h3>
+          <div v-if="previewRows.length === 0" class="preview-empty">暂无可预览解析</div>
+          <div v-for="[device, domain] in previewRows" :key="device" class="preview-row">
+            <span>{{ device }}</span>
+            <strong>→</strong>
+            <span>{{ domain }}</span>
           </div>
-        </label>
+          <p>共 {{ previewRows.length }} 条绑定</p>
+        </aside>
       </div>
-    </div>
 
-    <footer class="panel-footer">
-      <span class="footer-status" :title="footerText">
-        <ShieldCheck :size="17" :stroke-width="2.2" />
-        <span>{{ footerText }}</span>
-      </span>
-      <div class="footer-actions">
-        <button class="btn btn-secondary" type="button" :disabled="busy" @click="saveConfig">
-          <Save :size="14" :stroke-width="2.2" />
-          {{ saving ? "保存中..." : "保存" }}
-        </button>
-        <button class="btn btn-primary" type="button" :disabled="busy" @click="triggerUpdate">
-          <Zap :size="14" :stroke-width="2.2" />
-          {{ updating ? "更新中..." : "立即更新" }}
-        </button>
-      </div>
-    </footer>
-  </section>
+      <footer class="panel-footer binding-footer">
+        <span><span class="info-dot">i</span> 保存后由后台任务按间隔更新，立即同步会调用真实 DDNS 接口。</span>
+        <div class="footer-actions">
+          <button class="btn btn-primary" type="button" :disabled="mutating" @click="saveSelectedConfig()">
+            <Save :size="13" :stroke-width="2.2" />
+            保存绑定
+          </button>
+          <button class="btn btn-secondary" type="button" :disabled="syncing" @click="syncNow">
+            <Zap :size="13" :stroke-width="2.2" />
+            立即同步
+          </button>
+        </div>
+      </footer>
+      </section>
+    </div>
+  </div>
 </template>
 
 <style scoped>
+.device-ddns-stack {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  gap: 12px;
+}
+
 .panel {
   min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border: 1px solid rgba(217, 225, 237, 0.95);
+  border: 1px solid rgba(218, 226, 237, 0.95);
   border-radius: var(--radius-md, 8px);
-  background: rgba(255, 255, 255, 0.94);
-  box-shadow: var(--shadow-card);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: var(--shadow-panel);
 }
 
 .panel-header {
-  flex: 0 0 52px;
+  height: 42px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 0 14px;
-  border-bottom: 1px solid #e1e8f2;
+  padding: 0 14px 0 18px;
+  border-bottom: 1px solid #e6edf5;
 }
 
-.title-block {
-  min-width: 0;
+.compact-header {
+  height: 36px;
 }
 
-.panel-header h2 {
-  color: #151922;
-  font-size: 16px;
+h2 {
+  color: #111827;
+  font-size: 13px;
   font-weight: 800;
-  line-height: 1.2;
+  white-space: nowrap;
 }
 
-.panel-header p {
-  margin-top: 2px;
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.2;
-}
-
-.header-actions,
+.toolbar,
 .footer-actions {
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
-.icon-button {
-  width: 30px;
-  height: 30px;
+.btn {
+  height: 26px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid #d7e0eb;
-  border-radius: 5px;
+  gap: 5px;
+  padding: 0 10px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.btn:disabled {
+  cursor: wait;
+  opacity: 0.58;
+}
+
+.btn-primary {
+  color: #ffffff;
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+.btn-secondary {
+  color: #4b5563;
   background: #ffffff;
-  color: #2563eb;
+  border-color: #d8e1ec;
 }
 
-.icon-button:disabled,
-.btn:disabled,
-.device-form input:disabled,
-.device-form select:disabled {
-  opacity: 0.56;
-  cursor: not-allowed;
+.search-box {
+  width: 222px;
+  height: 28px;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 5px;
+  padding: 0 9px;
+  border: 1px solid #d8e1ec;
+  border-radius: 4px;
+  background: #ffffff;
+  color: #6b7280;
 }
 
-.icon-button svg,
-.btn svg,
-.footer-status svg,
-.device-row svg {
-  flex: 0 0 auto;
-  display: block;
-}
-
-.icon-button:focus-visible,
-.device-row:focus-visible,
-.btn:focus-visible,
-.device-form input:focus-visible,
-.device-form select:focus-visible,
-.toggle-switch input:focus-visible + .toggle-slider {
-  outline: 2px solid #2563eb;
-  outline-offset: 2px;
+.search-box input {
+  width: 100%;
+  border: 0;
+  outline: 0;
+  color: #111827;
+  font-size: 11px;
 }
 
 .status-message {
-  margin: 8px 12px 0;
-  padding: 7px 9px;
-  border-radius: 6px;
-  font-size: 12px;
+  margin: 6px 14px 0;
+  padding: 5px 8px;
+  border-radius: 5px;
+  font-size: 11px;
 }
 
 .msg-info {
-  color: #1d4ed8;
+  color: #1769f6;
   background: #eaf2ff;
 }
 
@@ -563,244 +719,339 @@ onUnmounted(() => {
   background: #fee2e2;
 }
 
-.device-layout {
+.table-wrap {
   flex: 1 1 auto;
   min-height: 0;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 10px;
-  padding: 10px 12px;
+  overflow: auto;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: #b8c7d8 #f3f7fc;
 }
 
-.device-list {
-  min-height: 0;
-  overflow-y: auto;
-  display: grid;
-  align-content: start;
-  gap: 6px;
-}
-
-.device-row {
+table {
   width: 100%;
-  min-height: 46px;
-  display: grid;
-  grid-template-columns: 20px minmax(0, 1fr) 18px;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 8px;
-  border: 1px solid #dbe4ee;
-  border-radius: 6px;
-  background: #ffffff;
+  min-width: 980px;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 10.5px;
+}
+
+th,
+td {
+  height: 27px;
+  padding: 0 7px;
+  border-bottom: 1px solid #e6edf5;
   color: #111827;
   text-align: left;
-}
-
-.device-row.selected {
-  border-color: #2563eb;
-  background: #eef6ff;
-}
-
-.device-row.disabled {
-  color: #7b8798;
-  background: #f8fafc;
-  opacity: 0.72;
-  cursor: not-allowed;
-}
-
-.device-icon {
-  color: #2563eb;
-}
-
-.device-check {
-  color: #15803d;
-}
-
-.device-copy {
-  min-width: 0;
-  display: grid;
-  gap: 2px;
-}
-
-.device-copy strong,
-.device-copy span {
-  min-width: 0;
+  vertical-align: middle;
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
-.device-copy strong {
-  font-size: 12px;
+th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  height: 30px;
+  color: #182033;
   font-weight: 800;
+  background: #fbfcfe;
 }
 
-.device-copy span {
-  color: #64748b;
-  font-size: 11px;
+.selected-row td {
+  background: #f1f6ff;
 }
 
-.device-form {
-  min-width: 0;
-  display: grid;
-  align-content: start;
-  gap: 7px;
-}
-
-.device-form label {
-  min-width: 0;
-  display: grid;
-  grid-template-columns: 86px minmax(0, 1fr);
-  align-items: center;
-  gap: 8px;
-}
-
-.device-form span {
-  color: #374151;
+.empty-cell {
+  height: 82px;
+  text-align: center;
+  color: #7b8495;
   font-size: 12px;
   font-weight: 700;
 }
 
-.device-form input,
-.device-form select {
-  min-width: 0;
-  width: 100%;
-  height: 30px;
-  border: 1px solid #d7e0eb;
-  border-radius: 5px;
-  background: #ffffff;
-  color: #202532;
-  padding: 0 8px;
-  font-size: 12px;
-  outline: none;
+.table-wrap::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
 }
 
-.device-form input:focus,
-.device-form select:focus {
-  border-color: #78a7f9;
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+.table-wrap::-webkit-scrollbar-track {
+  background: #f3f7fc;
 }
 
-.split-inputs {
-  min-width: 0;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 6px;
+.table-wrap::-webkit-scrollbar-thumb {
+  border: 2px solid #f3f7fc;
+  border-radius: 999px;
+  background: #b8c7d8;
 }
 
-.empty-state {
-  min-height: 80px;
-  display: grid;
-  place-items: center;
-  color: #8a94a6;
-  font-size: 12px;
-  font-weight: 600;
+th:nth-child(1),
+td:nth-child(1) {
+  width: 42px;
+  text-align: center;
+}
+
+th:nth-child(2),
+td:nth-child(2) {
+  width: 132px;
+}
+
+th:nth-child(3),
+td:nth-child(3),
+th:nth-child(8),
+td:nth-child(8) {
+  width: 128px;
+}
+
+th:nth-child(4),
+td:nth-child(4) {
+  width: 128px;
+}
+
+th:nth-child(5),
+td:nth-child(5),
+th:nth-child(6),
+td:nth-child(6) {
+  width: 72px;
+}
+
+th:nth-child(9),
+td:nth-child(9) {
+  width: 116px;
+}
+
+th:nth-child(10),
+td:nth-child(10) {
+  width: 58px;
+  text-align: center;
+}
+
+.state-pill,
+.bind-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 42px;
+  height: 18px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.pill-online,
+.pill-bound {
+  color: #0e9f4f;
+  background: #eaf8ef;
+}
+
+.pill-offline,
+.pill-unbound {
+  color: #4b5563;
+  background: #f0f3f7;
 }
 
 .panel-footer {
-  flex: 0 0 42px;
+  height: 40px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 0 12px;
-  border-top: 1px solid #e1e8f2;
-  color: #64748b;
-  font-size: 12px;
+  padding: 0 14px 0 18px;
+  color: var(--color-primary);
+  font-size: 11px;
 }
 
-.footer-status {
-  min-width: 0;
+.icon-action {
+  width: 18px;
+  height: 18px;
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  color: #64748b;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: #4b5563;
 }
 
-.footer-status span {
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  background: rgba(15, 23, 42, 0.28);
+}
+
+.modal-dialog {
+  width: min(900px, calc(100vw - 72px));
+  max-height: calc(100vh - 96px);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid rgba(218, 226, 237, 0.95);
+  border-radius: var(--radius-md, 8px);
+  background: #ffffff;
+  box-shadow: 0 22px 70px rgba(15, 23, 42, 0.24);
+}
+
+.modal-header {
+  height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 16px 0 18px;
+  border-bottom: 1px solid #e6edf5;
+  user-select: none;
+}
+
+.draggable-header {
+  cursor: move;
+}
+
+.binding-layout {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 238px;
+  gap: 16px;
+  padding: 12px 18px 6px;
+}
+
+.form-grid {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px 18px;
+  align-content: start;
+}
+
+label {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 86px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+
+label > span {
+  color: #303847;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+input,
+select {
+  width: 100%;
+  height: 26px;
+  border: 1px solid #dae3ee;
+  border-radius: 4px;
+  background: #ffffff;
+  color: #111827;
+  padding: 0 8px;
+  font-size: 11px;
+  outline: none;
+}
+
+input:disabled {
+  color: #697386;
+  background: #f4f7fb;
+}
+
+input[type="checkbox"] {
+  width: 13px;
+  height: 13px;
+  padding: 0;
+  accent-color: var(--color-primary);
+}
+
+.toggle-row input[type="checkbox"] {
+  width: 28px;
+  height: 16px;
+}
+
+.preview-card {
+  min-height: 0;
+  padding: 13px 17px;
+  border: 1px solid #e2e9f2;
+  border-radius: 7px;
+  background: #ffffff;
+}
+
+.preview-card h3 {
+  margin-bottom: 14px;
+  color: #111827;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.preview-empty,
+.preview-row {
+  height: 28px;
+  color: #596579;
+  font-size: 11px;
+}
+
+.preview-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 22px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  color: #111827;
+}
+
+.preview-row strong {
+  color: #344052;
+  text-align: center;
+}
+
+.preview-row span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.btn {
-  height: 30px;
+.preview-card p {
+  margin-top: 12px;
+  color: #596579;
+  font-size: 11px;
+}
+
+.binding-footer {
+  height: 38px;
+  color: #596579;
+}
+
+.binding-footer > span {
+  min-width: 0;
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  gap: 5px;
-  padding: 0 10px;
-  border-radius: 5px;
-  border: 1px solid transparent;
-  font-size: 12px;
-  font-weight: 700;
+  gap: 7px;
   white-space: nowrap;
 }
 
-.btn-primary {
-  color: #ffffff;
-  background: var(--color-primary, #2563eb);
-  border-color: var(--color-primary, #2563eb);
-}
-
-.btn-secondary {
-  color: #374151;
-  background: #ffffff;
-  border-color: #d7e0eb;
-}
-
-.toggle-switch {
-  position: relative;
-  display: inline-block;
-  width: 34px;
-  height: 19px;
-  flex: 0 0 34px;
-}
-
-.toggle-switch input {
-  width: 0;
-  height: 0;
-  opacity: 0;
-}
-
-.toggle-slider {
-  position: absolute;
-  inset: 0;
-  border-radius: 999px;
-  background: #cbd5e1;
-  transition: background 0.15s ease;
-}
-
-.toggle-slider::before {
-  content: "";
-  position: absolute;
-  left: 3px;
-  top: 3px;
+.info-dot {
   width: 13px;
   height: 13px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid var(--color-primary);
   border-radius: 50%;
-  background: #ffffff;
-  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.22);
-  transition: transform 0.15s ease;
+  color: var(--color-primary);
+  font-size: 9px;
+  font-weight: 800;
 }
 
-.toggle-switch input:checked + .toggle-slider {
-  background: var(--color-primary, #2563eb);
+.spinning {
+  animation: spin 0.8s linear infinite;
 }
 
-.toggle-switch input:checked + .toggle-slider::before {
-  transform: translateX(15px);
-}
-
-@media (max-width: 760px) {
-  .device-layout {
-    grid-template-columns: 1fr;
-  }
-
-  .panel-footer {
-    flex-wrap: wrap;
-    min-height: 72px;
-    padding: 8px 12px;
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
   }
 }
 </style>

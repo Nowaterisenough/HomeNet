@@ -1,27 +1,36 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { Trash2 } from "@lucide/vue";
+import { RefreshCw, Trash2 } from "@lucide/vue";
 import type { LogEntry } from "../types";
 
 const logs = ref<LogEntry[]>([]);
+const levelFilter = ref("全部级别");
+const refreshing = ref(false);
 let timer: ReturnType<typeof setInterval> | null = null;
 
+const filteredLogs = computed(() => {
+  if (levelFilter.value === "全部级别") return logs.value;
+  return logs.value.filter((log) => log.level.toUpperCase() === levelFilter.value);
+});
+
 async function loadLogs() {
+  refreshing.value = true;
   try {
     const data = await invoke<LogEntry[]>("get_recent_logs");
     logs.value = data.slice().reverse();
   } catch {
     logs.value = [];
+  } finally {
+    refreshing.value = false;
   }
 }
 
 async function clearLogs() {
   try {
     await invoke("clear_logs");
-    await loadLogs();
-  } catch (e: any) {
-    console.warn("清空日志失败:", e);
+  } finally {
+    logs.value = [];
   }
 }
 
@@ -54,7 +63,7 @@ const levelClass = (level: string): string => {
 function formatTime(timeStr: string): string {
   try {
     const date = new Date(timeStr);
-    if (isNaN(date.getTime())) return timeStr;
+    if (Number.isNaN(date.getTime())) return timeStr;
     const pad = (n: number) => String(n).padStart(2, "0");
     return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(
       date.getHours(),
@@ -80,18 +89,33 @@ onUnmounted(() => {
   <section class="panel log-panel">
     <header class="panel-header">
       <h2>最近日志</h2>
-      <button class="clear-button" type="button" @click="clearLogs">
-        <Trash2 :size="15" :stroke-width="2.1" />
-        清空
-      </button>
+      <div class="toolbar">
+        <button class="btn btn-secondary" type="button" @click="clearLogs">
+          <Trash2 :size="13" :stroke-width="2.1" />
+          清空
+        </button>
+        <select v-model="levelFilter" class="level-select">
+          <option>全部级别</option>
+          <option>INFO</option>
+          <option>WARN</option>
+          <option>ERROR</option>
+        </select>
+        <button class="btn btn-secondary" type="button" :disabled="refreshing" @click="loadLogs">
+          <RefreshCw :class="{ spinning: refreshing }" :size="13" :stroke-width="2.1" />
+          刷新
+        </button>
+      </div>
     </header>
 
-    <div v-if="logs.length === 0" class="empty-state">
-      暂无日志记录
-    </div>
-
-    <div v-else class="log-table" role="table" aria-label="最近日志">
-      <div v-for="log in logs" :key="log.id" class="log-row" role="row">
+    <div class="log-table" role="table" aria-label="最近日志">
+      <div class="log-head" role="row">
+        <span>时间</span>
+        <span>级别</span>
+        <span>模块</span>
+        <span>消息</span>
+      </div>
+      <div v-if="filteredLogs.length === 0" class="empty-state">暂无日志记录</div>
+      <div v-for="log in filteredLogs" v-else :key="log.id" class="log-row" role="row">
         <time class="log-time">{{ formatTime(log.time) }}</time>
         <span class="log-level" :class="levelClass(log.level)">
           {{ log.level.toUpperCase() }}
@@ -110,173 +134,172 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border: 1px solid rgba(217, 225, 237, 0.95);
+  border: 1px solid rgba(218, 226, 237, 0.95);
   border-radius: var(--radius-md, 8px);
-  background: rgba(255, 255, 255, 0.94);
-  box-shadow: var(--shadow-card);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: var(--shadow-panel);
 }
 
 .panel-header {
-  height: 46px;
+  height: 38px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 18px;
-  border-bottom: 1px solid #e1e8f2;
+  gap: 12px;
+  padding: 0 14px 0 18px;
+  border-bottom: 1px solid #e6edf5;
 }
 
-.panel-header h2 {
-  font-size: 16px;
+h2 {
+  color: #111827;
+  font-size: 13px;
   font-weight: 800;
-  color: #151922;
 }
 
-.clear-button {
-  height: 30px;
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn {
+  height: 25px;
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  padding: 0 12px;
-  border: 1px solid #d7e0eb;
-  border-radius: 5px;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 10px;
+  border-radius: 4px;
+  border: 1px solid #d8e1ec;
   background: #ffffff;
-  color: #525d6b;
-  font-size: 12px;
+  color: #4b5563;
+  font-size: 11px;
   font-weight: 700;
+  white-space: nowrap;
 }
 
-.clear-button svg {
-  display: block;
+.btn:disabled {
+  cursor: wait;
+  opacity: 0.62;
 }
 
-.trash-icon {
-  position: relative;
-  width: 15px;
-  height: 15px;
-  display: inline-block;
-}
-
-.trash-icon::before,
-.trash-icon::after {
-  content: "";
-  position: absolute;
-  display: block;
-}
-
-.trash-icon::before {
-  left: 4px;
-  top: 5px;
-  width: 8px;
-  height: 9px;
-  border: 1.7px solid currentColor;
-  border-top: 0;
-  border-radius: 0 0 2px 2px;
-}
-
-.trash-icon::after {
-  left: 3px;
-  top: 2px;
-  width: 10px;
-  height: 2px;
-  background: currentColor;
-  box-shadow: 3px -2px 0 -0.5px currentColor;
-}
-
-.empty-state {
-  flex: 1 1 auto;
-  display: grid;
-  place-items: center;
-  min-height: 132px;
-  color: #8a94a6;
+.level-select {
+  height: 25px;
+  border: 1px solid #d8e1ec;
+  border-radius: 4px;
+  background: #ffffff;
+  color: #4b5563;
+  padding: 0 26px 0 10px;
+  font-size: 11px;
+  font-weight: 700;
+  outline: 0;
 }
 
 .log-table {
   flex: 1 1 auto;
   min-height: 0;
-  overflow-y: auto;
-  padding-bottom: 10px;
+  overflow: auto;
   scrollbar-gutter: stable;
-  scrollbar-color: #b8c5d6 #eef3f9;
+  scrollbar-width: thin;
+  scrollbar-color: #b8c7d8 #f3f7fc;
+}
+
+.log-head,
+.log-row {
+  min-width: 1120px;
+  display: grid;
+  grid-template-columns: 168px 70px 86px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  min-height: 23px;
+  padding: 0 18px;
+  border-bottom: 1px solid #e6edf5;
+  font-size: 11px;
+}
+
+.log-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  height: 27px;
+  color: #182033;
+  font-weight: 800;
+  background: #fbfcfe;
 }
 
 .log-table::-webkit-scrollbar {
-  width: 10px;
+  width: 8px;
+  height: 8px;
 }
 
 .log-table::-webkit-scrollbar-track {
-  background: #eef3f9;
+  background: #f3f7fc;
 }
 
 .log-table::-webkit-scrollbar-thumb {
-  border: 2px solid #eef3f9;
+  border: 2px solid #f3f7fc;
   border-radius: 999px;
-  background: #b8c5d6;
-}
-
-.log-table::-webkit-scrollbar-thumb:hover {
-  background: #94a3b8;
-}
-
-.log-row {
-  min-height: 34px;
-  display: grid;
-  grid-template-columns: 168px 70px 70px minmax(0, 1fr);
-  align-items: center;
-  gap: 8px;
-  padding: 0 18px;
-  border-bottom: 1px solid #e6edf5;
-  font-size: 12px;
-}
-
-.log-row:last-child {
-  border-bottom: 0;
+  background: #b8c7d8;
 }
 
 .log-time {
-  color: #4b5563;
+  color: #303847;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
 .log-level {
-  width: 50px;
-  height: 21px;
+  width: 43px;
+  height: 18px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 999px;
-  font-size: 11px;
+  border-radius: 4px;
+  font-size: 10px;
   font-weight: 800;
 }
 
 .level-info {
-  color: #2563eb;
-  background: #eaf2ff;
-  border: 1px solid #cfe0ff;
+  color: #1769f6;
 }
 
 .level-warn {
   color: #d97706;
-  background: #fff6df;
-  border: 1px solid #f7dfaa;
 }
 
 .level-error {
   color: #dc2626;
-  background: #fee2e2;
-  border: 1px solid #fecaca;
 }
 
 .log-module {
-  color: #4b5563;
+  color: #303847;
   font-weight: 700;
 }
 
 .log-message {
   min-width: 0;
-  color: #303746;
-  white-space: nowrap;
+  color: #303847;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.empty-state {
+  height: 108px;
+  display: grid;
+  place-items: center;
+  color: #7b8495;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.spinning {
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 </style>

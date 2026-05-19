@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { CirclePlus, Info, Pause, Pencil, Play, Trash2 } from "@lucide/vue";
+import { CirclePlus, Pause, Pencil, Play, Trash2 } from "@lucide/vue";
 import type { ForwardRule } from "../types";
-import { formatPortExpression, pairPortExpressions } from "../utils/ports";
+import { useDraggableModal } from "../composables/useDraggableModal";
 
 interface ForwardRuleForm extends Omit<ForwardRule, "listen_port" | "target_port"> {
   listen_port: string;
@@ -11,26 +11,49 @@ interface ForwardRuleForm extends Omit<ForwardRule, "listen_port" | "target_port
 }
 
 const IMPLEMENTED_PROTOCOLS = ["TCP", "UDP", "TCP+UDP"] as const;
-type ForwardProtocol = (typeof IMPLEMENTED_PROTOCOLS)[number];
-const FORWARD_MODE = "relay";
-const FORWARD_MODE_LABEL = "普通 TCP/UDP 转发";
-
-function normalizeProtocol(protocol: string): ForwardProtocol {
-  const normalized = protocol.trim().toUpperCase().replace("＋", "+");
-  if (normalized === "UDP") return "UDP";
-  if (normalized === "TCP+UDP" || normalized === "UDP+TCP") return "TCP+UDP";
-  return "TCP";
-}
-
 const rules = ref<ForwardRule[]>([]);
 const selectedIds = ref<Set<string>>(new Set());
-const showEditor = ref(false);
 const editorForm = ref<ForwardRuleForm>(createEmptyRule());
 const statusMessage = ref("");
 const messageType = ref<"info" | "success" | "error">("info");
 const loading = ref(false);
 const saving = ref(false);
 const mutating = ref(false);
+const editorOpen = ref(false);
+const { modalStyle, resetModalPosition, startModalDrag } = useDraggableModal();
+
+const selectedCount = computed(() => selectedIds.value.size);
+const selectedRule = computed(() => rules.value.find((rule) => selectedIds.value.has(rule.id)));
+const editorTitle = computed(() => {
+  if (!editorForm.value.id) return "新增转发规则";
+  const index = rules.value.findIndex((rule) => rule.id === editorForm.value.id);
+  return `编辑转发规则（第 ${index >= 0 ? index + 1 : 1} 行）`;
+});
+
+function normalizeProtocol(protocol: string): ForwardRule["protocol"] {
+  const normalized = protocol.trim().toUpperCase().replace("＋", "+");
+  if (normalized === "UDP") return "UDP";
+  if (normalized === "TCP+UDP" || normalized === "UDP+TCP") return "TCP+UDP";
+  return "TCP";
+}
+
+function normalizeRule(rule: ForwardRule): ForwardRule {
+  return {
+    ...rule,
+    protocol: normalizeProtocol(rule.protocol),
+    listen_addr: rule.listen_addr || "::",
+    mode: rule.mode || "relay",
+    status: rule.status || (rule.enabled ? "正常" : "已禁用"),
+  };
+}
+
+function toForm(rule: ForwardRule): ForwardRuleForm {
+  return {
+    ...normalizeRule(rule),
+    listen_port: String(rule.listen_port || ""),
+    target_port: String(rule.target_port || ""),
+  };
+}
 
 function createEmptyRule(): ForwardRuleForm {
   return {
@@ -41,89 +64,41 @@ function createEmptyRule(): ForwardRuleForm {
     listen_port: "",
     target_ip: "",
     target_port: "",
-    mode: FORWARD_MODE,
+    mode: "relay",
     remark: "",
     status: "正常",
   };
 }
 
-function toForm(rule: ForwardRule): ForwardRuleForm {
-  return {
-    ...rule,
-    protocol: normalizeProtocol(rule.protocol),
-    mode: FORWARD_MODE,
-    listen_port: formatPortExpression(rule.listen_port),
-    target_port: formatPortExpression(rule.target_port),
-  };
+function parsePort(value: string): number | null {
+  const port = Number(value.trim());
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+  return port;
 }
 
-function normalizeStatus(status: string): string {
-  if (!status || status === "姝ｅ父") return "正常";
-  return status;
-}
+function setRules(nextRules: ForwardRule[]) {
+  const normalized = nextRules.map(normalizeRule);
+  const previousSelected = Array.from(selectedIds.value).find((id) =>
+    normalized.some((rule) => rule.id === id),
+  );
+  const selected = normalized.find((rule) => rule.id === previousSelected) ?? normalized[0];
 
-function normalizeRule(rule: ForwardRule): ForwardRule {
-  return {
-    ...rule,
-    protocol: normalizeProtocol(rule.protocol),
-    listen_addr: rule.listen_addr || "::",
-    mode: FORWARD_MODE,
-    status: normalizeStatus(rule.status),
-  };
-}
-
-const enabledCount = computed(() => rules.value.filter((r) => r.enabled).length);
-const selectedCount = computed(() => selectedIds.value.size);
-
-const allSelected = computed(() => {
-  if (rules.value.length === 0) return false;
-  return rules.value.every((r) => selectedIds.value.has(r.id));
-});
-
-const editorTitle = computed(() => {
-  if (!editorForm.value.id) return "新增规则";
-  const index = rules.value.findIndex((rule) => rule.id === editorForm.value.id);
-  return `编辑规则（第 ${index + 1} 行）`;
-});
-
-function toggleSelectAll(checked: boolean) {
-  selectedIds.value = checked ? new Set(rules.value.map((r) => r.id)) : new Set();
-}
-
-function toggleSelectRule(id: string) {
-  const next = new Set(selectedIds.value);
-  if (next.has(id)) {
-    next.delete(id);
-  } else {
-    next.add(id);
-  }
-  selectedIds.value = next;
-}
-
-function isSelected(id: string): boolean {
-  return selectedIds.value.has(id) || editorForm.value.id === id;
+  rules.value = normalized;
+  selectedIds.value = selected ? new Set([selected.id]) : new Set();
+  editorForm.value = selected ? toForm(selected) : createEmptyRule();
 }
 
 async function loadRules() {
   loading.value = true;
   try {
     const data = await invoke<ForwardRule[]>("list_forward_rules");
-    rules.value = data.map(normalizeRule);
-    selectedIds.value = new Set(
-      Array.from(selectedIds.value).filter((id) => rules.value.some((rule) => rule.id === id)),
-    );
-    if (editorForm.value.id) {
-      const current = rules.value.find((rule) => rule.id === editorForm.value.id);
-      if (current) {
-        editorForm.value = toForm(current);
-      }
-    }
-  } catch (e: any) {
+    setRules(data);
+    statusMessage.value = "";
+  } catch (e) {
     rules.value = [];
     selectedIds.value = new Set();
     editorForm.value = createEmptyRule();
-    showEditor.value = false;
-    statusMessage.value = `加载规则失败：${String(e)}`;
+    statusMessage.value = `读取转发规则失败：${String(e)}`;
     messageType.value = "error";
   } finally {
     loading.value = false;
@@ -135,195 +110,165 @@ function notifyDataChanged() {
   window.dispatchEvent(new CustomEvent("homenet:refresh-status"));
 }
 
-function buildRulePayloads(): ForwardRule[] | null {
-  const form = editorForm.value;
-  if (!form.target_ip.trim()) {
+function buildRulePayload(): ForwardRule | null {
+  const listenPort = parsePort(editorForm.value.listen_port);
+  const targetPort = parsePort(editorForm.value.target_port);
+
+  if (!editorForm.value.target_ip.trim()) {
     statusMessage.value = "请填写目标设备 IP";
     messageType.value = "error";
     return null;
   }
-  const portPairs = pairPortExpressions(form.listen_port, form.target_port);
-  if (!portPairs.ok) {
-    statusMessage.value = portPairs.message;
+  if (listenPort === null || targetPort === null) {
+    statusMessage.value = "端口需为 1-65535 的数字";
     messageType.value = "error";
     return null;
   }
-  const baseRule = {
-    protocol: normalizeProtocol(form.protocol),
-    listen_addr: form.listen_addr.trim(),
-    target_ip: form.target_ip.trim(),
-    mode: FORWARD_MODE,
-    remark: form.remark.trim(),
-    status: form.status || "正常",
-  };
 
-  return portPairs.pairs.map((pair, index) => ({
-    ...baseRule,
-    id: index === 0 ? form.id : "",
-    enabled: form.enabled,
-    listen_port: pair.listenPort,
-    target_port: pair.targetPort,
-  }));
+  return {
+    id: editorForm.value.id,
+    enabled: editorForm.value.enabled,
+    protocol: normalizeProtocol(editorForm.value.protocol),
+    listen_addr: editorForm.value.listen_addr.trim() || "::",
+    listen_port: listenPort,
+    target_ip: editorForm.value.target_ip.trim(),
+    target_port: targetPort,
+    mode: editorForm.value.mode.trim() || "relay",
+    remark: editorForm.value.remark.trim(),
+    status: editorForm.value.status || "正常",
+  };
+}
+
+function applySavedRule(rule: ForwardRule) {
+  const saved = normalizeRule(rule);
+  const next = rules.value.slice();
+  const index = next.findIndex((item) => item.id === saved.id);
+  if (index >= 0) next[index] = saved;
+  else next.push(saved);
+  rules.value = next;
+  selectedIds.value = new Set([saved.id]);
+  editorForm.value = toForm(saved);
 }
 
 async function saveRule() {
-  const payloads = buildRulePayloads();
-  if (!payloads) return;
+  const payload = buildRulePayload();
+  if (!payload) return;
+
   saving.value = true;
   try {
-    const savedRules: ForwardRule[] = [];
-    for (const payload of payloads) {
-      const saved = await invoke<ForwardRule>("save_forward_rule", { rule: payload });
-      savedRules.push(saved);
-    }
-    await loadRules();
-    const firstSaved = savedRules[0];
-    editorForm.value = toForm(normalizeRule(firstSaved));
-    selectedIds.value = new Set(savedRules.map((rule) => rule.id));
-    showEditor.value = true;
-    statusMessage.value =
-      savedRules.length > 1
-        ? `已保存 ${savedRules.length} 条转发规则`
-        : "转发规则已保存";
+    const saved = await invoke<ForwardRule>("save_forward_rule", { rule: payload });
+    applySavedRule(saved);
+    statusMessage.value = "转发规则已保存";
     messageType.value = "success";
+    editorOpen.value = false;
     notifyDataChanged();
-  } catch (e: any) {
-    statusMessage.value = `保存失败：${String(e)}`;
+  } catch (e) {
+    statusMessage.value = `保存转发规则失败：${String(e)}`;
     messageType.value = "error";
   } finally {
     saving.value = false;
-    setTimeout(() => (statusMessage.value = ""), 5000);
+    window.setTimeout(() => (statusMessage.value = ""), 4200);
   }
+}
+
+function startEdit(rule?: ForwardRule) {
+  editorForm.value = rule ? toForm(rule) : createEmptyRule();
+  selectedIds.value = rule?.id ? new Set([rule.id]) : new Set();
+  resetModalPosition();
+  editorOpen.value = true;
+}
+
+function cancelEdit() {
+  editorOpen.value = false;
+  editorForm.value = selectedRule.value ? toForm(selectedRule.value) : createEmptyRule();
+}
+
+function toggleSelectRule(rule: ForwardRule, checked: boolean) {
+  const next = new Set(selectedIds.value);
+  if (checked) {
+    next.add(rule.id);
+    editorForm.value = toForm(rule);
+  } else {
+    next.delete(rule.id);
+  }
+  selectedIds.value = next;
 }
 
 async function deleteRule(id: string) {
   mutating.value = true;
   try {
     await invoke("delete_forward_rule", { ruleId: id });
-    selectedIds.value = new Set(Array.from(selectedIds.value).filter((item) => item !== id));
-    if (editorForm.value.id === id) {
-      editorForm.value = createEmptyRule();
-      showEditor.value = false;
-    }
-    await loadRules();
+    setRules(rules.value.filter((rule) => rule.id !== id));
     statusMessage.value = "转发规则已删除";
     messageType.value = "success";
     notifyDataChanged();
-  } catch (e: any) {
-    statusMessage.value = `删除失败：${String(e)}`;
+  } catch (e) {
+    statusMessage.value = `删除转发规则失败：${String(e)}`;
     messageType.value = "error";
   } finally {
     mutating.value = false;
+    window.setTimeout(() => (statusMessage.value = ""), 4200);
   }
 }
 
-async function toggleRuleEnabled(rule: ForwardRule) {
-  const newEnabled = !rule.enabled;
+async function setRuleEnabled(rule: ForwardRule, enabled: boolean) {
+  const previous = rule.enabled;
+  rule.enabled = enabled;
   mutating.value = true;
   try {
-    await invoke("enable_forward_rule", { ruleId: rule.id, enabled: newEnabled });
-    await loadRules();
-    statusMessage.value = newEnabled ? "转发规则已启用" : "转发规则已禁用";
-    messageType.value = "success";
+    await invoke("enable_forward_rule", { ruleId: rule.id, enabled });
     notifyDataChanged();
-  } catch (e: any) {
-    statusMessage.value = `操作失败：${String(e)}`;
+  } catch (e) {
+    rule.enabled = previous;
+    statusMessage.value = `切换转发规则失败：${String(e)}`;
     messageType.value = "error";
   } finally {
     mutating.value = false;
+    window.setTimeout(() => (statusMessage.value = ""), 4200);
   }
 }
 
-async function batchEnable() {
+async function batchEnable(enabled: boolean) {
   mutating.value = true;
   try {
-    for (const id of selectedIds.value) {
-      const rule = rules.value.find((r) => r.id === id);
-      if (rule && !rule.enabled) {
-        await invoke("enable_forward_rule", { ruleId: rule.id, enabled: true });
-      }
+    for (const id of Array.from(selectedIds.value)) {
+      await invoke("enable_forward_rule", { ruleId: id, enabled });
     }
-    await loadRules();
-    statusMessage.value = "已启用选中的转发规则";
+    rules.value = rules.value.map((rule) =>
+      selectedIds.value.has(rule.id) ? { ...rule, enabled } : rule,
+    );
+    statusMessage.value = enabled ? "已启用选中规则" : "已禁用选中规则";
     messageType.value = "success";
     notifyDataChanged();
-  } catch (e: any) {
-    statusMessage.value = `批量启用失败：${String(e)}`;
+  } catch (e) {
+    statusMessage.value = `批量更新转发规则失败：${String(e)}`;
     messageType.value = "error";
-  } finally {
-    mutating.value = false;
-  }
-}
-
-async function batchDisable() {
-  mutating.value = true;
-  try {
-    for (const id of selectedIds.value) {
-      const rule = rules.value.find((r) => r.id === id);
-      if (rule && rule.enabled) {
-        await invoke("enable_forward_rule", { ruleId: rule.id, enabled: false });
-      }
-    }
     await loadRules();
-    statusMessage.value = "已禁用选中的转发规则";
-    messageType.value = "success";
-    notifyDataChanged();
-  } catch (e: any) {
-    statusMessage.value = `批量禁用失败：${String(e)}`;
-    messageType.value = "error";
   } finally {
     mutating.value = false;
+    window.setTimeout(() => (statusMessage.value = ""), 4200);
   }
 }
 
 async function batchDelete() {
   mutating.value = true;
   try {
-    const ids = Array.from(selectedIds.value);
-    for (const id of ids) {
+    for (const id of Array.from(selectedIds.value)) {
       await invoke("delete_forward_rule", { ruleId: id });
     }
-    selectedIds.value = new Set();
-    editorForm.value = createEmptyRule();
-    showEditor.value = false;
-    await loadRules();
-    statusMessage.value = "已删除选中的转发规则";
+    setRules(rules.value.filter((rule) => !selectedIds.value.has(rule.id)));
+    statusMessage.value = "已删除选中规则";
     messageType.value = "success";
     notifyDataChanged();
-  } catch (e: any) {
-    statusMessage.value = `批量删除失败：${String(e)}`;
+  } catch (e) {
+    statusMessage.value = `批量删除转发规则失败：${String(e)}`;
     messageType.value = "error";
+    await loadRules();
   } finally {
     mutating.value = false;
+    window.setTimeout(() => (statusMessage.value = ""), 4200);
   }
 }
-
-function startEdit(rule?: ForwardRule) {
-  const form = rule ? toForm(rule) : createEmptyRule();
-  editorForm.value = form;
-  showEditor.value = true;
-  selectedIds.value = form.id ? new Set([form.id]) : new Set();
-}
-
-function cancelEdit() {
-  showEditor.value = false;
-}
-
-const statusClass = (status: string): string => {
-  switch (status) {
-    case "正常":
-      return "badge-success";
-    case "冲突":
-    case "错误":
-      return "badge-error";
-    case "未连接":
-      return "badge-warning";
-    case "已禁用":
-      return "badge-disabled";
-    default:
-      return "badge-success";
-  }
-};
 
 onMounted(() => {
   loadRules();
@@ -336,25 +281,25 @@ onMounted(() => {
       <h2>IPv6/IPv4 转发规则</h2>
       <div class="toolbar">
         <button class="btn btn-primary" type="button" @click="startEdit()">
-          <CirclePlus :size="15" :stroke-width="2.2" />
+          <CirclePlus :size="13" :stroke-width="2.2" />
           新增规则
         </button>
         <button
           class="btn btn-secondary"
           type="button"
           :disabled="selectedCount === 0 || loading || mutating"
-          @click="batchEnable"
+          @click="batchEnable(true)"
         >
-          <Play :size="15" :stroke-width="2.2" />
+          <Play :size="13" :stroke-width="2.2" />
           启用
         </button>
         <button
           class="btn btn-secondary"
           type="button"
           :disabled="selectedCount === 0 || loading || mutating"
-          @click="batchDisable"
+          @click="batchEnable(false)"
         >
-          <Pause :size="15" :stroke-width="2.2" />
+          <Pause :size="13" :stroke-width="2.2" />
           禁用
         </button>
         <button
@@ -363,7 +308,7 @@ onMounted(() => {
           :disabled="selectedCount === 0 || loading || mutating"
           @click="batchDelete"
         >
-          <Trash2 :size="15" :stroke-width="2.2" />
+          <Trash2 :size="13" :stroke-width="2.2" />
           删除
         </button>
       </div>
@@ -373,66 +318,41 @@ onMounted(() => {
       {{ statusMessage }}
     </p>
 
-    <div class="table-wrapper">
+    <div class="table-wrap">
       <table class="rules-table">
-        <colgroup>
-          <col class="col-check" />
-          <col class="col-enabled" />
-          <col class="col-protocol" />
-          <col class="col-listen-addr" />
-          <col class="col-listen-port" />
-          <col class="col-target-ip" />
-          <col class="col-target-port" />
-          <col class="col-remark" />
-          <col class="col-status" />
-          <col class="col-actions" />
-        </colgroup>
         <thead>
           <tr>
-            <th class="check-cell">
-              <input
-                type="checkbox"
-                :checked="allSelected"
-                @change="toggleSelectAll(($event.target as HTMLInputElement).checked)"
-              />
-            </th>
             <th>启用</th>
             <th>协议</th>
             <th>监听地址</th>
             <th>监听端口</th>
             <th>目标设备 IP</th>
             <th>目标端口</th>
+            <th>模式</th>
             <th>备注</th>
             <th>状态</th>
             <th>操作</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-if="rules.length === 0" class="empty-row">
-            <td colspan="10">暂无转发规则</td>
+          <tr v-if="rules.length === 0">
+            <td class="empty-cell" colspan="10">
+              {{ loading ? "正在读取转发规则" : "暂无转发规则" }}
+            </td>
           </tr>
           <tr
             v-for="rule in rules"
+            v-else
             :key="rule.id"
-            :class="{ selected: isSelected(rule.id) }"
+            :class="{ selected: selectedIds.has(rule.id) }"
           >
-            <td class="check-cell">
-              <input
-                type="checkbox"
-                :checked="selectedIds.has(rule.id)"
-                @change="toggleSelectRule(rule.id)"
-              />
-            </td>
             <td>
-              <label
-                class="toggle-switch"
-                :aria-label="`${rule.remark || '转发规则'} 启用状态`"
-              >
+              <label class="toggle-switch">
                 <input
                   type="checkbox"
                   :checked="rule.enabled"
                   :disabled="mutating"
-                  @change="toggleRuleEnabled(rule)"
+                  @change="setRuleEnabled(rule, ($event.target as HTMLInputElement).checked)"
                 />
                 <span class="toggle-slider"></span>
               </label>
@@ -442,19 +362,22 @@ onMounted(() => {
             <td>{{ rule.listen_port }}</td>
             <td>{{ rule.target_ip }}</td>
             <td>{{ rule.target_port }}</td>
+            <td>{{ rule.mode }}</td>
             <td>{{ rule.remark || "-" }}</td>
-            <td>
-              <span class="status-pill" :class="statusClass(rule.status)">
-                {{ rule.status || "正常" }}
-              </span>
-            </td>
+            <td>{{ rule.status || "-" }}</td>
             <td>
               <div class="row-actions">
-                <button class="icon-action edit" type="button" title="编辑" @click="startEdit(rule)">
-                  <Pencil :size="15" :stroke-width="2.1" />
+                <input
+                  class="row-check"
+                  type="checkbox"
+                  :checked="selectedIds.has(rule.id)"
+                  @change="toggleSelectRule(rule, ($event.target as HTMLInputElement).checked)"
+                />
+                <button class="icon-action" type="button" title="编辑" @click="startEdit(rule)">
+                  <Pencil :size="13" :stroke-width="2.1" />
                 </button>
-                <button class="icon-action delete" type="button" title="删除" @click="deleteRule(rule.id)">
-                  <Trash2 :size="15" :stroke-width="2.1" />
+                <button class="icon-action" type="button" title="删除" @click="deleteRule(rule.id)">
+                  <Trash2 :size="13" :stroke-width="2.1" />
                 </button>
               </div>
             </td>
@@ -463,73 +386,64 @@ onMounted(() => {
       </table>
     </div>
 
-    <section v-if="showEditor" class="editor-section">
-      <h3>{{ editorTitle }}</h3>
-      <div class="editor-grid">
-        <label>
-          <span>外部协议</span>
-          <select v-model="editorForm.protocol">
-            <option
-              v-for="protocol in IMPLEMENTED_PROTOCOLS"
-              :key="protocol"
-              :value="protocol"
-            >
-              {{ protocol }}
-            </option>
-          </select>
-        </label>
-        <label>
-          <span>监听 IP</span>
-          <input v-model="editorForm.listen_addr" type="text" placeholder=":: 或留空" />
-        </label>
-        <label>
-          <span>监听端口</span>
-          <input
-            v-model.trim="editorForm.listen_port"
-            type="text"
-            inputmode="numeric"
-            placeholder="80;443;1000-1003"
-            title="支持单端口、分号分隔和范围，例如 80;443;1000-1003"
-          />
-        </label>
-        <label>
-          <span>目标设备 IP</span>
-          <input v-model="editorForm.target_ip" type="text" placeholder="目标 IP 地址" />
-        </label>
-        <label>
-          <span>目标端口</span>
-          <input
-            v-model.trim="editorForm.target_port"
-            type="text"
-            inputmode="numeric"
-            placeholder="80 或 2000-2003"
-            title="写一个端口表示所有监听端口转到同一目标端口；也可写同等数量的分号/范围表达式"
-          />
-        </label>
-        <label>
-          <span>转发方式</span>
-          <input :value="FORWARD_MODE_LABEL" type="text" disabled />
-        </label>
-        <label>
-          <span>备注</span>
-          <input v-model="editorForm.remark" type="text" />
-        </label>
-      </div>
-      <div class="editor-actions">
-        <button class="btn btn-primary" type="button" :disabled="saving" @click="saveRule">
-          {{ saving ? "保存中..." : "保存" }}
-        </button>
-        <button class="btn btn-secondary" type="button" :disabled="saving" @click="cancelEdit">
-          取消
-        </button>
-      </div>
-    </section>
-
-    <footer class="panel-footer">
-      <Info class="footer-icon footer-icon-info" :size="18" :stroke-width="2.2" />
-      <span>支持普通 TCP/UDP 转发；监听端口支持 80;443;1000-1003。</span>
-      <span class="rule-summary">启用：{{ enabledCount }} / {{ rules.length }}</span>
-    </footer>
+    <div v-if="editorOpen" class="modal-backdrop" @click.self="cancelEdit">
+      <section class="modal-dialog" :style="modalStyle">
+        <header class="modal-header draggable-header" @pointerdown="startModalDrag">
+          <h3>{{ editorTitle }}</h3>
+          <button class="btn btn-secondary" type="button" @pointerdown.stop @click="cancelEdit">关闭</button>
+        </header>
+        <div class="editor-section">
+          <div class="editor-grid">
+            <label>
+              <span>协议</span>
+              <select v-model="editorForm.protocol">
+                <option
+                  v-for="protocol in IMPLEMENTED_PROTOCOLS"
+                  :key="protocol"
+                  :value="protocol"
+                >
+                  {{ protocol }}
+                </option>
+              </select>
+            </label>
+            <label>
+              <span>监听地址</span>
+              <input v-model="editorForm.listen_addr" type="text" />
+            </label>
+            <label>
+              <span>监听端口</span>
+              <input v-model.trim="editorForm.listen_port" type="text" inputmode="numeric" />
+            </label>
+            <label>
+              <span>目标设备 IP</span>
+              <input v-model="editorForm.target_ip" type="text" />
+            </label>
+            <label>
+              <span>目标端口</span>
+              <input v-model.trim="editorForm.target_port" type="text" inputmode="numeric" />
+            </label>
+            <label>
+              <span>转发模式</span>
+              <select v-model="editorForm.mode">
+                <option value="relay">普通 TCP/UDP 转发</option>
+              </select>
+            </label>
+            <label>
+              <span>备注</span>
+              <input v-model="editorForm.remark" type="text" />
+            </label>
+          </div>
+          <div class="editor-actions">
+            <button class="btn btn-primary" type="button" :disabled="saving" @click="saveRule">
+              保存规则
+            </button>
+            <button class="btn btn-secondary" type="button" :disabled="saving" @click="cancelEdit">
+              取消
+            </button>
+          </div>
+        </div>
+      </section>
+    </div>
   </section>
 </template>
 
@@ -540,173 +454,77 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border: 1px solid rgba(217, 225, 237, 0.95);
+  border: 1px solid rgba(218, 226, 237, 0.95);
   border-radius: var(--radius-md, 8px);
-  background: rgba(255, 255, 255, 0.94);
-  box-shadow: var(--shadow-card);
-}
-
-.rules-panel {
-  height: 100%;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: var(--shadow-panel);
 }
 
 .panel-header {
-  height: 56px;
+  height: 38px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  padding: 0 14px 0 26px;
-  border-bottom: 1px solid #e1e8f2;
+  gap: 12px;
+  padding: 0 14px 0 18px;
+  border-bottom: 1px solid #e6edf5;
 }
 
 .panel-header h2 {
-  font-size: 18px;
+  color: #111827;
+  font-size: 13px;
   font-weight: 800;
-  color: #151922;
   white-space: nowrap;
 }
 
-.toolbar {
+.toolbar,
+.editor-actions,
+.row-actions {
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
 .btn {
-  height: 38px;
+  height: 26px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  padding: 0 12px;
-  border-radius: 5px;
+  gap: 5px;
+  padding: 0 10px;
+  border-radius: 4px;
   border: 1px solid transparent;
-  font-size: 13px;
+  font-size: 11px;
   font-weight: 700;
   white-space: nowrap;
 }
 
-.btn svg,
-.icon-action svg {
-  display: block;
-}
-
 .btn:disabled {
-  opacity: 0.48;
   cursor: not-allowed;
+  opacity: 0.52;
 }
 
 .btn-primary {
   color: #ffffff;
-  background: var(--color-primary, #2563eb);
-  border-color: var(--color-primary, #2563eb);
+  background: var(--color-primary);
+  border-color: var(--color-primary);
 }
 
 .btn-secondary {
-  color: #5c6675;
+  color: #4b5563;
   background: #ffffff;
-  border-color: #d7e0eb;
-}
-
-.plus-icon,
-.play-icon,
-.pause-icon,
-.trash-icon {
-  position: relative;
-  width: 15px;
-  height: 15px;
-  display: inline-block;
-}
-
-.plus-icon::before,
-.plus-icon::after,
-.pause-icon::before,
-.pause-icon::after,
-.trash-icon::before,
-.trash-icon::after {
-  content: "";
-  position: absolute;
-  display: block;
-}
-
-.plus-icon {
-  border: 1.8px solid currentColor;
-  border-radius: 50%;
-}
-
-.plus-icon::before {
-  left: 3px;
-  right: 3px;
-  top: 6px;
-  height: 1.8px;
-  background: currentColor;
-}
-
-.plus-icon::after {
-  top: 3px;
-  bottom: 3px;
-  left: 6px;
-  width: 1.8px;
-  background: currentColor;
-}
-
-.play-icon::before {
-  content: "";
-  position: absolute;
-  left: 4px;
-  top: 2px;
-  width: 0;
-  height: 0;
-  border-top: 5px solid transparent;
-  border-bottom: 5px solid transparent;
-  border-left: 8px solid currentColor;
-}
-
-.pause-icon::before,
-.pause-icon::after {
-  top: 2px;
-  width: 3px;
-  height: 11px;
-  background: currentColor;
-}
-
-.pause-icon::before {
-  left: 4px;
-}
-
-.pause-icon::after {
-  right: 4px;
-}
-
-.trash-icon::before {
-  left: 4px;
-  top: 5px;
-  width: 8px;
-  height: 9px;
-  border: 1.7px solid currentColor;
-  border-top: 0;
-  border-radius: 0 0 2px 2px;
-}
-
-.trash-icon::after {
-  left: 3px;
-  top: 2px;
-  width: 10px;
-  height: 2px;
-  background: currentColor;
-  box-shadow: 3px -2px 0 -0.5px currentColor;
+  border-color: #d8e1ec;
 }
 
 .status-message {
-  margin: 8px 14px 0;
-  padding: 8px 10px;
-  border-radius: 6px;
-  font-size: 13px;
+  margin: 6px 14px 0;
+  padding: 5px 8px;
+  border-radius: 5px;
+  font-size: 11px;
 }
 
 .msg-info {
-  color: #1d4ed8;
+  color: #1769f6;
   background: #eaf2ff;
 }
 
@@ -720,84 +538,109 @@ onMounted(() => {
   background: #fee2e2;
 }
 
-.table-wrapper {
+.table-wrap {
   flex: 1 1 auto;
-  overflow: auto;
   min-height: 0;
+  overflow: auto;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: #b8c7d8 #f3f7fc;
 }
 
-.rules-table {
+table {
   width: 100%;
-  min-width: 0;
+  min-width: 1080px;
   border-collapse: collapse;
   table-layout: fixed;
-  font-size: 13px;
+  font-size: 10.5px;
 }
 
-.rules-table th,
-.rules-table td {
-  height: 40px;
-  padding: 0 8px;
-  border-right: 1px solid #e6edf5;
-  border-bottom: 1px solid #e1e8f2;
-  white-space: nowrap;
+th,
+td {
+  height: 27px;
+  padding: 0 7px;
+  border-bottom: 1px solid #e6edf5;
+  color: #111827;
   text-align: left;
   vertical-align: middle;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.rules-table th {
-  height: 40px;
-  color: #202532;
+th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  height: 30px;
+  color: #182033;
   font-weight: 800;
-  background: #f8fafc;
+  background: #fbfcfe;
 }
 
-.rules-table th:last-child,
-.rules-table td:last-child {
-  border-right: 0;
-}
-
-.rules-table tr.selected td {
-  background: #eef6ff;
-  box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.06);
-}
-
-.rules-table .empty-row td {
-  height: 112px;
-  border-bottom: 0;
-  color: #8a94a6;
+.empty-cell {
+  height: 82px;
   text-align: center;
-  font-weight: 600;
-  background: #ffffff;
+  color: #7b8495;
+  font-size: 12px;
+  font-weight: 700;
 }
 
-.check-cell {
-  width: 36px;
-  text-align: center !important;
+.table-wrap::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
 }
 
-.col-check { width: 36px; }
-.col-enabled { width: 58px; }
-.col-protocol { width: 64px; }
-.col-listen-addr { width: 90px; }
-.col-listen-port { width: 86px; }
-.col-target-ip { width: 128px; }
-.col-target-port { width: 86px; }
-.col-remark { width: 102px; }
-.col-status { width: 76px; }
-.col-actions { width: 72px; }
+.table-wrap::-webkit-scrollbar-track {
+  background: #f3f7fc;
+}
+
+.table-wrap::-webkit-scrollbar-thumb {
+  border: 2px solid #f3f7fc;
+  border-radius: 999px;
+  background: #b8c7d8;
+}
+
+th:nth-child(1),
+td:nth-child(1) {
+  width: 44px;
+  text-align: center;
+}
+
+th:nth-child(2),
+td:nth-child(2),
+th:nth-child(4),
+td:nth-child(4),
+th:nth-child(6),
+td:nth-child(6),
+th:nth-child(9),
+td:nth-child(9) {
+  width: 72px;
+}
+
+th:nth-child(3),
+td:nth-child(3),
+th:nth-child(5),
+td:nth-child(5) {
+  width: 126px;
+}
+
+th:nth-child(10),
+td:nth-child(10) {
+  width: 76px;
+}
 
 input[type="checkbox"] {
-  width: 14px;
-  height: 14px;
-  accent-color: var(--color-primary, #2563eb);
+  width: 13px;
+  height: 13px;
+  accent-color: var(--color-primary);
 }
 
 .toggle-switch {
   position: relative;
   display: inline-block;
-  width: 31px;
-  height: 18px;
+  width: 26px;
+  height: 15px;
 }
 
 .toggle-switch input {
@@ -816,10 +659,10 @@ input[type="checkbox"] {
 .toggle-slider::before {
   content: "";
   position: absolute;
-  left: 3px;
-  top: 3px;
-  width: 12px;
-  height: 12px;
+  left: 2px;
+  top: 2px;
+  width: 11px;
+  height: 11px;
   border-radius: 50%;
   background: #ffffff;
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.2);
@@ -827,59 +670,16 @@ input[type="checkbox"] {
 }
 
 .toggle-switch input:checked + .toggle-slider {
-  background: var(--color-primary, #2563eb);
+  background: var(--color-primary);
 }
 
 .toggle-switch input:checked + .toggle-slider::before {
-  transform: translateX(13px);
-}
-
-.status-pill {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 40px;
-  height: 22px;
-  padding: 0 10px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 800;
-}
-
-.badge-success {
-  color: #15803d;
-  background: #e8f8ee;
-  border: 1px solid #c8edd5;
-}
-
-.badge-warning {
-  color: #b45309;
-  background: #fff7e6;
-  border: 1px solid #f7dfaa;
-}
-
-.badge-error {
-  color: #b91c1c;
-  background: #fee2e2;
-  border: 1px solid #fecaca;
-}
-
-.badge-disabled {
-  color: #64748b;
-  background: #f1f5f9;
-  border: 1px solid #e2e8f0;
-}
-
-.row-actions {
-  display: flex;
-  align-items: center;
-  gap: 12px;
+  transform: translateX(11px);
 }
 
 .icon-action {
-  position: relative;
-  width: 22px;
-  height: 22px;
+  width: 18px;
+  height: 18px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -888,130 +688,92 @@ input[type="checkbox"] {
   color: #4b5563;
 }
 
-.icon-action span,
-.icon-action span::before,
-.icon-action span::after {
-  content: "";
-  position: absolute;
-  display: block;
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  background: rgba(15, 23, 42, 0.28);
 }
 
-.icon-action.edit span {
-  left: 5px;
-  top: 10px;
-  width: 13px;
-  height: 3px;
-  background: currentColor;
-  border-radius: 999px;
-  transform: rotate(-45deg);
+.modal-dialog {
+  width: min(760px, calc(100vw - 72px));
+  overflow: hidden;
+  border: 1px solid rgba(218, 226, 237, 0.95);
+  border-radius: var(--radius-md, 8px);
+  background: #ffffff;
+  box-shadow: 0 22px 70px rgba(15, 23, 42, 0.24);
 }
 
-.icon-action.edit span::before {
-  right: -3px;
-  top: 0;
-  width: 3px;
-  height: 3px;
-  background: currentColor;
+.modal-header {
+  height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 16px 0 18px;
+  border-bottom: 1px solid #e6edf5;
+  user-select: none;
 }
 
-.icon-action.delete span {
-  left: 6px;
-  top: 8px;
-  width: 10px;
-  height: 11px;
-  border: 1.7px solid currentColor;
-  border-top: 0;
-  border-radius: 0 0 2px 2px;
+.modal-header h3 {
+  color: #111827;
+  font-size: 13px;
+  font-weight: 800;
 }
 
-.icon-action.delete span::before {
-  left: -2px;
-  top: -4px;
-  width: 12px;
-  height: 2px;
-  background: currentColor;
+.draggable-header {
+  cursor: move;
 }
 
 .editor-section {
-  padding: 14px 14px 12px;
-  border: 1px solid #b9d5ff;
-  border-left: 0;
-  border-right: 0;
-  background: #f7fbff;
-  box-shadow: inset 0 1px 0 #d7e8ff;
-}
-
-.editor-section h3 {
-  margin-bottom: 10px;
-  font-size: 13px;
-  font-weight: 800;
-  color: #202532;
+  padding: 16px 18px 18px;
 }
 
 .editor-grid {
   display: grid;
-  grid-template-columns: 92px 138px 190px 148px 120px 148px minmax(160px, 1fr);
-  gap: 8px 10px;
-  align-items: end;
+  grid-template-columns: 96px minmax(150px, 1fr) 96px minmax(170px, 1.15fr);
+  gap: 8px 12px;
 }
 
-.editor-grid label {
+label {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
 
-.editor-grid span {
-  font-size: 12px;
-  color: #4f5968;
+.editor-grid label:nth-child(6) {
+  grid-column: 2 / 3;
+}
+
+.editor-grid label:nth-child(7) {
+  grid-column: 3 / 5;
+}
+
+label span {
+  color: #303847;
+  font-size: 11px;
   font-weight: 700;
+  white-space: nowrap;
 }
 
-.editor-grid input,
-.editor-grid select {
+input,
+select {
   width: 100%;
-  height: 32px;
-  border: 1px solid #d7e0eb;
-  border-radius: 5px;
+  height: 28px;
+  border: 1px solid #dae3ee;
+  border-radius: 4px;
   background: #ffffff;
-  color: #202532;
-  padding: 0 10px;
+  color: #111827;
+  padding: 0 8px;
+  font-size: 11px;
   outline: none;
 }
 
 .editor-actions {
-  display: flex;
   justify-content: flex-end;
-  gap: 12px;
-  margin-top: 12px;
+  margin-top: 9px;
 }
-
-.panel-footer {
-  flex: 0 0 auto;
-  min-height: 32px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 16px;
-  color: #5d6b7d;
-  font-size: 12px;
-  border-top: 1px solid #e6edf5;
-  background: #f7fbff;
-}
-
-.footer-icon {
-  flex: 0 0 auto;
-  display: block;
-}
-
-.footer-icon-info {
-  color: #2563eb;
-}
-
-.rule-summary {
-  margin-left: auto;
-  color: #7b8798;
-}
-
 </style>

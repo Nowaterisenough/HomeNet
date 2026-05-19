@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { CircleCheck, Copy, Eye, EyeOff } from "@lucide/vue";
-import type { DdnsConfig, RuntimeStatus } from "../types";
+import { Save, Zap } from "@lucide/vue";
+import type { DeviceDdnsConfig } from "../types";
 
-const defaultConfig: DdnsConfig = {
+const defaultConfig: DeviceDdnsConfig = {
   enabled: false,
   provider: "aliyun",
   access_key_id: "",
@@ -14,44 +14,39 @@ const defaultConfig: DdnsConfig = {
   record_type: "AAAA",
   ttl: 600,
   interval_minutes: 10,
+  device_id: "",
+  device_mac: "",
+  device_name: "",
+  selected_ipv6: "",
+  selected_ip: "",
+  last_update_time: "",
+  last_result: "",
+  last_online: false,
 };
 
-const config = ref<DdnsConfig>({ ...defaultConfig });
-const currentRecord = ref("");
-const lastSuccessTime = ref("");
-const showSecret = ref(false);
+const config = ref<DeviceDdnsConfig>({ ...defaultConfig });
+const subDomain = ref("");
 const saving = ref(false);
-const testing = ref(false);
-const updating = ref(false);
+const syncing = ref(false);
 const statusMessage = ref("");
 const messageType = ref<"info" | "success" | "error">("info");
 
-const isConfigured = computed(
-  () =>
-    Boolean(config.value.access_key_id.trim()) &&
-    Boolean(config.value.access_key_secret.trim()) &&
-    Boolean(config.value.domain.trim()) &&
-    Boolean(config.value.sub_domain.trim()),
-);
-
-const fullDomain = computed(() => {
-  if (!config.value.domain.trim() || !config.value.sub_domain.trim()) {
-    return "未配置域名";
-  }
-  return `${config.value.sub_domain.trim()}.${config.value.domain.trim()}`;
+const previewRows = computed(() => {
+  if (!config.value.domain.trim() || !subDomain.value.trim()) return [];
+  const deviceName = config.value.device_name.trim() || "已绑定设备";
+  return [[deviceName, `${subDomain.value.trim()}.${config.value.domain.trim()}`]];
 });
 
-const enabledChip = computed(() => (config.value.enabled ? "已启用" : "未启用"));
-const statusChip = computed(() => (config.value.enabled ? "运行中" : "已停止"));
-const footerUpdateText = computed(() =>
-  lastSuccessTime.value ? `最后成功更新：${lastSuccessTime.value}` : "暂无成功更新记录",
-);
-
-function normalizeConfig(data: Partial<DdnsConfig> | null | undefined): DdnsConfig {
+function normalizeConfig(data: Partial<DeviceDdnsConfig> | null | undefined): DeviceDdnsConfig {
   return {
     ...defaultConfig,
     ...data,
+    enabled: data?.enabled ?? defaultConfig.enabled,
     provider: data?.provider || defaultConfig.provider,
+    access_key_id: data?.access_key_id || "",
+    access_key_secret: data?.access_key_secret || "",
+    domain: data?.domain || "",
+    sub_domain: data?.sub_domain || "",
     record_type: data?.record_type || defaultConfig.record_type,
     ttl: Number(data?.ttl) || defaultConfig.ttl,
     interval_minutes: Number(data?.interval_minutes) || defaultConfig.interval_minutes,
@@ -60,183 +55,96 @@ function normalizeConfig(data: Partial<DdnsConfig> | null | undefined): DdnsConf
 
 async function loadConfig() {
   try {
-    const data = await invoke<DdnsConfig>("get_ddns_config");
+    const data = await invoke<DeviceDdnsConfig>("get_device_ddns_config");
     config.value = normalizeConfig(data);
-    await Promise.all([loadCurrentRecord(), loadLastUpdateTime()]);
-  } catch (e: any) {
+    subDomain.value = config.value.sub_domain;
+    statusMessage.value = "";
+  } catch (e) {
     config.value = { ...defaultConfig };
-    statusMessage.value = `加载 DDNS 配置失败：${String(e)}`;
+    subDomain.value = "";
+    statusMessage.value = `读取 DDNS 绑定配置失败：${String(e)}`;
     messageType.value = "error";
-  }
-}
-
-async function loadCurrentRecord() {
-  if (!isConfigured.value) {
-    currentRecord.value = "";
-    return;
-  }
-  try {
-    currentRecord.value = await invoke<string>("get_ddns_current_record");
-  } catch {
-    currentRecord.value = "";
-  }
-}
-
-async function loadLastUpdateTime() {
-  try {
-    const status = await invoke<RuntimeStatus>("get_runtime_status");
-    lastSuccessTime.value =
-      status.last_update_time && status.last_update_time !== "暂无"
-        ? status.last_update_time
-        : "";
-  } catch {
-    lastSuccessTime.value = "";
   }
 }
 
 function notifyDataChanged() {
   window.dispatchEvent(new CustomEvent("homenet:logs-refresh"));
   window.dispatchEvent(new CustomEvent("homenet:refresh-status"));
+  window.dispatchEvent(new CustomEvent("homenet:devices-refresh"));
 }
 
-function validateConfig(requireEnabled: boolean): string {
-  if (requireEnabled && !config.value.enabled) {
-    return "DDNS 未启用，请先打开开关";
-  }
+function validateConfig(): string {
   if (!config.value.access_key_id.trim() || !config.value.access_key_secret.trim()) {
     return "请填写完整的 AccessKey ID 和 Secret";
   }
-  if (!config.value.domain.trim() || !config.value.sub_domain.trim()) {
-    return "请填写完整的主域名和子域名";
+  if (!config.value.domain.trim() || !subDomain.value.trim()) {
+    return "请填写主域名和子域名";
+  }
+  if (subDomain.value.includes(",")) {
+    return "当前后端按单设备 DDNS 生效，请填写一个子域名";
   }
   return "";
 }
 
-async function persistConfig(showSuccess: boolean) {
-  saving.value = true;
-  try {
-    await invoke("save_ddns_config", { config: config.value });
-    notifyDataChanged();
-    if (showSuccess) {
-      statusMessage.value = "DDNS 配置已保存";
-      messageType.value = "success";
-    }
-    return true;
-  } catch (e: any) {
-    statusMessage.value = `保存失败：${String(e)}`;
-    messageType.value = "error";
-    return false;
-  } finally {
-    saving.value = false;
-  }
+function buildPayload(): DeviceDdnsConfig {
+  return {
+    ...config.value,
+    sub_domain: subDomain.value.trim(),
+    ttl: Number(config.value.ttl) || defaultConfig.ttl,
+    interval_minutes: Number(config.value.interval_minutes) || defaultConfig.interval_minutes,
+  };
 }
 
 async function saveConfig() {
-  if (config.value.enabled) {
-    const error = validateConfig(false);
-    if (error) {
-      statusMessage.value = error;
-      messageType.value = "error";
-      return;
-    }
-  }
-  await persistConfig(true);
-  setTimeout(() => (statusMessage.value = ""), 5000);
-}
-
-async function testConnection() {
-  const error = validateConfig(false);
+  const error = validateConfig();
   if (error) {
     statusMessage.value = error;
     messageType.value = "error";
     return;
   }
-  testing.value = true;
-  statusMessage.value = "";
+
+  saving.value = true;
+  const payload = buildPayload();
+
   try {
-    const result = await invoke<string>("test_ddns_connection", {
-      config: config.value,
-    });
-    statusMessage.value = result || "测试连接成功";
+    await invoke("save_device_ddns_config", { config: payload });
+    config.value = payload;
+    statusMessage.value = "DDNS 绑定配置已保存";
     messageType.value = "success";
     notifyDataChanged();
-  } catch (e: any) {
-    statusMessage.value = `测试连接失败：${String(e)}`;
+  } catch (e) {
+    statusMessage.value = `保存 DDNS 绑定配置失败：${String(e)}`;
     messageType.value = "error";
   } finally {
-    testing.value = false;
+    saving.value = false;
+    window.setTimeout(() => (statusMessage.value = ""), 4200);
   }
 }
 
-async function triggerUpdate() {
-  const error = validateConfig(true);
+async function syncNow() {
+  const error = validateConfig();
   if (error) {
     statusMessage.value = error;
     messageType.value = "error";
     return;
   }
-  updating.value = true;
-  statusMessage.value = "";
+
+  syncing.value = true;
   try {
-    const saved = await persistConfig(false);
-    if (!saved) return;
-    const result = await invoke<string>("trigger_ddns_update", {
-      config: config.value,
+    const result = await invoke<string>("trigger_device_ddns_update", {
+      config: buildPayload(),
     });
-    statusMessage.value = result || "更新请求已发出";
+    await loadConfig();
+    statusMessage.value = result || "DDNS 同步请求已发送";
     messageType.value = "success";
-    await Promise.all([loadCurrentRecord(), loadLastUpdateTime()]);
     notifyDataChanged();
-  } catch (e: any) {
-    statusMessage.value = `更新失败：${String(e)}`;
+  } catch (e) {
+    statusMessage.value = `DDNS 同步失败：${String(e)}`;
     messageType.value = "error";
   } finally {
-    updating.value = false;
+    syncing.value = false;
+    window.setTimeout(() => (statusMessage.value = ""), 5200);
   }
-}
-
-async function toggleEnabled(event: Event) {
-  const input = event.target as HTMLInputElement;
-  const previous = config.value.enabled;
-  config.value.enabled = input.checked;
-  if (config.value.enabled) {
-    const error = validateConfig(false);
-    if (error) {
-      config.value.enabled = previous;
-      statusMessage.value = error;
-      messageType.value = "error";
-      return;
-    }
-  }
-  const saved = await persistConfig(false);
-  if (!saved) {
-    config.value.enabled = previous;
-  }
-}
-
-function toggleSecret() {
-  showSecret.value = !showSecret.value;
-}
-
-async function copyCurrentRecord() {
-  if (!currentRecord.value.trim()) {
-    statusMessage.value = "暂无可复制的解析值";
-    messageType.value = "info";
-    return;
-  }
-  try {
-    await navigator.clipboard.writeText(currentRecord.value);
-    statusMessage.value = "解析值已复制";
-    messageType.value = "success";
-  } catch (e: any) {
-    statusMessage.value = `复制失败：${String(e)}`;
-    messageType.value = "error";
-  }
-}
-
-function openLogs() {
-  window.dispatchEvent(new CustomEvent("homenet:logs-refresh"));
-  window.dispatchEvent(new CustomEvent("homenet:focus-logs"));
 }
 
 onMounted(() => {
@@ -245,129 +153,85 @@ onMounted(() => {
 </script>
 
 <template>
-  <section class="panel ddns-panel">
+  <section class="panel binding-panel">
     <header class="panel-header">
-      <h2>阿里云 DDNS</h2>
-      <div class="panel-chips">
-        <span class="chip" :class="config.enabled ? 'chip-success' : 'chip-muted'">
-          {{ enabledChip }}
-        </span>
-        <span class="chip" :class="config.enabled ? 'chip-success' : 'chip-muted'">
-          {{ statusChip }}
-        </span>
-        <label class="toggle-switch" aria-label="启用 DDNS">
-          <input
-            type="checkbox"
-            :checked="config.enabled"
-            :disabled="saving"
-            @change="toggleEnabled"
-          />
-          <span class="toggle-slider"></span>
-        </label>
-      </div>
+      <h2>设备 DDNS 解析配置</h2>
     </header>
 
     <p v-if="statusMessage" class="status-message" :class="`msg-${messageType}`">
       {{ statusMessage }}
     </p>
 
-    <div class="form-grid">
-      <label class="field-row">
-        <span>AccessKey ID</span>
-        <input v-model="config.access_key_id" type="text" />
-      </label>
+    <div class="binding-layout">
+      <div class="form-grid">
+        <label>
+          <span>DDNS 服务商</span>
+          <select v-model="config.provider">
+            <option value="aliyun">阿里云</option>
+          </select>
+        </label>
+        <label>
+          <span>子域名</span>
+          <input v-model="subDomain" type="text" />
+        </label>
+        <label>
+          <span>AccessKey ID</span>
+          <input v-model="config.access_key_id" type="text" autocomplete="off" />
+        </label>
+        <label class="toggle-row">
+          <span>启用同步</span>
+          <input v-model="config.enabled" type="checkbox" />
+        </label>
+        <label>
+          <span>AccessKey Secret</span>
+          <input v-model="config.access_key_secret" type="password" autocomplete="off" />
+        </label>
+        <label>
+          <span>记录类型</span>
+          <input type="text" value="AAAA" disabled />
+        </label>
+        <label>
+          <span>主域名</span>
+          <input v-model="config.domain" type="text" />
+        </label>
+        <label>
+          <span>最短 TTL</span>
+          <input v-model.number="config.ttl" type="number" min="60" max="86400" />
+        </label>
+        <label>
+          <span>绑定设备</span>
+          <input :value="config.device_name || config.device_mac || '-'" type="text" disabled />
+        </label>
+        <label>
+          <span>同步间隔</span>
+          <input v-model.number="config.interval_minutes" type="number" min="1" max="1440" />
+        </label>
+      </div>
 
-      <label class="field-row">
-        <span>AccessKey Secret</span>
-        <div class="secret-field">
-          <input
-            v-model="config.access_key_secret"
-            :type="showSecret ? 'text' : 'password'"
-          />
-          <button
-            type="button"
-            class="icon-button eye-button"
-            :aria-label="showSecret ? '隐藏密钥' : '显示密钥'"
-            @click="toggleSecret"
-          >
-            <EyeOff v-if="showSecret" :size="16" :stroke-width="2" />
-            <Eye v-else :size="16" :stroke-width="2" />
-          </button>
+      <aside class="preview-card">
+        <h3>当前生效预览</h3>
+        <div v-if="previewRows.length === 0" class="preview-empty">暂无可预览解析</div>
+        <div v-for="[device, domain] in previewRows" :key="device" class="preview-row">
+          <span>{{ device }}</span>
+          <strong>→</strong>
+          <span>{{ domain }}</span>
         </div>
-      </label>
-
-      <label class="field-row">
-        <span>主域名</span>
-        <input v-model="config.domain" type="text" />
-      </label>
-
-      <label class="field-row">
-        <span>子域名</span>
-        <input v-model="config.sub_domain" type="text" />
-      </label>
-
-      <label class="field-row">
-        <span>记录类型</span>
-        <select v-model="config.record_type">
-          <option value="A">A - 将域名指向一个 IPv4 地址</option>
-          <option value="AAAA">AAAA - 将域名指向一个 IPv6 地址</option>
-        </select>
-      </label>
-
-      <label class="field-row">
-        <span>TTL（秒）</span>
-        <input v-model.number="config.ttl" type="number" min="1" max="86400" />
-      </label>
-
-      <label class="field-row">
-        <span>更新间隔（分钟）</span>
-        <input
-          v-model.number="config.interval_minutes"
-          type="number"
-          min="1"
-          max="1440"
-        />
-      </label>
-
-      <label class="field-row">
-        <span>当前解析值</span>
-        <div class="copy-field">
-          <input
-            :value="currentRecord || '暂无解析值'"
-            type="text"
-            readonly
-            :title="fullDomain"
-          />
-          <button
-            type="button"
-            class="icon-button copy-button"
-            aria-label="复制解析值"
-            @click="copyCurrentRecord"
-          >
-            <Copy :size="16" :stroke-width="2" />
-          </button>
-        </div>
-      </label>
-    </div>
-
-    <div class="actions">
-      <button class="btn btn-primary" type="button" :disabled="updating" @click="triggerUpdate">
-        {{ updating ? "更新中..." : "立即更新" }}
-      </button>
-      <button class="btn btn-secondary" type="button" :disabled="testing" @click="testConnection">
-        {{ testing ? "测试中..." : "测试连接" }}
-      </button>
-      <button class="btn btn-outline-primary" type="button" :disabled="saving" @click="saveConfig">
-        {{ saving ? "保存中..." : "保存配置" }}
-      </button>
+        <p>共 {{ previewRows.length }} 条绑定</p>
+      </aside>
     </div>
 
     <footer class="panel-footer">
-      <span class="footer-status">
-        <CircleCheck class="footer-icon footer-icon-success" :size="20" :stroke-width="2.1" />
-        {{ footerUpdateText }}
-      </span>
-      <button type="button" class="link-button" @click="openLogs">查看历史日志</button>
+      <span><span class="info-dot">i</span> 保存后由后台任务按间隔更新，立即同步会调用真实 DDNS 接口。</span>
+      <div class="footer-actions">
+        <button class="btn btn-primary" type="button" :disabled="saving" @click="saveConfig">
+          <Save :size="13" :stroke-width="2.2" />
+          保存绑定
+        </button>
+        <button class="btn btn-secondary" type="button" :disabled="syncing" @click="syncNow">
+          <Zap :size="13" :stroke-width="2.2" />
+          立即同步
+        </button>
+      </div>
     </footer>
   </section>
 </template>
@@ -379,67 +243,36 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border: 1px solid rgba(217, 225, 237, 0.95);
+  border: 1px solid rgba(218, 226, 237, 0.95);
   border-radius: var(--radius-md, 8px);
-  background: rgba(255, 255, 255, 0.94);
-  box-shadow: var(--shadow-card);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: var(--shadow-panel);
 }
 
 .panel-header {
-  flex: 0 0 52px;
-  height: 52px;
+  height: 36px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 0 14px;
-  border-bottom: 1px solid #e1e8f2;
+  padding: 0 18px;
+  border-bottom: 1px solid #e6edf5;
 }
 
-.panel-header h2 {
-  font-size: 17px;
-  line-height: 1.2;
+h2 {
+  color: #111827;
+  font-size: 13px;
   font-weight: 800;
-  color: #151922;
-}
-
-.panel-chips {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.chip {
-  height: 21px;
-  display: inline-flex;
-  align-items: center;
-  padding: 0 11px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.chip-success {
-  color: #16803c;
-  background: #e7f8ed;
-  border: 1px solid #bdeccf;
-}
-
-.chip-muted {
-  color: #64748b;
-  background: #f1f5f9;
-  border: 1px solid #dbe4ee;
+  white-space: nowrap;
 }
 
 .status-message {
-  flex: 0 0 auto;
-  margin: 10px 16px 0;
-  padding: 8px 10px;
-  border-radius: 6px;
-  font-size: 13px;
+  margin: 6px 14px 0;
+  padding: 5px 8px;
+  border-radius: 5px;
+  font-size: 11px;
 }
 
 .msg-info {
-  color: #1d4ed8;
+  color: #1769f6;
   background: #eaf2ff;
 }
 
@@ -453,233 +286,179 @@ onMounted(() => {
   background: #fee2e2;
 }
 
-.form-grid {
+.binding-layout {
   flex: 1 1 auto;
   min-height: 0;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  padding: 10px 14px 8px;
-}
-
-.form-grid::-webkit-scrollbar {
-  width: 8px;
-}
-
-.form-grid::-webkit-scrollbar-thumb {
-  border: 2px solid rgba(255, 255, 255, 0.94);
-  border-radius: 999px;
-  background: #c9d5e5;
-}
-
-.form-grid::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.field-row {
   display: grid;
-  grid-template-columns: 112px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) 266px;
+  gap: 18px;
+  padding: 14px 18px 8px;
+}
+
+.form-grid {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px 22px;
+  align-content: start;
+}
+
+label {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 86px minmax(0, 1fr);
   align-items: center;
   gap: 10px;
-  min-height: 30px;
-  color: #1f2430;
 }
 
-.field-row > span {
-  font-size: 13px;
-  font-weight: 500;
+label > span {
+  color: #303847;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 input,
 select {
   width: 100%;
-  height: 30px;
-  border: 1px solid #d7e0eb;
-  border-radius: 5px;
-  background: var(--color-input-bg, #ffffff);
-  color: #222936;
-  padding: 0 9px;
-  font-size: 12px;
+  height: 26px;
+  border: 1px solid #dae3ee;
+  border-radius: 4px;
+  background: #ffffff;
+  color: #111827;
+  padding: 0 8px;
+  font-size: 11px;
   outline: none;
-  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.03);
-  transition:
-    border-color 0.15s ease,
-    box-shadow 0.15s ease;
 }
 
-select {
-  appearance: none;
+input:disabled {
+  color: #697386;
+  background: #f4f7fb;
 }
 
-input:focus,
-select:focus {
-  border-color: #78a7f9;
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+input[type="checkbox"] {
+  width: 28px;
+  height: 16px;
+  accent-color: var(--color-primary);
 }
 
-input[readonly] {
-  color: #64748b;
-  background: #f8fafc;
+.toggle-row {
+  grid-template-columns: 86px minmax(0, 1fr);
 }
 
-.secret-field,
-.copy-field {
-  position: relative;
+.preview-card {
+  min-height: 0;
+  padding: 13px 17px;
+  border: 1px solid #e2e9f2;
+  border-radius: 7px;
+  background: #ffffff;
 }
 
-.secret-field input,
-.copy-field input {
-  padding-right: 42px;
+.preview-card h3 {
+  margin-bottom: 14px;
+  color: #111827;
+  font-size: 12px;
+  font-weight: 800;
 }
 
-.icon-button {
-  position: absolute;
-  right: 5px;
-  top: 50%;
-  width: 30px;
+.preview-empty,
+.preview-row {
   height: 28px;
-  border: 0;
-  border-left: 1px solid #dce4ee;
-  background: transparent;
-  transform: translateY(-50%);
+  color: #596579;
+  font-size: 11px;
 }
 
-.icon-button {
+.preview-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 22px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  color: #111827;
+}
+
+.preview-row strong {
+  color: #344052;
+  text-align: center;
+}
+
+.preview-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preview-card p {
+  margin-top: 12px;
+  color: #596579;
+  font-size: 11px;
+}
+
+.panel-footer {
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 18px;
+  color: #596579;
+  font-size: 11px;
+}
+
+.panel-footer > span {
+  min-width: 0;
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  color: #6b7280;
-}
-
-.icon-button svg {
-  display: block;
-}
-
-.actions {
-  flex: 0 0 auto;
-  display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
   gap: 7px;
-  padding: 0 14px 8px;
+  white-space: nowrap;
+}
+
+.info-dot {
+  width: 13px;
+  height: 13px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid var(--color-primary);
+  border-radius: 50%;
+  color: var(--color-primary);
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.footer-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 .btn {
-  height: 32px;
-  border-radius: 5px;
-  font-size: 12px;
-  font-weight: 700;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 12px;
+  border-radius: 4px;
   border: 1px solid transparent;
-  transition:
-    background 0.15s ease,
-    border-color 0.15s ease,
-    color 0.15s ease;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 .btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
+  cursor: wait;
+  opacity: 0.58;
 }
 
 .btn-primary {
   color: #ffffff;
-  background: var(--color-primary, #2563eb);
-  border-color: var(--color-primary, #2563eb);
-}
-
-.btn-primary:hover:not(:disabled) {
-  background: var(--color-primary-hover, #1d4ed8);
+  background: var(--color-primary);
+  border-color: var(--color-primary);
 }
 
 .btn-secondary {
-  color: #1f2937;
+  color: var(--color-primary);
   background: #ffffff;
-  border-color: #d7e0eb;
-}
-
-.btn-outline-primary {
-  color: var(--color-primary, #2563eb);
-  background: #ffffff;
-  border-color: var(--color-primary, #2563eb);
-}
-
-.panel-footer {
-  flex: 0 0 auto;
-  min-height: 34px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin-top: auto;
-  padding: 0 14px;
-  border-top: 1px solid #e1e8f2;
-  color: #697386;
-  font-size: 12px;
-}
-
-.footer-status {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.footer-icon {
-  flex: 0 0 auto;
-  display: block;
-}
-
-.footer-icon-success {
-  color: #16a34a;
-  filter: drop-shadow(0 0 0 #e8f8ee);
-}
-
-.link-button {
-  border: 0;
-  background: transparent;
-  color: #2563eb;
-  font-weight: 600;
-}
-
-.toggle-switch {
-  position: relative;
-  display: inline-block;
-  width: 34px;
-  height: 19px;
-  flex: 0 0 34px;
-}
-
-.toggle-switch input {
-  width: 0;
-  height: 0;
-  opacity: 0;
-}
-
-.toggle-slider {
-  position: absolute;
-  inset: 0;
-  border-radius: 999px;
-  background: #cbd5e1;
-  transition: background 0.15s ease;
-}
-
-.toggle-slider::before {
-  content: "";
-  position: absolute;
-  left: 3px;
-  top: 3px;
-  width: 13px;
-  height: 13px;
-  border-radius: 50%;
-  background: #ffffff;
-  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.22);
-  transition: transform 0.15s ease;
-}
-
-.toggle-switch input:checked + .toggle-slider {
-  background: var(--color-primary, #2563eb);
-}
-
-.toggle-switch input:checked + .toggle-slider::before {
-  transform: translateX(15px);
+  border-color: #d8e1ec;
 }
 </style>
