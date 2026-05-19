@@ -10,6 +10,8 @@ enum TrayIconAction {
     Ignore,
 }
 
+const TRAY_TOOLTIP: &str = "HomeNet";
+
 fn tray_icon_action(event: &TrayIconEvent) -> TrayIconAction {
     match event {
         TrayIconEvent::DoubleClick {
@@ -48,7 +50,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or_else(|| app.default_window_icon().unwrap().clone()),
         )
         .menu(&menu)
-        .tooltip("HomeNet · DDNS与端口转发")
+        .tooltip(TRAY_TOOLTIP)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "show" => {
                 show_main_window(app);
@@ -72,7 +74,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{tray_icon_action, TrayIconAction};
+    use super::{tray_icon_action, TrayIconAction, TRAY_TOOLTIP};
     use tauri::{
         tray::{MouseButton, MouseButtonState, TrayIconEvent, TrayIconId},
         PhysicalPosition, PhysicalSize, Position, Rect, Size,
@@ -85,16 +87,46 @@ mod tests {
         }
     }
 
-    #[test]
-    fn left_double_click_restores_main_window() {
-        let event = TrayIconEvent::DoubleClick {
+    fn left_double_click_event() -> TrayIconEvent {
+        TrayIconEvent::DoubleClick {
             id: TrayIconId::new("main"),
             position: PhysicalPosition::new(0.0, 0.0),
             rect: empty_rect(),
             button: MouseButton::Left,
+        }
+    }
+
+    #[test]
+    fn windows_tray_left_double_click_restores_main_window() {
+        assert_eq!(
+            tray_icon_action(&left_double_click_event()),
+            TrayIconAction::RestoreMainWindow
+        );
+    }
+
+    #[test]
+    fn macos_tray_left_double_click_restores_main_window() {
+        assert_eq!(
+            tray_icon_action(&left_double_click_event()),
+            TrayIconAction::RestoreMainWindow
+        );
+    }
+
+    #[test]
+    fn tray_tooltip_uses_product_name_only() {
+        assert_eq!(TRAY_TOOLTIP, "HomeNet");
+    }
+
+    #[test]
+    fn right_double_click_does_not_restore_main_window() {
+        let event = TrayIconEvent::DoubleClick {
+            id: TrayIconId::new("main"),
+            position: PhysicalPosition::new(0.0, 0.0),
+            rect: empty_rect(),
+            button: MouseButton::Right,
         };
 
-        assert_eq!(tray_icon_action(&event), TrayIconAction::RestoreMainWindow);
+        assert_eq!(tray_icon_action(&event), TrayIconAction::Ignore);
     }
 
     #[test]
