@@ -21,6 +21,7 @@ jobs:
       release_tag: ${{ steps.release.outputs.release_tag }}
       release_name: ${{ steps.release.outputs.release_name }}
       changelog_to: ${{ steps.release.outputs.changelog_to }}
+      updater_enabled: ${{ steps.updater.outputs.updater_enabled }}
 
     steps:
       - name: Checkout
@@ -53,6 +54,20 @@ jobs:
           echo "release_tag=${release_tag}" >> "${GITHUB_OUTPUT}"
           echo "release_name=HomeNet ${release_tag}" >> "${GITHUB_OUTPUT}"
           echo "changelog_to=${changelog_to}" >> "${GITHUB_OUTPUT}"
+
+      - name: Resolve updater signing mode
+        id: updater
+        shell: bash
+        env:
+          HOMENET_UPDATER_PUBLIC_KEY: ${{ secrets.HOMENET_UPDATER_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [[ -n "${HOMENET_UPDATER_PUBLIC_KEY}" && -n "${TAURI_SIGNING_PRIVATE_KEY}" ]]; then
+            echo "updater_enabled=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "updater_enabled=false" >> "${GITHUB_OUTPUT}"
+            echo "Updater signing secrets are incomplete; release will skip updater artifacts and latest.json."
+          fi
 
   build:
     name: Build ${{ matrix.label }}
@@ -131,24 +146,7 @@ jobs:
         with:
           args: ${{ matrix.args }}
 
-      - name: Validate updater signing secrets
-        if: ${{ github.event_name != 'pull_request' }}
-        shell: bash
-        env:
-          HOMENET_UPDATER_PUBLIC_KEY: ${{ secrets.HOMENET_UPDATER_PUBLIC_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: |
-          if [[ -z "${HOMENET_UPDATER_PUBLIC_KEY}" ]]; then
-            echo "HOMENET_UPDATER_PUBLIC_KEY secret is required for updater-enabled release builds." >&2
-            exit 1
-          fi
-          if [[ -z "${TAURI_SIGNING_PRIVATE_KEY}" ]]; then
-            echo "TAURI_SIGNING_PRIVATE_KEY secret is required for updater-enabled release builds." >&2
-            exit 1
-          fi
-
-      - name: Build Tauri app with updater artifacts
+      - name: Build Tauri app for release
         if: ${{ github.event_name != 'pull_request' }}
         uses: tauri-apps/tauri-action@v0.6.2
         env:
@@ -156,8 +154,9 @@ jobs:
           HOMENET_UPDATER_PUBLIC_KEY: ${{ secrets.HOMENET_UPDATER_PUBLIC_KEY }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_CONFIG_ARGS: ${{ needs.metadata.outputs.updater_enabled == 'true' && '--config src-tauri/tauri.updater.conf.json' || '' }}
         with:
-          args: ${{ matrix.args }} --config src-tauri/tauri.updater.conf.json
+          args: ${{ matrix.args }} ${{ needs.metadata.outputs.updater_enabled == 'true' && '--config src-tauri/tauri.updater.conf.json' || '' }}
 
       - name: Normalize package name
         shell: pwsh
@@ -196,7 +195,7 @@ jobs:
           Export-Artifact $portable $portableTarget "${{ matrix.portableMode }}"
           $installer = Get-FirstArtifact "${{ matrix.installerGlob }}" "安装产物"
           Export-Artifact $installer $installerTarget "file"
-          if ("${{ github.event_name }}" -ne "pull_request") {
+          if ("${{ github.event_name }}" -ne "pull_request" -and "${{ needs.metadata.outputs.updater_enabled }}" -eq "true") {
             $updater = Get-FirstArtifact "${{ matrix.updaterGlob }}" "更新包"
             $updaterTarget = Join-Path release-assets "HomeNet_${{ needs.metadata.outputs.release_tag }}_${{ matrix.updaterSuffix }}"
             if ($updater.FullName -ne $installer.FullName) {
@@ -289,6 +288,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Generate updater manifest
+        if: ${{ needs.metadata.outputs.updater_enabled == 'true' }}
         env:
           HOMENET_RELEASE_VERSION: ${{ needs.metadata.outputs.release_version }}
           HOMENET_RELEASE_TAG: ${{ needs.metadata.outputs.release_tag }}

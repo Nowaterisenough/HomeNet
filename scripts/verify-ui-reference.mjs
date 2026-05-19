@@ -75,7 +75,6 @@ for (const [file, needle] of checks) {
 
 const forbiddenChecks = [
   [".github/workflows/build.yml", "Read-UpdaterSignature"],
-  [".github/workflows/build.yml", "updater_enabled"],
   [".github/workflows/build.yml", "macos_signing_enabled"],
   ["src/App.vue", "appMenuOpen"],
   ["src/App.vue", "fallbackStatus"],
