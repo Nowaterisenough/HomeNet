@@ -691,6 +691,52 @@ fn latest_ddns_update_time() -> String {
         .unwrap_or_else(|| "暂无".to_string())
 }
 
+fn runtime_ddns_status(config: &AppConfig) -> &'static str {
+    if config.ddns.enabled
+        || active_device_ddns_configs(config)
+            .iter()
+            .any(|item| item.enabled)
+    {
+        "运行中"
+    } else {
+        "已停止"
+    }
+}
+
+fn latest_enabled_device_ddns_update_time(config: &AppConfig) -> Option<String> {
+    active_device_ddns_configs(config)
+        .into_iter()
+        .filter(|item| item.enabled)
+        .filter_map(|item| {
+            let last_update_time = item.last_update_time.trim();
+            if last_update_time.is_empty() {
+                None
+            } else {
+                Some(last_update_time.to_string())
+            }
+        })
+        .max()
+}
+
+fn latest_runtime_ddns_update_time(config: &AppConfig) -> String {
+    let global_update_time = if config.ddns.enabled {
+        let update_time = latest_ddns_update_time();
+        if update_time == "暂无" {
+            None
+        } else {
+            Some(update_time)
+        }
+    } else {
+        None
+    };
+
+    global_update_time
+        .into_iter()
+        .chain(latest_enabled_device_ddns_update_time(config))
+        .max()
+        .unwrap_or_else(|| "暂无".to_string())
+}
+
 fn forward_rule_label(rule: &ForwardRule) -> String {
     if rule.remark.trim().is_empty() {
         format!("{}:{}", rule.listen_addr.trim(), rule.listen_port)
@@ -999,13 +1045,8 @@ pub async fn get_runtime_status(state: State<'_, AppState>) -> Result<RuntimeSta
     Ok(RuntimeStatus {
         public_ipv4: ipv4.clone(),
         public_ipv6: ipv6.clone(),
-        ddns_status: if cfg.ddns.enabled {
-            "运行中"
-        } else {
-            "已停止"
-        }
-        .to_string(),
-        last_update_time: latest_ddns_update_time(),
+        ddns_status: runtime_ddns_status(&cfg).to_string(),
+        last_update_time: latest_runtime_ddns_update_time(&cfg),
         rule_count: cfg.forward_rules.len() as u32,
         enabled_rule_count: enabled_count as u32,
         reverse_proxy_rule_count: cfg.reverse_proxy_rules.len() as u32,
@@ -2032,5 +2073,42 @@ mod tests {
         assert_eq!(rule.certificate_expires_at, "2026-08-17T00:00:00Z");
         assert_eq!(rule.certificate_last_error, "");
         assert!(rule.certificate.contains("2026-08-17T00:00:00Z"));
+    }
+
+    #[test]
+    fn runtime_ddns_status_runs_when_device_ddns_is_enabled() {
+        let mut config = AppConfig::default();
+        config.ddns.enabled = false;
+        config.device_ddns_configs = vec![DeviceDdnsConfig {
+            enabled: true,
+            device_id: "device-1".to_string(),
+            device_mac: "aa:bb:cc:dd:ee:ff".to_string(),
+            domain: "example.com".to_string(),
+            sub_domain: "nas".to_string(),
+            last_update_time: "2026-05-19 18:58:40".to_string(),
+            ..DeviceDdnsConfig::default()
+        }];
+
+        assert_eq!(runtime_ddns_status(&config), "运行中");
+        assert_eq!(
+            latest_runtime_ddns_update_time(&config),
+            "2026-05-19 18:58:40"
+        );
+    }
+
+    #[test]
+    fn runtime_ddns_status_stops_when_no_ddns_config_is_enabled() {
+        let mut config = AppConfig::default();
+        config.ddns.enabled = false;
+        config.device_ddns_configs = vec![DeviceDdnsConfig {
+            enabled: false,
+            device_id: "device-1".to_string(),
+            device_mac: "aa:bb:cc:dd:ee:ff".to_string(),
+            last_update_time: "2026-05-19 18:58:40".to_string(),
+            ..DeviceDdnsConfig::default()
+        }];
+
+        assert_eq!(runtime_ddns_status(&config), "已停止");
+        assert_eq!(latest_runtime_ddns_update_time(&config), "暂无");
     }
 }
