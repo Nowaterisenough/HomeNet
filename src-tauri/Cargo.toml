@@ -4,6 +4,11 @@ version = "0.1.4"
 description = "HomeNet · DDNS与端口转发"
 authors = ["NoWat"]
 edition = "2021"
+autobins = false
+
+[[bin]]
+name = "HomeNet"
+path = "src/main.rs"
 
 [lib]
 name = "home_net_lib"

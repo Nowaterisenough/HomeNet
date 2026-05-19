@@ -93,7 +93,7 @@ jobs:
             runner: windows-latest
             rustTarget: x86_64-pc-windows-msvc
             args: --target x86_64-pc-windows-msvc --bundles nsis
-            portableGlob: src-tauri/target/x86_64-pc-windows-msvc/release/homenet.exe
+            portableGlob: src-tauri/target/x86_64-pc-windows-msvc/release/HomeNet.exe
             installerGlob: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
             updaterGlob: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
             artifactName: HomeNet-windows-x64

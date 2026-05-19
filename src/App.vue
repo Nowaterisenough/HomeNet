@@ -258,7 +258,7 @@ onUnmounted(() => {
         <button class="menu-button" type="button" aria-label="菜单" @mousedown.stop>
           <Menu :size="21" :stroke-width="2.1" />
         </button>
-        <h1>网络管家 · DDNS 与端口转发</h1>
+        <h1>HomeNet</h1>
         <span
           v-if="updateStatusMessage"
           class="update-status"
