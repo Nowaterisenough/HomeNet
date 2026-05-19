@@ -88,12 +88,9 @@ impl NeighborRow {
 }
 
 pub fn discover_lan_devices() -> Vec<LanDevice> {
+    let local_devices = discover_local_interface_devices();
     let neighbor_devices = discover_neighbor_devices();
-    if neighbor_devices.is_empty() {
-        discover_local_interface_devices()
-    } else {
-        neighbor_devices
-    }
+    merge_local_and_neighbor_devices(local_devices, neighbor_devices)
 }
 
 pub fn is_global_ipv6(value: &str) -> bool {
@@ -344,39 +341,134 @@ fn strip_ipv6_zone(value: &str) -> String {
         .to_string()
 }
 
+fn merge_local_and_neighbor_devices(
+    local_devices: Vec<LanDevice>,
+    neighbor_devices: Vec<LanDevice>,
+) -> Vec<LanDevice> {
+    if local_devices.is_empty() {
+        return neighbor_devices;
+    }
+    if neighbor_devices.is_empty() {
+        return local_devices;
+    }
+
+    let local_ips = local_devices
+        .iter()
+        .flat_map(|device| device.ipv4.iter().chain(device.ipv6.iter()))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    local_devices
+        .into_iter()
+        .chain(neighbor_devices.into_iter().filter(|device| {
+            !device
+                .ipv4
+                .iter()
+                .chain(device.ipv6.iter())
+                .any(|ip| local_ips.contains(ip))
+        }))
+        .collect()
+}
+
 fn discover_local_interface_devices() -> Vec<LanDevice> {
     let now = Utc::now().to_rfc3339();
-    let mut devices_by_name: HashMap<String, LanDevice> = HashMap::new();
-    let mut ordered_names = Vec::new();
 
     let Ok(interfaces) = list_afinet_netifas() else {
         return Vec::new();
     };
+    let local_macs = local_interface_mac_map();
+
+    let mut device = LanDevice {
+        id: "local-machine".to_string(),
+        display_name: "本机设备".to_string(),
+        hostname: "本机设备".to_string(),
+        mac: String::new(),
+        ipv4: Vec::new(),
+        ipv6: Vec::new(),
+        global_ipv6: Vec::new(),
+        online: true,
+        source: "local-interface".to_string(),
+        last_seen: now,
+    };
 
     for (name, ip) in interfaces {
-        let device = devices_by_name.entry(name.clone()).or_insert_with(|| {
-            ordered_names.push(name.clone());
-            LanDevice {
-                id: format!("interface-{}", sanitize_id_part(&name)),
-                display_name: name.clone(),
-                hostname: name.clone(),
-                mac: String::new(),
-                ipv4: Vec::new(),
-                ipv6: Vec::new(),
-                global_ipv6: Vec::new(),
-                online: true,
-                source: "local-interface".to_string(),
-                last_seen: now.clone(),
+        if is_usable_ip(ip) {
+            add_ip_to_device(&mut device, &ip.to_string());
+        }
+        if device.mac.is_empty() {
+            if let Some(mac) = local_macs.get(&name).filter(|mac| is_usable_mac(mac)) {
+                device.mac = mac.clone();
             }
-        });
-
-        add_ip_to_device(device, &ip.to_string());
+        }
+        if !name.trim().is_empty() && device.display_name == "本机设备" {
+            device.display_name = format!("本机设备（{}）", name.trim());
+            device.hostname = device.display_name.clone();
+        }
     }
 
-    ordered_names
-        .into_iter()
-        .filter_map(|name| devices_by_name.remove(&name))
-        .collect()
+    if device.ipv4.is_empty() && device.ipv6.is_empty() {
+        Vec::new()
+    } else {
+        vec![device]
+    }
+}
+
+#[cfg(windows)]
+fn local_interface_mac_map() -> HashMap<String, String> {
+    use std::process::Command;
+
+    let script =
+        "Get-NetAdapter | Select-Object Name,MacAddress | ConvertTo-Json -Compress";
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-Command", script])
+        .output();
+
+    let stdout = output
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).to_string())
+        .unwrap_or_default();
+
+    parse_local_interface_mac_json(&stdout)
+}
+
+#[cfg(not(windows))]
+fn local_interface_mac_map() -> HashMap<String, String> {
+    HashMap::new()
+}
+
+fn parse_local_interface_mac_json(value: &str) -> HashMap<String, String> {
+    let mut result = HashMap::new();
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return result;
+    }
+
+    let rows = match serde_json::from_str::<Value>(trimmed) {
+        Ok(Value::Array(rows)) => rows,
+        Ok(Value::Object(row)) => vec![Value::Object(row)],
+        _ => Vec::new(),
+    };
+
+    for row in rows {
+        let name = row
+            .get("Name")
+            .or_else(|| row.get("name"))
+            .map(value_to_string)
+            .unwrap_or_default();
+        let mac = row
+            .get("MacAddress")
+            .or_else(|| row.get("macAddress"))
+            .map(value_to_string)
+            .and_then(|value| normalize_mac(&value));
+        if !name.trim().is_empty() {
+            if let Some(mac) = mac.filter(|mac| is_usable_mac(mac)) {
+                result.insert(name, mac);
+            }
+        }
+    }
+
+    result
 }
 
 fn add_ip_to_device(device: &mut LanDevice, ip: &str) {
@@ -494,6 +586,37 @@ fn value_to_string(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_device(
+        id: &str,
+        display_name: &str,
+        source: &str,
+        ipv4: Vec<&str>,
+        ipv6: Vec<&str>,
+    ) -> LanDevice {
+        let ipv6 = ipv6
+            .into_iter()
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>();
+        let global_ipv6 = ipv6
+            .iter()
+            .filter(|value| is_global_ipv6(value))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        LanDevice {
+            id: id.to_string(),
+            display_name: display_name.to_string(),
+            hostname: display_name.to_string(),
+            mac: String::new(),
+            ipv4: ipv4.into_iter().map(|value| value.to_string()).collect(),
+            ipv6,
+            global_ipv6,
+            online: true,
+            source: source.to_string(),
+            last_seen: "2026-05-19T00:00:00Z".to_string(),
+        }
+    }
 
     #[test]
     fn classifies_global_ipv6_by_2000_prefix() {
@@ -659,5 +782,63 @@ ff02::1                              33:33:00:00:00:01 en0 permanent  R
         assert_eq!(devices.len(), 1);
         assert_eq!(devices[0].mac, "aa:bb:cc:dd:ee:ff");
         assert_eq!(devices[0].ipv4, vec!["192.168.1.42"]);
+    }
+
+    #[test]
+    fn parses_local_interface_mac_json() {
+        let rows = parse_local_interface_mac_json(
+            r#"[{"Name":"以太网","MacAddress":"AA-BB-CC-DD-EE-FF"}]"#,
+        );
+
+        assert_eq!(rows.get("以太网"), Some(&"aa:bb:cc:dd:ee:ff".to_string()));
+    }
+
+    #[test]
+    fn merged_lan_devices_keep_local_machine_first() {
+        let local = test_device(
+            "local-machine",
+            "本机设备（以太网）",
+            "local-interface",
+            vec!["192.168.1.20"],
+            vec!["240e:35b::20"],
+        );
+        let router = test_device(
+            "mac-aa-bb-cc-dd-ee-ff",
+            "aa:bb:cc:dd:ee:ff",
+            "windows-neighbor",
+            vec!["192.168.1.1"],
+            Vec::new(),
+        );
+
+        let devices = merge_local_and_neighbor_devices(vec![local], vec![router]);
+
+        assert_eq!(devices.len(), 2);
+        assert_eq!(devices[0].id, "local-machine");
+        assert_eq!(devices[0].source, "local-interface");
+        assert_eq!(devices[1].source, "windows-neighbor");
+    }
+
+    #[test]
+    fn merged_lan_devices_drop_neighbor_duplicate_of_local_ip() {
+        let local = test_device(
+            "local-machine",
+            "本机设备（以太网）",
+            "local-interface",
+            vec!["192.168.1.20"],
+            Vec::new(),
+        );
+        let duplicate_neighbor = test_device(
+            "mac-aa-bb-cc-dd-ee-ff",
+            "aa:bb:cc:dd:ee:ff",
+            "windows-neighbor",
+            vec!["192.168.1.20"],
+            Vec::new(),
+        );
+
+        let devices =
+            merge_local_and_neighbor_devices(vec![local], vec![duplicate_neighbor]);
+
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].id, "local-machine");
     }
 }

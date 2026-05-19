@@ -66,6 +66,72 @@ impl AliyunDdns {
         }
     }
 
+    pub fn acme_challenge_rr(identifier: &str, dns_domain: &str) -> Result<String, String> {
+        let identifier = identifier
+            .trim()
+            .trim_start_matches("*.")
+            .trim_end_matches('.')
+            .to_ascii_lowercase();
+        let dns_domain = dns_domain.trim().trim_end_matches('.').to_ascii_lowercase();
+        if identifier.is_empty() || dns_domain.is_empty() {
+            return Err("ACME 域名和 DNS 主域名不能为空".to_string());
+        }
+        if identifier == dns_domain {
+            return Ok("_acme-challenge".to_string());
+        }
+        let suffix = format!(".{}", dns_domain);
+        let Some(host_part) = identifier.strip_suffix(&suffix) else {
+            return Err("ACME 域名必须位于配置的 DNS 主域名下".to_string());
+        };
+        if host_part.trim().is_empty() {
+            Ok("_acme-challenge".to_string())
+        } else {
+            Ok(format!("_acme-challenge.{}", host_part.trim_matches('.')))
+        }
+    }
+
+    pub async fn upsert_txt_record(
+        &self,
+        rr: &str,
+        value: &str,
+        ttl: u32,
+    ) -> Result<String, String> {
+        let rr = rr.trim();
+        let value = value.trim();
+        if rr.is_empty() || value.is_empty() {
+            return Err("TXT 记录名和值不能为空".to_string());
+        }
+        let sub_domain = format!("{}.{}", rr, self.config.domain.trim());
+        let records = self.describe_sub_domain_records(&sub_domain, Some("TXT")).await?;
+        if records
+            .iter()
+            .any(|record| record.rr == rr && record.record_type == "TXT" && record.value == value)
+        {
+            return Ok(format!("TXT 记录已存在：{} -> {}", sub_domain, value));
+        }
+
+        self.add_domain_record_with(&self.config.domain, rr, "TXT", value, ttl)
+            .await?;
+        Ok(format!("TXT 记录已添加：{} -> {}", sub_domain, value))
+    }
+
+    pub async fn delete_txt_record(&self, rr: &str, value: &str) -> Result<(), String> {
+        let rr = rr.trim();
+        let value = value.trim();
+        if rr.is_empty() || value.is_empty() {
+            return Ok(());
+        }
+        let sub_domain = format!("{}.{}", rr, self.config.domain.trim());
+        let records = self.describe_sub_domain_records(&sub_domain, Some("TXT")).await?;
+        for record in records
+            .into_iter()
+            .filter(|record| record.rr == rr && record.record_type == "TXT" && record.value == value)
+        {
+            self.delete_domain_record(&record.record_id).await?;
+        }
+        Ok(())
+    }
+
     /// Test connectivity and credentials by querying DNS records.
     pub async fn test_connection(&self) -> Result<String, String> {
         if self.config.access_key_id.is_empty() || self.config.access_key_secret.is_empty() {
@@ -193,13 +259,31 @@ impl AliyunDdns {
     }
 
     async fn update_domain_record(&self, record_id: &str, value: &str) -> Result<(), String> {
+        self.update_domain_record_with(
+            record_id,
+            &self.config.sub_domain,
+            &self.config.record_type,
+            value,
+            self.config.ttl,
+        )
+        .await
+    }
+
+    async fn update_domain_record_with(
+        &self,
+        record_id: &str,
+        rr: &str,
+        record_type: &str,
+        value: &str,
+        ttl: u32,
+    ) -> Result<(), String> {
         let mut params = BTreeMap::new();
         params.insert("Action".to_string(), "UpdateDomainRecord".to_string());
         params.insert("RecordId".to_string(), record_id.to_string());
-        params.insert("RR".to_string(), self.config.sub_domain.clone());
-        params.insert("Type".to_string(), self.config.record_type.clone());
+        params.insert("RR".to_string(), rr.to_string());
+        params.insert("Type".to_string(), record_type.to_string());
         params.insert("Value".to_string(), value.to_string());
-        params.insert("TTL".to_string(), self.config.ttl.to_string());
+        params.insert("TTL".to_string(), ttl.to_string());
 
         let resp = self.call_api(params).await?;
         if let Some(code) = resp.code {
@@ -213,18 +297,52 @@ impl AliyunDdns {
     }
 
     async fn add_domain_record(&self, value: &str) -> Result<(), String> {
+        self.add_domain_record_with(
+            &self.config.domain,
+            &self.config.sub_domain,
+            &self.config.record_type,
+            value,
+            self.config.ttl,
+        )
+        .await
+    }
+
+    async fn add_domain_record_with(
+        &self,
+        domain: &str,
+        rr: &str,
+        record_type: &str,
+        value: &str,
+        ttl: u32,
+    ) -> Result<(), String> {
         let mut params = BTreeMap::new();
         params.insert("Action".to_string(), "AddDomainRecord".to_string());
-        params.insert("DomainName".to_string(), self.config.domain.clone());
-        params.insert("RR".to_string(), self.config.sub_domain.clone());
-        params.insert("Type".to_string(), self.config.record_type.clone());
+        params.insert("DomainName".to_string(), domain.to_string());
+        params.insert("RR".to_string(), rr.to_string());
+        params.insert("Type".to_string(), record_type.to_string());
         params.insert("Value".to_string(), value.to_string());
-        params.insert("TTL".to_string(), self.config.ttl.to_string());
+        params.insert("TTL".to_string(), ttl.to_string());
 
         let resp = self.call_api(params).await?;
         if let Some(code) = resp.code {
             return Err(format!(
                 "新增记录失败: {} — {}",
+                code,
+                resp.message.unwrap_or_default()
+            ));
+        }
+        Ok(())
+    }
+
+    async fn delete_domain_record(&self, record_id: &str) -> Result<(), String> {
+        let mut params = BTreeMap::new();
+        params.insert("Action".to_string(), "DeleteDomainRecord".to_string());
+        params.insert("RecordId".to_string(), record_id.to_string());
+
+        let resp = self.call_api(params).await?;
+        if let Some(code) = resp.code {
+            return Err(format!(
+                "删除记录失败: {} - {}",
                 code,
                 resp.message.unwrap_or_default()
             ));
@@ -393,4 +511,37 @@ fn secs_to_utc(total_secs: u64) -> (u32, u32, u32, u32, u32, u32) {
 
 fn is_leap(year: u32) -> bool {
     (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn acme_challenge_rr_uses_relative_host_under_dns_domain() {
+        assert_eq!(
+            AliyunDdns::acme_challenge_rr("proxy.example.com", "example.com"),
+            Ok("_acme-challenge.proxy".to_string())
+        );
+        assert_eq!(
+            AliyunDdns::acme_challenge_rr("example.com", "example.com"),
+            Ok("_acme-challenge".to_string())
+        );
+    }
+
+    #[test]
+    fn acme_challenge_rr_strips_wildcard_prefix() {
+        assert_eq!(
+            AliyunDdns::acme_challenge_rr("*.example.com", "example.com"),
+            Ok("_acme-challenge".to_string())
+        );
+    }
+
+    #[test]
+    fn acme_challenge_rr_rejects_domain_outside_dns_zone() {
+        let error = AliyunDdns::acme_challenge_rr("proxy.other.com", "example.com")
+            .expect_err("outside zone should be rejected");
+
+        assert!(error.contains("DNS 主域名"));
+    }
 }
