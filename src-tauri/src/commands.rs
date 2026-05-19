@@ -1,8 +1,14 @@
 use chrono::Local;
+use serde::Deserialize;
 use semver::Version;
-use std::sync::Mutex;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+    sync::Mutex,
+    time::Duration,
+};
 use tauri::{AppHandle, State};
-use tauri_plugin_updater::UpdaterExt;
 use tokio::sync::Mutex as TokioMutex;
 use uuid::Uuid;
 
@@ -25,9 +31,11 @@ pub struct AppState {
     pub reverse_proxy_manager: TokioMutex<ReverseProxyManager>,
 }
 
-const UPDATE_ENDPOINT: &str =
-    "https://github.com/Nowaterisenough/HomeNet/releases/latest/download/latest.json";
-const UPDATE_PUBLIC_KEY: Option<&str> = option_env!("HOMENET_UPDATER_PUBLIC_KEY");
+const GITHUB_LATEST_RELEASE_API: &str =
+    "https://api.github.com/repos/Nowaterisenough/HomeNet/releases/latest";
+const UPDATE_USER_AGENT: &str = concat!("HomeNet/", env!("CARGO_PKG_VERSION"));
+#[cfg(any(target_os = "macos", test))]
+const MACOS_APPLICATION_PATH: &str = "/Applications/HomeNet.app";
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct AppUpdateResult {
@@ -35,6 +43,41 @@ pub struct AppUpdateResult {
     pub current_version: String,
     pub latest_version: String,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GithubRelease {
+    tag_name: String,
+    #[serde(default)]
+    assets: Vec<GithubReleaseAsset>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GithubReleaseAsset {
+    name: String,
+    browser_download_url: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpdateAssetKind {
+    WindowsX64Setup,
+    MacosArm64AppZip,
+}
+
+impl UpdateAssetKind {
+    fn asset_suffix(self) -> &'static str {
+        match self {
+            Self::WindowsX64Setup => "_windows-x64-setup.exe",
+            Self::MacosArm64AppZip => "_macos-arm64-app.zip",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::WindowsX64Setup => "Windows x64 安装包",
+            Self::MacosArm64AppZip => "macOS ARM64 应用包",
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -73,30 +116,179 @@ pub(crate) fn is_release_version_newer(current_version: &str, latest_version: &s
     latest > current
 }
 
-fn resolve_update_public_key<'a>(
-    public_key: Option<&'a str>,
-    current_version: &str,
-) -> Result<&'a str, AppUpdateResult> {
-    if let Some(public_key) = public_key.filter(|value| !value.trim().is_empty()) {
-        return Ok(public_key);
-    }
-
-    let message = if cfg!(debug_assertions) {
-        "当前为开发构建，未配置更新签名公钥，已跳过在线更新检查"
-    } else {
-        "当前构建未配置更新签名公钥，无法在线检查更新"
-    };
-
-    Err(AppUpdateResult {
-        status: "unavailable".to_string(),
-        current_version: current_version.to_string(),
-        latest_version: current_version.to_string(),
-        message: message.to_string(),
-    })
-}
-
 fn update_error_message(error: impl std::fmt::Display) -> String {
     format!("检查或安装更新失败：{}", error)
+}
+
+fn current_update_asset_kind() -> Result<UpdateAssetKind, String> {
+    if cfg!(target_os = "windows") && cfg!(target_arch = "x86_64") {
+        return Ok(UpdateAssetKind::WindowsX64Setup);
+    }
+    if cfg!(target_os = "macos") && cfg!(target_arch = "aarch64") {
+        return Ok(UpdateAssetKind::MacosArm64AppZip);
+    }
+    Err("当前平台暂不支持 GitHub 静默更新".to_string())
+}
+
+fn select_github_update_asset(
+    release: &GithubRelease,
+    kind: UpdateAssetKind,
+) -> Option<&GithubReleaseAsset> {
+    release
+        .assets
+        .iter()
+        .find(|asset| asset.name.ends_with(kind.asset_suffix()))
+}
+
+async fn fetch_latest_github_release(client: &reqwest::Client) -> Result<GithubRelease, String> {
+    let response = client
+        .get(GITHUB_LATEST_RELEASE_API)
+        .header(reqwest::header::USER_AGENT, UPDATE_USER_AGENT)
+        .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+        .send()
+        .await
+        .map_err(update_error_message)?;
+
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("检查更新失败：GitHub 返回 HTTP {}", status));
+    }
+
+    response.json().await.map_err(update_error_message)
+}
+
+async fn download_github_update_asset(
+    client: &reqwest::Client,
+    asset: &GithubReleaseAsset,
+) -> Result<PathBuf, String> {
+    let response = client
+        .get(&asset.browser_download_url)
+        .header(reqwest::header::USER_AGENT, UPDATE_USER_AGENT)
+        .send()
+        .await
+        .map_err(update_error_message)?;
+
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("下载更新失败：GitHub 返回 HTTP {}", status));
+    }
+
+    let bytes = response.bytes().await.map_err(update_error_message)?;
+    let update_dir = std::env::temp_dir().join(format!("homenet-update-{}", Uuid::new_v4()));
+    fs::create_dir_all(&update_dir).map_err(|e| format!("创建更新临时目录失败：{}", e))?;
+    let target = update_dir.join(sanitize_update_asset_filename(&asset.name));
+    tokio::fs::write(&target, bytes)
+        .await
+        .map_err(|e| format!("写入更新包失败：{}", e))?;
+    Ok(target)
+}
+
+fn sanitize_update_asset_filename(name: &str) -> String {
+    let sanitized: String = name
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+
+    if sanitized.trim_matches('_').is_empty() {
+        "HomeNet-update.bin".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn start_platform_update_installer(kind: UpdateAssetKind, package_path: &Path) -> Result<(), String> {
+    match kind {
+        UpdateAssetKind::WindowsX64Setup => start_windows_update_installer(package_path),
+        UpdateAssetKind::MacosArm64AppZip => start_macos_update_installer(package_path),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn start_windows_update_installer(package_path: &Path) -> Result<(), String> {
+    Command::new(package_path)
+        .arg("/S")
+        .spawn()
+        .map_err(|e| format!("启动 Windows 静默安装失败：{}", e))?;
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn start_windows_update_installer(_package_path: &Path) -> Result<(), String> {
+    Err("当前平台不能运行 Windows 安装包".to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn start_macos_update_installer(package_path: &Path) -> Result<(), String> {
+    let script = build_macos_update_script(package_path);
+    let script_path = package_path.with_file_name("install-homenet-update.sh");
+    fs::write(&script_path, script).map_err(|e| format!("写入 macOS 更新脚本失败：{}", e))?;
+    Command::new("sh")
+        .arg(&script_path)
+        .spawn()
+        .map_err(|e| format!("启动 macOS 更新脚本失败：{}", e))?;
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn start_macos_update_installer(_package_path: &Path) -> Result<(), String> {
+    Err("当前平台不能运行 macOS 更新脚本".to_string())
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn build_macos_update_script(package_path: &Path) -> String {
+    let package_path = shell_quote(&package_path.to_string_lossy());
+    format!(
+        r#"#!/bin/bash
+set -e
+
+ZIP_PATH={package_path}
+APP_PATH="{MACOS_APPLICATION_PATH}"
+WORK_DIR="$(mktemp -d /tmp/homenet-update.XXXXXX)"
+
+cleanup() {{
+  rm -rf "$WORK_DIR"
+  rm -f "$ZIP_PATH"
+}}
+trap cleanup EXIT
+
+while pgrep -x "HomeNet" >/dev/null 2>&1; do
+  sleep 1
+done
+
+ditto -x -k "$ZIP_PATH" "$WORK_DIR"
+FOUND_APP="$(find "$WORK_DIR" -maxdepth 3 -name 'HomeNet.app' -type d | head -n 1)"
+if [ -z "$FOUND_APP" ]; then
+  exit 1
+fi
+
+if ! {{ rm -rf "$APP_PATH" && ditto "$FOUND_APP" "$APP_PATH"; }}; then
+  export FOUND_APP
+  osascript <<'APPLESCRIPT'
+set sourceApp to system attribute "FOUND_APP"
+do shell script "rm -rf /Applications/HomeNet.app && ditto " & quoted form of sourceApp & " /Applications/HomeNet.app" with administrator privileges
+APPLESCRIPT
+fi
+
+if sudo -n true 2>/dev/null; then
+  sudo xattr -dr com.apple.quarantine /Applications/HomeNet.app
+else
+  osascript -e 'do shell script "xattr -dr com.apple.quarantine /Applications/HomeNet.app" with administrator privileges'
+fi
+
+open "{MACOS_APPLICATION_PATH}"
+"#
+    )
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn ddns_domain(config: &DdnsConfig) -> String {
@@ -106,7 +298,6 @@ fn ddns_domain(config: &DdnsConfig) -> String {
         format!("{}.{}", config.sub_domain.trim(), config.domain.trim())
     }
 }
-
 fn validate_ddns_config(config: &DdnsConfig) -> Result<(), String> {
     if config.access_key_id.trim().is_empty() || config.access_key_secret.trim().is_empty() {
         return Err("AccessKey ID 或 Secret 未配置".to_string());
@@ -116,7 +307,6 @@ fn validate_ddns_config(config: &DdnsConfig) -> Result<(), String> {
     }
     Ok(())
 }
-
 pub(crate) fn device_ddns_domain(config: &DeviceDdnsConfig) -> String {
     if config.domain.trim().is_empty() || config.sub_domain.trim().is_empty() {
         "未配置域名".to_string()
@@ -124,7 +314,6 @@ pub(crate) fn device_ddns_domain(config: &DeviceDdnsConfig) -> String {
         format!("{}.{}", config.sub_domain.trim(), config.domain.trim())
     }
 }
-
 pub(crate) fn validate_device_ddns_config(config: &DeviceDdnsConfig) -> Result<(), String> {
     if config.access_key_id.trim().is_empty() || config.access_key_secret.trim().is_empty() {
         return Err("AccessKey ID 或 Secret 未配置".to_string());
@@ -141,7 +330,6 @@ pub(crate) fn validate_device_ddns_config(config: &DeviceDdnsConfig) -> Result<(
     }
     Ok(())
 }
-
 pub(crate) fn to_device_ddns_aliyun_config(config: &DeviceDdnsConfig) -> DdnsConfig {
     DdnsConfig {
         enabled: config.enabled,
@@ -1362,67 +1550,61 @@ pub async fn set_auto_start(state: State<'_, AppState>, enabled: bool) -> Result
 #[tauri::command]
 pub async fn install_app_update(app: AppHandle) -> Result<AppUpdateResult, String> {
     let current_version = env!("CARGO_PKG_VERSION").to_string();
-    let public_key = match resolve_update_public_key(UPDATE_PUBLIC_KEY, &current_version) {
-        Ok(public_key) => public_key,
-        Err(result) => return Ok(result),
-    };
+    let asset_kind = current_update_asset_kind()?;
+    let client = reqwest::Client::new();
+    let release = fetch_latest_github_release(&client).await?;
+    let latest_version = release.tag_name.trim().to_string();
+    if latest_version.is_empty() {
+        return Err("GitHub 最新版本缺少 tag_name".to_string());
+    }
 
-    let endpoint: url::Url = UPDATE_ENDPOINT
-        .parse()
-        .map_err(|e| format!("更新源地址无效：{}", e))?;
-    let updater = app
-        .updater_builder()
-        .pubkey(public_key)
-        .endpoints(vec![endpoint])
-        .map_err(update_error_message)?
-        .build()
-        .map_err(update_error_message)?;
-
-    let update = updater.check().await.map_err(update_error_message)?;
-
-    let Some(update) = update else {
-        return Ok(AppUpdateResult {
-            status: "up_to_date".to_string(),
-            current_version: current_version.clone(),
-            latest_version: current_version,
-            message: "当前已经是最新版本".to_string(),
-        });
-    };
-
-    let latest_version = update.version.clone();
     if !is_release_version_newer(&current_version, &latest_version) {
         return Ok(AppUpdateResult {
             status: "up_to_date".to_string(),
             current_version,
-            latest_version,
+            latest_version: latest_version.clone(),
             message: "当前已经是最新版本".to_string(),
         });
     }
 
-    add_log(
-        "info",
-        "更新",
-        &format!("发现新版本 {}，开始后台下载并安装", latest_version),
-    );
-
-    update
-        .download_and_install(|_, _| {}, || {})
-        .await
-        .map_err(update_error_message)?;
+    let asset = select_github_update_asset(&release, asset_kind).ok_or_else(|| {
+        format!(
+            "GitHub Release {} 未找到{}（期望文件后缀 {}）",
+            latest_version,
+            asset_kind.label(),
+            asset_kind.asset_suffix()
+        )
+    })?;
 
     add_log(
         "info",
         "更新",
-        &format!("版本 {} 已安装，正在重启应用", latest_version),
+        &format!(
+            "发现新版本 {}，开始从 GitHub 下载 {}",
+            latest_version, asset.name
+        ),
     );
 
-    app.request_restart();
+    let package_path = download_github_update_asset(&client, asset).await?;
+    start_platform_update_installer(asset_kind, &package_path)?;
+
+    add_log(
+        "info",
+        "更新",
+        &format!("版本 {} 已下载，正在静默安装并重启应用", latest_version),
+    );
+
+    let app_to_exit = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        app_to_exit.exit(0);
+    });
 
     Ok(AppUpdateResult {
         status: "installed".to_string(),
         current_version,
         latest_version: latest_version.clone(),
-        message: format!("版本 {} 已安装，正在重启应用", latest_version),
+        message: format!("版本 {} 已下载，正在静默安装并重启应用", latest_version),
     })
 }
 
@@ -1678,14 +1860,43 @@ mod tests {
     }
 
     #[test]
-    fn missing_update_public_key_returns_unavailable_result() {
-        let result =
-            resolve_update_public_key(None, "0.1.4").expect_err("missing key should not proceed");
+    fn selects_direct_github_release_assets_by_platform() {
+        let release = GithubRelease {
+            tag_name: "v0.1.5".to_string(),
+            assets: vec![
+                GithubReleaseAsset {
+                    name: "HomeNet_v0.1.5_macos-arm64.dmg".to_string(),
+                    browser_download_url: "https://example.com/HomeNet.dmg".to_string(),
+                },
+                GithubReleaseAsset {
+                    name: "HomeNet_v0.1.5_macos-arm64-app.zip".to_string(),
+                    browser_download_url: "https://example.com/HomeNet.app.zip".to_string(),
+                },
+                GithubReleaseAsset {
+                    name: "HomeNet_v0.1.5_windows-x64-setup.exe".to_string(),
+                    browser_download_url: "https://example.com/HomeNet.setup.exe".to_string(),
+                },
+            ],
+        };
 
-        assert_eq!(result.status, "unavailable");
-        assert_eq!(result.current_version, "0.1.4");
-        assert_eq!(result.latest_version, "0.1.4");
-        assert!(result.message.contains("更新签名公钥"));
+        let windows_asset =
+            select_github_update_asset(&release, UpdateAssetKind::WindowsX64Setup).unwrap();
+        assert_eq!(
+            windows_asset.name,
+            "HomeNet_v0.1.5_windows-x64-setup.exe"
+        );
+
+        let macos_asset =
+            select_github_update_asset(&release, UpdateAssetKind::MacosArm64AppZip).unwrap();
+        assert_eq!(macos_asset.name, "HomeNet_v0.1.5_macos-arm64-app.zip");
+    }
+
+    #[test]
+    fn macos_update_script_clears_quarantine_in_applications() {
+        let script = build_macos_update_script(std::path::Path::new("/tmp/HomeNet.zip"));
+
+        assert!(script.contains("sudo xattr -dr com.apple.quarantine /Applications/HomeNet.app"));
+        assert!(script.contains("open \"/Applications/HomeNet.app\""));
     }
 
     #[test]
