@@ -83,8 +83,8 @@ const requiredSnippets = [
   "updater_enabled",
   "macos_signing_enabled",
   "tauri_config_args",
-  "TAURI_SIGNING_PUBLIC_KEY and TAURI_SIGNING_PRIVATE_KEY must be set together",
-  "Apple signing secrets are partially configured",
+  "Write-Warning \"TAURI_SIGNING_PUBLIC_KEY and TAURI_SIGNING_PRIVATE_KEY must be set together",
+  "Write-Warning \"Apple signing secrets are partially configured",
   "if: ${{ steps.release_settings.outputs.macos_signing_enabled == 'true' }}",
   "steps.release_settings.outputs.tauri_config_args",
   "if (\"${{ steps.release_settings.outputs.updater_enabled }}\" -eq \"true\")",
@@ -175,6 +175,8 @@ const forbiddenSnippets = [
   "assetMode:",
   "artifactGlob:",
   "windows-x64-portable.exe",
+  "Write-Error \"TAURI_SIGNING_PUBLIC_KEY and TAURI_SIGNING_PRIVATE_KEY must be set together",
+  "Write-Error \"Apple signing secrets are partially configured",
 ];
 const forbidden = forbiddenSnippets.filter((snippet) => workflow.includes(snippet));
 

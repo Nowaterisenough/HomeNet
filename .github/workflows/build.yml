@@ -146,8 +146,7 @@ jobs:
           $hasUpdaterPublicKey = Test-Set $env:TAURI_SIGNING_PUBLIC_KEY
           $hasUpdaterPrivateKey = Test-Set $env:TAURI_SIGNING_PRIVATE_KEY
           if ((-not $isPullRequest) -and ($hasUpdaterPublicKey -xor $hasUpdaterPrivateKey)) {
-            Write-Error "TAURI_SIGNING_PUBLIC_KEY and TAURI_SIGNING_PRIVATE_KEY must be set together to generate updater artifacts."
-            exit 1
+            Write-Warning "TAURI_SIGNING_PUBLIC_KEY and TAURI_SIGNING_PRIVATE_KEY must be set together to generate updater artifacts. Updater artifacts will be skipped."
           }
 
           $updaterEnabled = (-not $isPullRequest) -and $hasUpdaterPublicKey -and $hasUpdaterPrivateKey
@@ -162,8 +161,7 @@ jobs:
           $missingAppleSecrets = @($appleSecrets.GetEnumerator() | Where-Object { -not (Test-Set $_.Value) } | ForEach-Object { $_.Key })
           $presentAppleSecrets = @($appleSecrets.GetEnumerator() | Where-Object { Test-Set $_.Value } | ForEach-Object { $_.Key })
           if ((-not $isPullRequest) -and $isMacOS -and $presentAppleSecrets.Count -gt 0 -and $missingAppleSecrets.Count -gt 0) {
-            Write-Error "Apple signing secrets are partially configured. Set all of APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, KEYCHAIN_PASSWORD, APPLE_ID, APPLE_PASSWORD, and APPLE_TEAM_ID, or remove them all to build unsigned macOS artifacts."
-            exit 1
+            Write-Warning "Apple signing secrets are partially configured. macOS signing and notarization will be skipped."
           }
 
           $macosSigningEnabled = (-not $isPullRequest) -and $isMacOS -and ($missingAppleSecrets.Count -eq 0)
@@ -413,8 +411,7 @@ jobs:
           $hasUpdaterPublicKey = Test-Set $env:TAURI_SIGNING_PUBLIC_KEY
           $hasUpdaterPrivateKey = Test-Set $env:TAURI_SIGNING_PRIVATE_KEY
           if ($hasUpdaterPublicKey -xor $hasUpdaterPrivateKey) {
-            Write-Error "TAURI_SIGNING_PUBLIC_KEY and TAURI_SIGNING_PRIVATE_KEY must be set together to generate updater artifacts."
-            exit 1
+            Write-Warning "TAURI_SIGNING_PUBLIC_KEY and TAURI_SIGNING_PRIVATE_KEY must be set together to generate updater artifacts. Updater manifest will be skipped."
           }
 
           $updaterEnabled = $hasUpdaterPublicKey -and $hasUpdaterPrivateKey
