@@ -580,12 +580,7 @@ pub(crate) fn device_ddns_device_is_online(
 }
 
 fn first_global_ipv6(device: &LanDevice) -> Option<&str> {
-    device
-        .global_ipv6
-        .iter()
-        .chain(device.ipv6.iter())
-        .map(|value| value.trim())
-        .find(|value| crate::device_discovery::is_global_ipv6(value))
+    crate::ddns::first_stable_global_ipv6_value(device.global_ipv6.iter())
 }
 
 fn first_ipv4(device: &LanDevice) -> Option<&str> {
@@ -615,7 +610,6 @@ pub(crate) fn resolve_device_ipv6(
         let selected_is_available = device
             .global_ipv6
             .iter()
-            .chain(device.ipv6.iter())
             .any(|value| value.trim() == selected_ipv6)
             && crate::device_discovery::is_global_ipv6(selected_ipv6);
 
@@ -1771,6 +1765,24 @@ mod tests {
         assert_eq!(
             resolve_device_ipv6(&config, &devices),
             Ok("2408:8200::new".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_device_ipv6_ignores_selected_ipv6_outside_stable_candidates() {
+        let config = DeviceDdnsConfig {
+            device_id: "device-1".to_string(),
+            selected_ipv6: "2408:8200::1".to_string(),
+            selected_ip: "2408:8200::1".to_string(),
+            ..DeviceDdnsConfig::default()
+        };
+        let mut device = lan_device("device-1", "aa:bb:cc:dd:ee:ff", vec!["2408:8200::2"]);
+        device.ipv6.insert(0, "2408:8200::1".to_string());
+        let devices = vec![device];
+
+        assert_eq!(
+            resolve_device_ipv6(&config, &devices),
+            Ok("2408:8200::2".to_string())
         );
     }
 

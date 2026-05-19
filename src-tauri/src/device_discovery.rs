@@ -2,7 +2,7 @@ use chrono::Utc;
 use local_ip_address::list_afinet_netifas;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -94,13 +94,7 @@ pub fn discover_lan_devices() -> Vec<LanDevice> {
 }
 
 pub fn is_global_ipv6(value: &str) -> bool {
-    match value.parse::<Ipv6Addr>() {
-        Ok(addr) => {
-            let first_segment = addr.segments()[0];
-            (0x2000..=0x3fff).contains(&first_segment)
-        }
-        Err(_) => false,
-    }
+    crate::ddns::is_global_unicast_ipv6(value)
 }
 
 #[cfg(windows)]
@@ -390,6 +384,7 @@ fn discover_local_interface_devices() -> Vec<LanDevice> {
         return Vec::new();
     };
     let local_macs = local_interface_mac_map();
+    let stable_local_ipv6 = crate::ddns::stable_local_ipv6_candidate_set();
 
     let mut device = LanDevice {
         id: "local-machine".to_string(),
@@ -406,7 +401,7 @@ fn discover_local_interface_devices() -> Vec<LanDevice> {
 
     for (name, ip) in interfaces {
         if is_usable_ip(ip) {
-            add_ip_to_device(&mut device, &ip.to_string());
+            add_local_interface_ip_to_device(&mut device, &name, ip, stable_local_ipv6.as_ref());
         }
         if device.mac.is_empty() {
             if let Some(mac) = local_macs.get(&name).filter(|mac| is_usable_mac(mac)) {
@@ -423,6 +418,32 @@ fn discover_local_interface_devices() -> Vec<LanDevice> {
         Vec::new()
     } else {
         vec![device]
+    }
+}
+
+fn add_local_interface_ip_to_device(
+    device: &mut LanDevice,
+    interface_name: &str,
+    ip: IpAddr,
+    stable_local_ipv6: Option<&BTreeSet<(String, Ipv6Addr)>>,
+) {
+    match ip {
+        IpAddr::V4(ipv4) => push_unique(&mut device.ipv4, ipv4.to_string()),
+        IpAddr::V6(ipv6) => {
+            let value = ipv6.to_string();
+            push_unique(&mut device.ipv6, value.clone());
+
+            let is_stable_ddns_ipv6 = match stable_local_ipv6 {
+                Some(stable_local_ipv6) => {
+                    stable_local_ipv6.contains(&(interface_name.trim().to_ascii_lowercase(), ipv6))
+                }
+                None => is_global_ipv6(&value),
+            };
+
+            if is_stable_ddns_ipv6 {
+                push_unique(&mut device.global_ipv6, value);
+            }
+        }
     }
 }
 
@@ -811,6 +832,43 @@ ff02::1                              33:33:00:00:00:01 en0 permanent  R
         assert_eq!(device.global_ipv6, vec!["2408:8200::1234"]);
         assert!(device.online);
         assert_eq!(device.source, "windows-neighbor");
+    }
+
+    #[test]
+    fn local_interface_device_keeps_only_stable_ddns_ipv6_candidates() {
+        let mut device = LanDevice {
+            id: "local-machine".to_string(),
+            display_name: "local".to_string(),
+            hostname: "local".to_string(),
+            mac: String::new(),
+            ipv4: Vec::new(),
+            ipv6: Vec::new(),
+            global_ipv6: Vec::new(),
+            online: true,
+            source: "local-interface".to_string(),
+            last_seen: "2026-05-19T00:00:00Z".to_string(),
+        };
+        let mut stable = BTreeSet::new();
+        stable.insert((
+            "en0".to_string(),
+            "2408:8200::2".parse::<Ipv6Addr>().unwrap(),
+        ));
+
+        add_local_interface_ip_to_device(
+            &mut device,
+            "en0",
+            "2408:8200::1".parse::<IpAddr>().unwrap(),
+            Some(&stable),
+        );
+        add_local_interface_ip_to_device(
+            &mut device,
+            "en0",
+            "2408:8200::2".parse::<IpAddr>().unwrap(),
+            Some(&stable),
+        );
+
+        assert_eq!(device.ipv6, vec!["2408:8200::1", "2408:8200::2"]);
+        assert_eq!(device.global_ipv6, vec!["2408:8200::2"]);
     }
 
     #[test]

@@ -73,7 +73,7 @@ const availableIpOptions = computed(() => {
   if (current.record_type.trim().toUpperCase() === "A") {
     return uniqueStrings(row.raw.ipv4);
   }
-  return uniqueStrings(row.raw.global_ipv6.concat(row.raw.ipv6).filter((ip) => ip.includes(":")));
+  return uniqueStrings(row.raw.global_ipv6.filter((ip) => ip.includes(":")));
 });
 const previewRows = computed(() => {
   const current = draft.value;
@@ -100,7 +100,7 @@ function primaryIp(device: LanDevice): string {
 }
 
 function firstGlobalIpv6(device: LanDevice): string {
-  return device.global_ipv6[0] || device.ipv6.find((ip) => ip.includes(":")) || "";
+  return device.global_ipv6[0] || "";
 }
 
 function normalizeConfig(data: Partial<DeviceDdnsConfig> | null | undefined): DeviceDdnsConfig {
@@ -138,6 +138,15 @@ function configForDevice(device: LanDevice): DeviceDdnsConfig | null {
   return configs.value.find((config) => configMatchesDevice(config, device)) ?? null;
 }
 
+function selectedIpForDevice(config: DeviceDdnsConfig | null, device: LanDevice): string {
+  const configured = config?.selected_ip || config?.selected_ipv6 || "";
+  if (config?.record_type.trim().toUpperCase() === "A") {
+    return configured || device.ipv4[0] || "-";
+  }
+  if (configured && device.global_ipv6.includes(configured)) return configured;
+  return firstGlobalIpv6(device) || "-";
+}
+
 function configuredDomain(config: DeviceDdnsConfig | null): string {
   const domain = config?.domain.trim() ?? "";
   const sub = config?.sub_domain.trim() ?? "";
@@ -159,7 +168,7 @@ function mapLanDevice(device: LanDevice, index: number): DeviceRow {
     enabled: Boolean(config?.enabled),
     domain: configuredDomain(config),
     lastSync: config?.last_update_time || "-",
-    selectedIpv6: config?.selected_ip || config?.selected_ipv6 || firstGlobalIpv6(device) || "-",
+    selectedIpv6: selectedIpForDevice(config, device),
     raw: device,
     config,
   };
@@ -174,15 +183,18 @@ function deviceDisplayNameForDraft(): string {
 function buildDraft(row: DeviceRow): DeviceDdnsConfig {
   const existing = row.config;
   const template = existing ?? configs.value[0] ?? defaultConfig;
+  const recordType = existing?.record_type?.trim().toUpperCase() === "A" ? "A" : "AAAA";
+  const selectedIp = selectedIpForDevice(existing, row.raw);
+  const normalizedSelectedIp = selectedIp === "-" ? "" : selectedIp;
   return normalizeConfig({
     ...template,
     enabled: existing?.enabled ?? true,
     device_id: row.raw.id,
     device_mac: row.raw.mac,
     device_name: existing?.device_name || row.name || row.nativeName,
-    record_type: existing?.record_type || "AAAA",
-    selected_ip: existing?.selected_ip || existing?.selected_ipv6 || firstGlobalIpv6(row.raw),
-    selected_ipv6: existing?.selected_ipv6 || existing?.selected_ip || firstGlobalIpv6(row.raw),
+    record_type: recordType,
+    selected_ip: normalizedSelectedIp,
+    selected_ipv6: recordType === "AAAA" ? normalizedSelectedIp : "",
     last_update_time: existing?.last_update_time || "",
     last_result: existing?.last_result || "",
     last_online: existing?.last_online ?? false,
@@ -262,6 +274,12 @@ function validateDraft(requireEnabled: boolean): string {
   }
   if (!["A", "AAAA"].includes(current.record_type.trim().toUpperCase())) {
     return "记录类型仅支持 A 或 AAAA";
+  }
+  if (current.record_type.trim().toUpperCase() === "AAAA") {
+    if (availableIpOptions.value.length === 0) return "当前设备没有可用于 DDNS 的稳定公网 IPv6";
+    if (current.selected_ip && !availableIpOptions.value.includes(current.selected_ip)) {
+      return "已选 IPv6 不再适合 DDNS，请重新选择";
+    }
   }
   if (current.sub_domain.trim().includes(",")) return "每台设备请填写一个独立子域名";
   return "";
