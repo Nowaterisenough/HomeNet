@@ -12,7 +12,7 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,
-    "jsx": "preserve",
+    "jsx": "react-jsx",
 
     /* Linting */
     "strict": true,
@@ -20,6 +20,14 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src/**/*.ts", "src/**/*.d.ts", "src/**/*.tsx", "src/**/*.vue"],
-  "references": [{ "path": "./tsconfig.node.json" }]
+  "include": [
+    "src/main.tsx",
+    "src/vite-env.d.ts",
+    "src/App.tsx",
+    "src/types.ts",
+    "src/lib/**/*.ts",
+    "src/hooks/**/*.ts",
+    "src/components/**/*.tsx",
+    "vite.config.ts"
+  ]
 }

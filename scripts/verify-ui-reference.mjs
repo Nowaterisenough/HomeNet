@@ -4,46 +4,68 @@ import { join } from "node:path";
 const root = process.cwd();
 const missing = [];
 
-const checks = [
-  ["src/App.vue", 'from "./components/StatusCard.vue"'],
-  ["src/App.vue", 'from "./components/ForwardRulesPanel.vue"'],
-  ["src/App.vue", 'from "./components/DeviceDdnsPanel.vue"'],
-  ["src/App.vue", 'from "./components/ReverseProxyPanel.vue"'],
-  ["src/App.vue", 'from "./components/LogPanel.vue"'],
-  ["src/App.vue", 'from "./components/RuntimeSettingsPanel.vue"'],
-  ["src/App.vue", 'invoke<RuntimeStatus>("get_runtime_status")'],
-  ["src/App.vue", 'invoke<AppUpdateResult>("install_app_update")'],
-  ["src/App.vue", 'invoke<boolean>("get_auto_start")'],
-  ["src/App.vue", 'invoke("set_auto_start"'],
-  ["src/App.vue", "<h1>HomeNet</h1>"],
-  ["src/App.vue", "正在检查更新"],
-  ["src/App.vue", "检查更新失败"],
+const requiredChecks = [
+  ["package.json", '"build": "tsc --noEmit -p tsconfig.json && vite build"'],
+  ["package.json", '"react"'],
+  ["package.json", '"react-dom"'],
+  ["package.json", '"lucide-react"'],
+  ["package.json", '"@vitejs/plugin-react"'],
+  ["vite.config.ts", 'from "@vitejs/plugin-react"'],
+  ["vite.config.ts", "plugins: [react()]"],
+  ["index.html", '<div id="root"></div>'],
+  ["index.html", 'src="/src/main.tsx"'],
+  ["src/main.tsx", "ReactDOM.createRoot"],
+  ["src/main.tsx", 'from "./App"'],
+  ["src/App.tsx", 'from "./components/StatusCard"'],
+  ["src/App.tsx", 'from "./components/ForwardRulesPanel"'],
+  ["src/App.tsx", 'from "./components/DeviceDdnsPanel"'],
+  ["src/App.tsx", 'from "./components/ReverseProxyPanel"'],
+  ["src/App.tsx", 'from "./components/LogPanel"'],
+  ["src/App.tsx", 'from "./components/RuntimeSettingsPanel"'],
+  ["src/App.tsx", 'invokeCommand<RuntimeStatus>("get_runtime_status")'],
+  ["src/App.tsx", 'invokeCommand<AppUpdateResult>("install_app_update")'],
+  ["src/App.tsx", 'invokeCommand<boolean>("get_auto_start")'],
+  ["src/App.tsx", 'invokeCommand("set_auto_start"'],
+  ["src/App.tsx", "<h1>HomeNet</h1>"],
+  ["src/App.tsx", "正在检查更新"],
+  ["src/App.tsx", "检查更新失败"],
   ["src/types.ts", "export interface AppUpdateResult"],
   ["src/types.ts", '"unavailable"'],
-  ["src/components/RuntimeSettingsPanel.vue", "检查更新"],
-  ["src/components/RuntimeSettingsPanel.vue", "自动检查更新"],
-  ["src/components/ForwardRulesPanel.vue", "overflow: auto"],
-  ["src/components/DeviceDdnsPanel.vue", "overflow: auto"],
-  ["src/components/ReverseProxyPanel.vue", "overflow: auto"],
-  ["src/components/ReverseProxyPanel.vue", 'invoke<ReverseProxyRule[]>("list_reverse_proxy_rules")'],
-  ["src/components/ReverseProxyPanel.vue", 'invoke<ReverseProxyRule>("save_reverse_proxy_rule"'],
-  ["src/components/ReverseProxyPanel.vue", 'invoke<ReverseProxyRule>("issue_reverse_proxy_certificate"'],
-  ["src/components/ReverseProxyPanel.vue", "editor.acme_email"],
-  ["src/components/ReverseProxyPanel.vue", 'value="auto"'],
-  ["src/components/DeviceDdnsPanel.vue", 'invoke<LanDevice[]>("list_lan_devices")'],
-  ["src/components/DeviceDdnsPanel.vue", 'invoke<DeviceDdnsConfig[]>("list_device_ddns_configs")'],
-  ["src/components/DeviceDdnsPanel.vue", 'invoke("save_device_ddns_config"'],
-  ["src/components/DeviceDdnsPanel.vue", 'invoke("delete_device_ddns_config"'],
-  ["src/components/DeviceDdnsPanel.vue", "useDraggableModal"],
-  ["src/components/ForwardRulesPanel.vue", "useDraggableModal"],
-  ["src/components/ReverseProxyPanel.vue", "useDraggableModal"],
-  ["src/components/ReverseProxyPanel.vue", "证书配置"],
-  ["src/components/ReverseProxyPanel.vue", "editor.certificate"],
-  ["src/types.ts", "acme_email"],
-  ["src/types.ts", "certificate_path"],
-  ["src/components/LogPanel.vue", "overflow: auto"],
+  ["src/components/RuntimeSettingsPanel.tsx", "检查更新"],
+  ["src/components/RuntimeSettingsPanel.tsx", "自动检查更新"],
+  ["src/components/ForwardRulesPanel.tsx", 'invokeCommand<ForwardRule[]>("list_forward_rules")'],
+  ["src/components/ForwardRulesPanel.tsx", 'invokeCommand<ForwardRule>("save_forward_rule"'],
+  ["src/components/DeviceDdnsPanel.tsx", 'invokeCommand<LanDevice[]>("list_lan_devices")'],
+  [
+    "src/components/DeviceDdnsPanel.tsx",
+    'invokeCommand<DeviceDdnsConfig[]>("list_device_ddns_configs")',
+  ],
+  ["src/components/DeviceDdnsPanel.tsx", 'invokeCommand("save_device_ddns_config"'],
+  ["src/components/DeviceDdnsPanel.tsx", 'invokeCommand("delete_device_ddns_config"'],
+  ["src/components/DeviceDdnsPanel.tsx", "useDraggableModal"],
+  [
+    "src/components/ReverseProxyPanel.tsx",
+    'invokeCommand<ReverseProxyRule[]>("list_reverse_proxy_rules")',
+  ],
+  [
+    "src/components/ReverseProxyPanel.tsx",
+    'invokeCommand<ReverseProxyRule>("save_reverse_proxy_rule"',
+  ],
+  [
+    "src/components/ReverseProxyPanel.tsx",
+    'invokeCommand<ReverseProxyRule>("issue_reverse_proxy_certificate"',
+  ],
+  ["src/components/ReverseProxyPanel.tsx", "匹配域名"],
+  ["src/components/ReverseProxyPanel.tsx", "DDNS"],
+  ["src/components/ReverseProxyPanel.tsx", "证书配置"],
+  ["src/components/LogPanel.tsx", 'invokeCommand<LogEntry[]>("get_recent_logs")'],
+  ["src/hooks/useDraggableModal.ts", "startModalDrag"],
+  ["src/lib/tauri.ts", "currentTauriWindow"],
+  ["src/styles/global.css", "--titlebar-height"],
+  ["src/styles/panels.css", ".modal-backdrop"],
   ["src-tauri/tauri.conf.json", '"productName": "HomeNet"'],
   ["src-tauri/tauri.conf.json", '"title": "HomeNet"'],
+  ["src-tauri/tauri.conf.json", '"devUrl": "http://localhost:1420"'],
   ["src-tauri/tauri.conf.json", '"updater"'],
   ["src-tauri/tauri.updater.conf.json", '"createUpdaterArtifacts": true'],
   ["src-tauri/Cargo.toml", 'name = "homenet"'],
@@ -67,7 +89,7 @@ const checks = [
   ["src-tauri/src/lib.rs", "reverse_proxy_background_task"],
 ];
 
-for (const [file, needle] of checks) {
+for (const [file, needle] of requiredChecks) {
   const filePath = join(root, file);
   if (!existsSync(filePath)) {
     missing.push(`${file}: file is missing`);
@@ -81,25 +103,17 @@ for (const [file, needle] of checks) {
 }
 
 const forbiddenChecks = [
+  ["package.json", '"vue"'],
+  ["package.json", '"vue-tsc"'],
+  ["package.json", '"@vitejs/plugin-vue"'],
+  ["package.json", '"@lucide/vue"'],
+  ["vite.config.ts", "@vitejs/plugin-vue"],
+  ["index.html", 'id="app"'],
+  ["index.html", 'src="/src/main.ts"'],
+  ["src/vite-env.d.ts", "*.vue"],
+  ["src/vite-env.d.ts", 'from "vue"'],
   [".github/workflows/build.yml", "Read-UpdaterSignature"],
   [".github/workflows/build.yml", "macos_signing_enabled"],
-  ["src/App.vue", "appMenuOpen"],
-  ["src/App.vue", "fallbackStatus"],
-  ["src/App.vue", "101.42.16.88"],
-  ["src/App.vue", "2408:4007"],
-  ["src/App.vue", 'from "./components/DdnsPanel.vue"'],
-  ["src/App.vue", "网络管家 · DDNS 与端口转发"],
-  ["src/App.vue", "HomeNet · DDNS 与端口转发"],
-  ["src-tauri/tauri.conf.json", "HomeNet · DDNS与端口转发"],
-  ["src/components/ForwardRulesPanel.vue", "fallbackRules"],
-  ["src/components/ForwardRulesPanel.vue", "192.168.1.10"],
-  ["src/components/DeviceDdnsPanel.vue", "fallbackDevices"],
-  ["src/components/DeviceDdnsPanel.vue", "example.com"],
-  ["src/components/DdnsPanel.vue", "example.com"],
-  ["src/components/LogPanel.vue", "fallbackLogs"],
-  ["src/components/LogPanel.vue", "101.42.16.88"],
-  ["src/components/ReverseProxyPanel.vue", "proxyRules"],
-  ["src/components/ReverseProxyPanel.vue", "nas.example.com"],
 ];
 
 for (const [file, needle] of forbiddenChecks) {
@@ -111,6 +125,26 @@ for (const [file, needle] of forbiddenChecks) {
   const content = readFileSync(filePath, "utf8");
   if (content.includes(needle)) {
     missing.push(`${file}: remove stale implementation '${needle}'`);
+  }
+}
+
+const removedVueFiles = [
+  "src/main.ts",
+  "src/App.vue",
+  "src/components/DdnsPanel.vue",
+  "src/components/DeviceDdnsPanel.vue",
+  "src/components/ForwardRulesPanel.vue",
+  "src/components/LogPanel.vue",
+  "src/components/ReverseProxyPanel.vue",
+  "src/components/RuntimeSettingsPanel.vue",
+  "src/components/StatusCard.vue",
+  "src/composables/useDraggableModal.ts",
+  "src/assets/vue.svg",
+];
+
+for (const file of removedVueFiles) {
+  if (existsSync(join(root, file))) {
+    missing.push(`${file}: stale Vue file should be removed`);
   }
 }
 
