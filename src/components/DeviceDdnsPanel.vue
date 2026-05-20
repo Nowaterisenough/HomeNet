@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { Pencil, RefreshCw, Save, Search, Trash2, UserPlus, Zap } from "@lucide/vue";
 import type { DeviceDdnsConfig, LanDevice } from "../types";
@@ -53,6 +53,12 @@ const syncing = ref(false);
 const statusMessage = ref("");
 const messageType = ref<"info" | "success" | "error">("info");
 const { modalStyle, resetModalPosition, startModalDrag } = useDraggableModal();
+let deviceRefreshTimer: ReturnType<typeof window.setInterval> | null = null;
+
+interface LoadDevicesOptions {
+  refreshDraft?: boolean;
+  showLoading?: boolean;
+}
 
 const rows = computed(() => devices.value.map(mapLanDevice));
 const selectedRow = computed(() => rows.value.find((row) => row.id === selectedId.value) ?? null);
@@ -211,15 +217,19 @@ async function loadConfigs() {
   configs.value = (await invoke<DeviceDdnsConfig[]>("list_device_ddns_configs")).map(normalizeConfig);
 }
 
-async function loadDevices() {
-  loading.value = true;
+async function loadDevices(options: LoadDevicesOptions = {}) {
+  const refreshDraft = options.refreshDraft ?? true;
+  const showLoading = options.showLoading ?? true;
+  if (showLoading) loading.value = true;
   try {
     await loadConfigs();
     devices.value = await invoke<LanDevice[]>("list_lan_devices");
     const current = rows.value.find((row) => row.id === selectedId.value);
     const next = current ?? rows.value.find((row) => row.configured) ?? rows.value[0] ?? null;
     selectedId.value = next?.id ?? "";
-    syncDraftWithSelection();
+    if (refreshDraft || !configDialogOpen.value) {
+      syncDraftWithSelection();
+    }
     statusMessage.value = "";
     window.dispatchEvent(new CustomEvent("homenet:devices-refresh"));
   } catch (e) {
@@ -230,7 +240,7 @@ async function loadDevices() {
     statusMessage.value = `读取局域网设备失败：${String(e)}`;
     messageType.value = "error";
   } finally {
-    loading.value = false;
+    if (showLoading) loading.value = false;
   }
 }
 
@@ -393,10 +403,24 @@ async function syncNow() {
   }
 }
 
-watch(selectedRow, syncDraftWithSelection);
+watch(selectedRow, () => {
+  if (!configDialogOpen.value) {
+    syncDraftWithSelection();
+  }
+});
 
 onMounted(() => {
   loadDevices();
+  deviceRefreshTimer = window.setInterval(() => {
+    loadDevices({ refreshDraft: false, showLoading: false });
+  }, 60_000);
+});
+
+onBeforeUnmount(() => {
+  if (deviceRefreshTimer !== null) {
+    window.clearInterval(deviceRefreshTimer);
+    deviceRefreshTimer = null;
+  }
 });
 </script>
 
@@ -406,15 +430,15 @@ onMounted(() => {
       <header class="panel-header">
         <h2>局域网设备与 DDNS 绑定</h2>
         <div class="toolbar">
-          <button class="btn btn-secondary" type="button" :disabled="loading" @click="loadDevices">
+          <button class="btn btn-secondary" type="button" :disabled="loading" @click="loadDevices()">
             <RefreshCw :class="{ spinning: loading }" :size="13" :stroke-width="2.2" />
             扫描设备
           </button>
-          <button class="btn btn-secondary" type="button" :disabled="loading" @click="loadDevices">
+          <button class="btn btn-secondary" type="button" :disabled="loading" @click="loadDevices()">
             <RefreshCw :size="13" :stroke-width="2.2" />
             刷新
           </button>
-          <button class="btn btn-secondary" type="button" :disabled="loading" @click="loadDevices">
+          <button class="btn btn-secondary" type="button" :disabled="loading" @click="loadDevices()">
             <UserPlus :size="13" :stroke-width="2.2" />
             导入邻居
           </button>

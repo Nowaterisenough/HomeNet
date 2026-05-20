@@ -579,6 +579,66 @@ pub(crate) fn device_ddns_device_is_online(
         .any(|device| device.online && device_matches_config(device, config))
 }
 
+pub(crate) fn refresh_device_ddns_probe_state<F>(
+    config: &DeviceDdnsConfig,
+    devices: &[LanDevice],
+    mut ip_is_reachable: F,
+) -> Vec<LanDevice>
+where
+    F: FnMut(&str) -> bool,
+{
+    devices
+        .iter()
+        .map(|device| {
+            if !device_matches_config(device, config) {
+                return device.clone();
+            }
+
+            let reachable_ipv4 = device
+                .ipv4
+                .iter()
+                .filter(|ip| ip_is_reachable(ip.trim()))
+                .cloned()
+                .collect::<Vec<_>>();
+            let reachable_global_ipv6 = device
+                .global_ipv6
+                .iter()
+                .filter(|ip| ip_is_reachable(ip.trim()))
+                .cloned()
+                .collect::<Vec<_>>();
+            let reachable_ipv6 = device
+                .ipv6
+                .iter()
+                .filter(|ip| {
+                    let ip = ip.trim();
+                    !crate::device_discovery::is_global_ipv6(ip)
+                        || reachable_global_ipv6.iter().any(|value| value.trim() == ip)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            let record_type = config.record_type.trim().to_uppercase();
+
+            let mut next = device.clone();
+            next.ipv4 = reachable_ipv4;
+            next.ipv6 = reachable_ipv6;
+            next.global_ipv6 = reachable_global_ipv6;
+            next.online = if record_type == "A" {
+                !next.ipv4.is_empty()
+            } else {
+                !next.global_ipv6.is_empty()
+            };
+            next
+        })
+        .collect()
+}
+
+pub(crate) fn refresh_device_ddns_probe_state_with_system(
+    config: &DeviceDdnsConfig,
+    devices: &[LanDevice],
+) -> Vec<LanDevice> {
+    refresh_device_ddns_probe_state(config, devices, crate::device_discovery::ip_is_reachable)
+}
+
 fn first_global_ipv6(device: &LanDevice) -> Option<&str> {
     crate::ddns::first_stable_global_ipv6_value(device.global_ipv6.iter())
 }
@@ -1252,6 +1312,7 @@ pub async fn trigger_device_ddns_update(
     validate_device_ddns_config(&device_config)?;
 
     let devices = crate::device_discovery::discover_lan_devices();
+    let devices = refresh_device_ddns_probe_state_with_system(&device_config, &devices);
     let currently_online = device_ddns_device_is_online(&device_config, &devices);
     let domain = device_ddns_domain(&device_config);
     let update_result = update_device_ddns_record(&device_config, &devices).await;
@@ -1784,6 +1845,66 @@ mod tests {
             resolve_device_ipv6(&config, &devices),
             Ok("2408:8200::2".to_string())
         );
+    }
+
+    #[test]
+    fn device_ddns_probe_state_uses_reachable_ipv6_instead_of_stale_selected_ipv6() {
+        let config = DeviceDdnsConfig {
+            device_id: "device-1".to_string(),
+            selected_ipv6: "2408:8200::old".to_string(),
+            selected_ip: "2408:8200::old".to_string(),
+            ..DeviceDdnsConfig::default()
+        };
+        let devices = vec![lan_device(
+            "device-1",
+            "aa:bb:cc:dd:ee:ff",
+            vec!["2408:8200::old", "2408:8200::new"],
+        )];
+
+        let probed =
+            refresh_device_ddns_probe_state(&config, &devices, |ip| ip == "2408:8200::new");
+
+        assert!(device_ddns_device_is_online(&config, &probed));
+        assert_eq!(
+            resolve_device_ipv6(&config, &probed),
+            Ok("2408:8200::new".to_string())
+        );
+    }
+
+    #[test]
+    fn device_ddns_probe_state_marks_bound_device_offline_when_no_ip_is_reachable() {
+        let config = DeviceDdnsConfig {
+            device_id: "device-1".to_string(),
+            ..DeviceDdnsConfig::default()
+        };
+        let devices = vec![lan_device(
+            "device-1",
+            "aa:bb:cc:dd:ee:ff",
+            vec!["2408:8200::10"],
+        )];
+
+        let probed = refresh_device_ddns_probe_state(&config, &devices, |_| false);
+
+        assert!(!device_ddns_device_is_online(&config, &probed));
+    }
+
+    #[test]
+    fn device_ddns_probe_state_for_aaaa_waits_for_reachable_ipv6() {
+        let config = DeviceDdnsConfig {
+            device_id: "device-1".to_string(),
+            record_type: "AAAA".to_string(),
+            ..DeviceDdnsConfig::default()
+        };
+        let devices = vec![lan_device(
+            "device-1",
+            "aa:bb:cc:dd:ee:ff",
+            vec!["2408:8200::10"],
+        )];
+
+        let probed =
+            refresh_device_ddns_probe_state(&config, &devices, |ip| ip == "192.168.110.95");
+
+        assert!(!device_ddns_device_is_online(&config, &probed));
     }
 
     #[test]

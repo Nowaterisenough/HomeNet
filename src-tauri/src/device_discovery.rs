@@ -97,6 +97,14 @@ pub fn is_global_ipv6(value: &str) -> bool {
     crate::ddns::is_global_unicast_ipv6(value)
 }
 
+pub fn ip_is_reachable(value: &str) -> bool {
+    let value = value.trim();
+    let Ok(ip) = value.parse::<IpAddr>() else {
+        return false;
+    };
+    is_usable_ip(ip) && ping_ip_once(value, matches!(ip, IpAddr::V6(_)))
+}
+
 #[cfg(windows)]
 fn discover_neighbor_devices() -> Vec<LanDevice> {
     let script = "Get-NetNeighbor -AddressFamily IPv4,IPv6 | Where-Object { $_.IPAddress -and $_.LinkLayerAddress -and $_.State -ne 'Unreachable' } | Select-Object IPAddress,LinkLayerAddress,State,InterfaceAlias,AddressFamily | ConvertTo-Json -Compress";
@@ -126,6 +134,28 @@ fn powershell_output(script: &str) -> std::io::Result<std::process::Output> {
         .args(powershell_args(script))
         .creation_flags(CREATE_NO_WINDOW)
         .output()
+}
+
+#[cfg(windows)]
+fn ping_ip_once(value: &str, ipv6: bool) -> bool {
+    use std::os::windows::process::CommandExt;
+
+    let family = if ipv6 { "-6" } else { "-4" };
+    std::process::Command::new("ping")
+        .args([family, "-n", "1", "-w", "1000", value])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .ok()
+        .is_some_and(|output| output.status.success())
+}
+
+#[cfg(not(windows))]
+fn ping_ip_once(value: &str, _ipv6: bool) -> bool {
+    std::process::Command::new("ping")
+        .args(["-c", "1", value])
+        .output()
+        .ok()
+        .is_some_and(|output| output.status.success())
 }
 
 #[cfg(target_os = "macos")]
@@ -364,15 +394,24 @@ fn merge_local_and_neighbor_devices(
         .flat_map(|device| device.ipv4.iter().chain(device.ipv6.iter()))
         .cloned()
         .collect::<Vec<_>>();
+    let local_macs = local_devices
+        .iter()
+        .map(|device| device.mac.trim().to_ascii_lowercase())
+        .filter(|mac| !mac.is_empty())
+        .collect::<Vec<_>>();
 
     local_devices
         .into_iter()
         .chain(neighbor_devices.into_iter().filter(|device| {
-            !device
+            let duplicate_ip = device
                 .ipv4
                 .iter()
                 .chain(device.ipv6.iter())
-                .any(|ip| local_ips.contains(ip))
+                .any(|ip| local_ips.contains(ip));
+            let device_mac = device.mac.trim().to_ascii_lowercase();
+            let duplicate_mac = !device_mac.is_empty() && local_macs.contains(&device_mac);
+
+            !duplicate_ip && !duplicate_mac
         }))
         .collect()
 }
@@ -992,6 +1031,33 @@ lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> mtu 16384
 
         assert_eq!(devices.len(), 1);
         assert_eq!(devices[0].id, "local-machine");
+    }
+
+    #[test]
+    fn merged_lan_devices_drop_neighbor_duplicate_of_local_mac() {
+        let mut local = test_device(
+            "local-machine",
+            "local",
+            "local-interface",
+            vec!["192.168.100.143"],
+            vec!["240e:358:13e:3a00::7a7"],
+        );
+        local.mac = "88:c9:b3:b3:02:58".to_string();
+
+        let mut stale_neighbor = test_device(
+            "mac-88-c9-b3-b3-02-58",
+            "88:c9:b3:b3:02:58",
+            "windows-neighbor",
+            Vec::new(),
+            vec!["240e:358:13e:3a00::612"],
+        );
+        stale_neighbor.mac = "88:c9:b3:b3:02:58".to_string();
+
+        let devices = merge_local_and_neighbor_devices(vec![local], vec![stale_neighbor]);
+
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].id, "local-machine");
+        assert_eq!(devices[0].global_ipv6, vec!["240e:358:13e:3a00::7a7"]);
     }
 
     #[test]
