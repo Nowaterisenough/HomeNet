@@ -81,7 +81,7 @@ impl NeighborRow {
     }
 
     fn is_usable(&self) -> bool {
-        !self.state.eq_ignore_ascii_case("unreachable")
+        is_usable_neighbor_state(&self.state)
             && self.ip_address.parse::<IpAddr>().is_ok_and(is_usable_ip)
             && self.normalized_mac().is_some_and(|mac| is_usable_mac(&mac))
     }
@@ -97,17 +97,9 @@ pub fn is_global_ipv6(value: &str) -> bool {
     crate::ddns::is_global_unicast_ipv6(value)
 }
 
-pub fn ip_is_reachable(value: &str) -> bool {
-    let value = value.trim();
-    let Ok(ip) = value.parse::<IpAddr>() else {
-        return false;
-    };
-    is_usable_ip(ip) && ping_ip_once(value, matches!(ip, IpAddr::V6(_)))
-}
-
 #[cfg(windows)]
 fn discover_neighbor_devices() -> Vec<LanDevice> {
-    let script = "Get-NetNeighbor -AddressFamily IPv4,IPv6 | Where-Object { $_.IPAddress -and $_.LinkLayerAddress -and $_.State -ne 'Unreachable' } | Select-Object IPAddress,LinkLayerAddress,State,InterfaceAlias,AddressFamily | ConvertTo-Json -Compress";
+    let script = "Get-NetNeighbor -AddressFamily IPv4,IPv6 | Where-Object { $_.IPAddress -and $_.LinkLayerAddress -and $_.State -ne 'Unreachable' } | Select-Object IPAddress,LinkLayerAddress,@{Name='State';Expression={$_.State.ToString()}},InterfaceAlias,AddressFamily | ConvertTo-Json -Compress";
     let output = powershell_output(script);
 
     match output {
@@ -134,28 +126,6 @@ fn powershell_output(script: &str) -> std::io::Result<std::process::Output> {
         .args(powershell_args(script))
         .creation_flags(CREATE_NO_WINDOW)
         .output()
-}
-
-#[cfg(windows)]
-fn ping_ip_once(value: &str, ipv6: bool) -> bool {
-    use std::os::windows::process::CommandExt;
-
-    let family = if ipv6 { "-6" } else { "-4" };
-    std::process::Command::new("ping")
-        .args([family, "-n", "1", "-w", "1000", value])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .ok()
-        .is_some_and(|output| output.status.success())
-}
-
-#[cfg(not(windows))]
-fn ping_ip_once(value: &str, _ipv6: bool) -> bool {
-    std::process::Command::new("ping")
-        .args(["-c", "1", value])
-        .output()
-        .ok()
-        .is_some_and(|output| output.status.success())
 }
 
 #[cfg(target_os = "macos")]
@@ -253,7 +223,7 @@ fn merge_neighbor_rows_with_source(rows: Vec<NeighborRow>, source: &str) -> Vec<
         });
 
         device.online = true;
-        add_ip_to_device(device, &row.ip_address);
+        add_neighbor_ip_to_device(device, &row.ip_address, &row.state);
     }
 
     ordered_keys
@@ -322,11 +292,20 @@ fn parse_macos_ndp_line(line: &str) -> Option<NeighborRow> {
 
     let link_layer_address = tokens.next()?;
     let interface_alias = tokens.next().unwrap_or_default().to_string();
+    let remaining_tokens = tokens.collect::<Vec<_>>();
+    let state = if remaining_tokens
+        .iter()
+        .any(|token| token.eq_ignore_ascii_case("expired"))
+    {
+        "Stale"
+    } else {
+        "Reachable"
+    };
 
     Some(NeighborRow {
         ip_address,
         link_layer_address: link_layer_address.to_string(),
-        state: "Reachable".to_string(),
+        state: state.to_string(),
         interface_alias,
         _address_family: Some(Value::String("IPv6".to_string())),
     })
@@ -603,12 +582,12 @@ fn parse_local_interface_mac_json(value: &str) -> HashMap<String, String> {
     result
 }
 
-fn add_ip_to_device(device: &mut LanDevice, ip: &str) {
+fn add_neighbor_ip_to_device(device: &mut LanDevice, ip: &str, state: &str) {
     match ip.parse::<IpAddr>() {
         Ok(IpAddr::V4(_)) => push_unique(&mut device.ipv4, ip.to_string()),
         Ok(IpAddr::V6(_)) => {
             push_unique(&mut device.ipv6, ip.to_string());
-            if is_global_ipv6(ip) {
+            if is_global_ipv6(ip) && is_current_neighbor_state(state) {
                 push_unique(&mut device.global_ipv6, ip.to_string());
             }
         }
@@ -683,6 +662,20 @@ fn is_usable_mac(mac: &str) -> bool {
         && !mac.starts_with("01:00:5e:")
         && mac != "ff:ff:ff:ff:ff:ff"
         && mac != "00:00:00:00:00:00"
+}
+
+fn is_usable_neighbor_state(value: &str) -> bool {
+    !matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "unreachable" | "incomplete" | "0" | "1"
+    )
+}
+
+fn is_current_neighbor_state(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "reachable" | "delay" | "probe" | "permanent" | "2" | "3" | "5" | "6"
+    )
 }
 
 fn push_unique(values: &mut Vec<String>, value: String) {
@@ -795,6 +788,7 @@ mod tests {
         let ndp = r#"
 Neighbor                             Linklayer Address  Netif Expire    S Flags
 240e:358:abcd:1234:1111:2222:3333:4444 88:c9:b3:b3:2:58 en0 23h59m59s S R
+240e:358:abcd:1234:9999:8888:7777:6666 88:c9:b3:b3:2:58 en0 expired S
 fe80::1%en0                          88:c9:b3:b3:2:58 en0 23h59m59s S R
 ff02::1                              33:33:00:00:00:01 en0 permanent  R
 "#;
@@ -807,7 +801,11 @@ ff02::1                              33:33:00:00:00:01 en0 permanent  R
         assert_eq!(device.ipv4, vec!["192.168.100.143"]);
         assert_eq!(
             device.ipv6,
-            vec!["240e:358:abcd:1234:1111:2222:3333:4444", "fe80::1"]
+            vec![
+                "240e:358:abcd:1234:1111:2222:3333:4444",
+                "240e:358:abcd:1234:9999:8888:7777:6666",
+                "fe80::1"
+            ]
         );
         assert_eq!(
             device.global_ipv6,
@@ -871,6 +869,49 @@ ff02::1                              33:33:00:00:00:01 en0 permanent  R
         assert_eq!(device.global_ipv6, vec!["2408:8200::1234"]);
         assert!(device.online);
         assert_eq!(device.source, "windows-neighbor");
+    }
+
+    #[test]
+    fn stale_neighbor_ipv6_is_not_a_ddns_candidate_but_device_stays_online() {
+        let rows = vec![
+            NeighborRow::new(
+                "192.168.100.143",
+                "88-C9-B3-B3-02-58",
+                "Reachable",
+                "Ethernet",
+                Some("IPv4"),
+            ),
+            NeighborRow::new(
+                "240e:358:13e:3a00::612",
+                "88-C9-B3-B3-02-58",
+                "Stale",
+                "Ethernet",
+                Some("IPv6"),
+            ),
+            NeighborRow::new(
+                "240e:358:13e:3a00:96d9:1e6:a9fd:c969",
+                "88-C9-B3-B3-02-58",
+                "Reachable",
+                "Ethernet",
+                Some("IPv6"),
+            ),
+        ];
+
+        let devices = merge_neighbor_rows(rows);
+
+        assert_eq!(devices.len(), 1);
+        assert!(devices[0].online);
+        assert_eq!(
+            devices[0].ipv6,
+            vec![
+                "240e:358:13e:3a00::612",
+                "240e:358:13e:3a00:96d9:1e6:a9fd:c969"
+            ]
+        );
+        assert_eq!(
+            devices[0].global_ipv6,
+            vec!["240e:358:13e:3a00:96d9:1e6:a9fd:c969"]
+        );
     }
 
     #[test]
