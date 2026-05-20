@@ -241,10 +241,7 @@ async fn device_ddns_background_task(app: tauri::AppHandle) {
         for device_config in device_configs {
             let identity = commands::device_ddns_identity(&device_config);
             let domain = commands::device_ddns_domain(&device_config);
-            let probed_devices =
-                commands::refresh_device_ddns_probe_state_with_system(&device_config, &devices);
-            let currently_online =
-                commands::device_ddns_device_is_online(&device_config, &probed_devices);
+            let currently_online = commands::device_ddns_device_is_online(&device_config, &devices);
 
             if !currently_online {
                 if device_ddns_should_write_offline_state(&device_config) {
@@ -284,8 +281,7 @@ async fn device_ddns_background_task(app: tauri::AppHandle) {
                 continue;
             }
 
-            let update_result =
-                commands::update_device_ddns_record(&device_config, &probed_devices).await;
+            let update_result = commands::update_device_ddns_record(&device_config, &devices).await;
 
             match update_result {
                 Ok((ip, result)) => {
