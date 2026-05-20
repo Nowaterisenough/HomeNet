@@ -1,7 +1,11 @@
-# Tauri + Vue + TypeScript
+# HomeNet
 
-This template should help get you started developing with Vue 3 and TypeScript in Vite. The template uses Vue 3 `<script setup>` SFCs, check out the [script setup docs](https://v3.vuejs.org/api/sfc-script-setup.html#sfc-script-setup) to learn more.
+HomeNet 是一个基于 Tauri 的本地网络管理工具，前端使用 React + TypeScript 实现。
 
-## Recommended IDE Setup
+## macOS 安装提示
 
-- [VS Code](https://code.visualstudio.com/) + [Vue - Official](https://marketplace.visualstudio.com/items?itemName=Vue.volar) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+如果 macOS 提示应用来自未知开发者，或下载后的应用被系统隔离，可以在安装到 `/Applications` 后执行：
+
+```bash
+sudo xattr -dr com.apple.quarantine /Applications/HomeNet.app
+```
