@@ -779,6 +779,8 @@ fn refresh_stale_global_ipv6_neighbors(rows: &[NeighborRow]) -> bool {
 
 #[cfg(windows)]
 fn ping_ipv6_once(address: Ipv6Addr) {
+    use std::os::windows::process::CommandExt;
+
     let value = address.to_string();
     let _ = std::process::Command::new("ping")
         .args(["-6", "-n", "1", "-w", "700", &value])
