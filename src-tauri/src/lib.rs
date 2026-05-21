@@ -237,7 +237,8 @@ async fn device_ddns_background_task(app: tauri::AppHandle) {
             continue;
         }
 
-        let devices = device_discovery::discover_lan_devices();
+        let hints = commands::device_discovery_hints(&device_configs);
+        let devices = device_discovery::discover_lan_devices_with_hints(&hints);
         for device_config in device_configs {
             let identity = commands::device_ddns_identity(&device_config);
             let domain = commands::device_ddns_domain(&device_config);

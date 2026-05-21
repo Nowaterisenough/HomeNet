@@ -439,6 +439,22 @@ pub(crate) fn active_device_ddns_configs(config: &AppConfig) -> Vec<DeviceDdnsCo
     }
 }
 
+pub(crate) fn device_discovery_hints(
+    configs: &[DeviceDdnsConfig],
+) -> Vec<crate::device_discovery::DeviceDiscoveryHint> {
+    configs
+        .iter()
+        .filter(|config| device_ddns_has_device_selector(config))
+        .map(|config| crate::device_discovery::DeviceDiscoveryHint {
+            device_id: config.device_id.trim().to_string(),
+            device_mac: config.device_mac.trim().to_string(),
+            device_name: config.device_name.trim().to_string(),
+            selected_ip: config.selected_ip.trim().to_string(),
+            selected_ipv6: config.selected_ipv6.trim().to_string(),
+        })
+        .collect()
+}
+
 fn normalize_device_ddns_payload(mut config: DeviceDdnsConfig) -> DeviceDdnsConfig {
     config.record_type = config.record_type.trim().to_uppercase();
     if config.record_type != "A" && config.record_type != "AAAA" {
@@ -1149,8 +1165,13 @@ pub async fn set_ipv6_interface(
 }
 
 #[tauri::command]
-pub async fn list_lan_devices() -> Result<Vec<LanDevice>, String> {
-    Ok(crate::device_discovery::discover_lan_devices())
+pub async fn list_lan_devices(state: State<'_, AppState>) -> Result<Vec<LanDevice>, String> {
+    let cfg = read_config(&state)?;
+    let configs = active_device_ddns_configs(&cfg);
+    let hints = device_discovery_hints(&configs);
+    Ok(crate::device_discovery::discover_lan_devices_with_hints(
+        &hints,
+    ))
 }
 
 #[tauri::command]
@@ -1234,15 +1255,25 @@ pub async fn trigger_device_ddns_update(
     state: State<'_, AppState>,
     config: Option<DeviceDdnsConfig>,
 ) -> Result<String, String> {
-    let device_config = {
+    let (device_config, hint_configs) = {
         let cfg = read_config(&state)?;
-        match config {
+        let device_config = match config {
             Some(config) => config,
             None => active_device_ddns_configs(&cfg)
                 .into_iter()
                 .find(|config| config.enabled)
-                .unwrap_or(cfg.device_ddns),
+                .unwrap_or_else(|| cfg.device_ddns.clone()),
+        };
+        let mut hint_configs = active_device_ddns_configs(&cfg);
+        if let Some(existing) = hint_configs
+            .iter()
+            .position(|config| device_ddns_configs_target_same_device(config, &device_config))
+        {
+            hint_configs[existing] = device_config.clone();
+        } else if device_ddns_has_device_selector(&device_config) {
+            hint_configs.push(device_config.clone());
         }
+        (device_config, hint_configs)
     };
     let identity = device_ddns_identity(&device_config);
 
@@ -1251,7 +1282,8 @@ pub async fn trigger_device_ddns_update(
     }
     validate_device_ddns_config(&device_config)?;
 
-    let devices = crate::device_discovery::discover_lan_devices();
+    let hints = device_discovery_hints(&hint_configs);
+    let devices = crate::device_discovery::discover_lan_devices_with_hints(&hints);
     let currently_online = device_ddns_device_is_online(&device_config, &devices);
     let domain = device_ddns_domain(&device_config);
     let update_result = update_device_ddns_record(&device_config, &devices).await;

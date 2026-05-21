@@ -4,7 +4,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap};
 use std::io::ErrorKind;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, ToSocketAddrs, UdpSocket};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -25,6 +25,15 @@ pub struct LanDevice {
     pub online: bool,
     pub source: String,
     pub last_seen: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeviceDiscoveryHint {
+    pub device_id: String,
+    pub device_mac: String,
+    pub device_name: String,
+    pub selected_ip: String,
+    pub selected_ipv6: String,
 }
 
 #[derive(Debug, Clone)]
@@ -95,9 +104,9 @@ impl NeighborRow {
     }
 }
 
-pub fn discover_lan_devices() -> Vec<LanDevice> {
+pub fn discover_lan_devices_with_hints(hints: &[DeviceDiscoveryHint]) -> Vec<LanDevice> {
     let local_devices = discover_local_interface_devices();
-    let neighbor_devices = discover_neighbor_devices();
+    let neighbor_devices = discover_neighbor_devices(hints);
     merge_local_and_neighbor_devices(local_devices, neighbor_devices)
 }
 
@@ -106,14 +115,14 @@ pub fn is_global_ipv6(value: &str) -> bool {
 }
 
 #[cfg(windows)]
-fn discover_neighbor_devices() -> Vec<LanDevice> {
+fn discover_neighbor_devices(hints: &[DeviceDiscoveryHint]) -> Vec<LanDevice> {
     let mut rows = read_windows_neighbor_rows();
     if refresh_stale_global_ipv6_neighbors(&rows) {
         rows = read_windows_neighbor_rows();
     }
 
     let mut devices = merge_neighbor_rows(rows);
-    enrich_neighbor_devices_with_active_discovery(&mut devices);
+    enrich_neighbor_devices_with_active_discovery(&mut devices, hints);
     devices
 }
 
@@ -136,7 +145,7 @@ fn powershell_output(script: &str) -> std::io::Result<std::process::Output> {
 }
 
 #[cfg(target_os = "macos")]
-fn discover_neighbor_devices() -> Vec<LanDevice> {
+fn discover_neighbor_devices(hints: &[DeviceDiscoveryHint]) -> Vec<LanDevice> {
     refresh_macos_ipv6_neighbors();
 
     let mut rows = read_macos_neighbor_rows();
@@ -145,7 +154,7 @@ fn discover_neighbor_devices() -> Vec<LanDevice> {
     }
 
     let mut devices = merge_neighbor_rows_with_source(rows, "macos-neighbor");
-    enrich_neighbor_devices_with_active_discovery(&mut devices);
+    enrich_neighbor_devices_with_active_discovery(&mut devices, hints);
     devices
 }
 
@@ -184,7 +193,7 @@ fn read_macos_neighbor_rows() -> Vec<NeighborRow> {
 }
 
 #[cfg(all(not(windows), not(target_os = "macos")))]
-fn discover_neighbor_devices() -> Vec<LanDevice> {
+fn discover_neighbor_devices(_hints: &[DeviceDiscoveryHint]) -> Vec<LanDevice> {
     Vec::new()
 }
 
@@ -266,7 +275,12 @@ fn merge_neighbor_rows_with_source(rows: Vec<NeighborRow>, source: &str) -> Vec<
         .collect()
 }
 
-fn enrich_neighbor_devices_with_active_discovery(devices: &mut [LanDevice]) {
+fn enrich_neighbor_devices_with_active_discovery(
+    devices: &mut [LanDevice],
+    hints: &[DeviceDiscoveryHint],
+) {
+    apply_device_discovery_hints(devices, hints);
+
     let targets = active_discovery_ipv4_targets(devices);
     if targets.is_empty() {
         return;
@@ -279,6 +293,15 @@ fn enrich_neighbor_devices_with_active_discovery(devices: &mut [LanDevice]) {
     for (device_index, ip) in targets {
         if let Some(hostname) = hostnames_by_ip.get(&ip) {
             set_device_hostname(&mut devices[device_index], hostname);
+        }
+
+        if let Some(hint) = matching_device_hint(&devices[device_index], hints) {
+            let addresses = resolve_hint_ipv6_addresses(hint);
+            add_resolved_ipv6_candidates_to_device(
+                &mut devices[device_index],
+                addresses,
+                Some(hint),
+            );
         }
 
         if let Some(hostname) = normalized_device_hostname(&devices[device_index]) {
@@ -297,10 +320,200 @@ fn enrich_neighbor_devices_with_active_discovery(devices: &mut [LanDevice]) {
             let Some(addresses) = ipv6_by_ip.get(&ip) else {
                 continue;
             };
-            for address in addresses {
-                add_resolved_ipv6_to_device(device, *address);
-            }
+            add_resolved_ipv6_candidates_to_device(device, addresses.iter().copied(), None);
         }
+    }
+}
+
+fn apply_device_discovery_hints(devices: &mut [LanDevice], hints: &[DeviceDiscoveryHint]) {
+    for device in devices {
+        let Some(hint) = matching_device_hint(device, hints) else {
+            continue;
+        };
+
+        set_device_hostname(device, &hint.device_name);
+    }
+}
+
+fn matching_device_hint<'a>(
+    device: &LanDevice,
+    hints: &'a [DeviceDiscoveryHint],
+) -> Option<&'a DeviceDiscoveryHint> {
+    let device_id = device.id.trim();
+    if !device_id.is_empty() {
+        if let Some(hint) = hints
+            .iter()
+            .find(|hint| !hint.device_id.trim().is_empty() && hint.device_id.trim() == device_id)
+        {
+            return Some(hint);
+        }
+    }
+
+    let device_mac = normalize_mac(&device.mac)?;
+    hints
+        .iter()
+        .find(|hint| normalize_mac(&hint.device_mac).is_some_and(|mac| mac == device_mac))
+}
+
+fn resolve_hint_ipv6_addresses(hint: &DeviceDiscoveryHint) -> Vec<Ipv6Addr> {
+    let mut addresses = Vec::new();
+    for hostname in local_hostname_candidates(&hint.device_name) {
+        push_unique_ipv6_values(&mut addresses, resolve_hostname_ipv6(&hostname));
+    }
+    order_resolved_ipv6_candidates(addresses, Some(hint))
+}
+
+fn local_hostname_candidates(hostname: &str) -> Vec<String> {
+    let Some(hostname) = normalize_hostname(hostname) else {
+        return Vec::new();
+    };
+
+    let mut candidates = Vec::new();
+    if hostname.contains('.') {
+        push_unique_case_insensitive(&mut candidates, hostname);
+        return candidates;
+    }
+
+    push_unique_case_insensitive(&mut candidates, format!("{hostname}.local"));
+    push_unique_case_insensitive(&mut candidates, hostname);
+    candidates
+}
+
+fn resolve_hostname_ipv6(hostname: &str) -> Vec<Ipv6Addr> {
+    let mut addresses = Vec::new();
+    if let Ok(socket_addrs) = (hostname, 0).to_socket_addrs() {
+        push_unique_ipv6_values(
+            &mut addresses,
+            socket_addrs.filter_map(|addr| match addr.ip() {
+                IpAddr::V6(ipv6) => Some(ipv6),
+                IpAddr::V4(_) => None,
+            }),
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    push_unique_ipv6_values(&mut addresses, resolve_macos_dscacheutil_ipv6(hostname));
+
+    addresses
+}
+
+#[cfg(target_os = "macos")]
+fn resolve_macos_dscacheutil_ipv6(hostname: &str) -> Vec<Ipv6Addr> {
+    std::process::Command::new("dscacheutil")
+        .args(["-q", "host", "-a", "name", hostname])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| {
+            parse_macos_dscacheutil_ipv6_addresses(&String::from_utf8_lossy(&output.stdout))
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn parse_macos_dscacheutil_ipv6_addresses(value: &str) -> Vec<Ipv6Addr> {
+    value
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("ipv6_address:"))
+        .filter_map(|value| value.trim().parse::<Ipv6Addr>().ok())
+        .collect()
+}
+
+fn add_resolved_ipv6_candidates_to_device<I>(
+    device: &mut LanDevice,
+    addresses: I,
+    hint: Option<&DeviceDiscoveryHint>,
+) where
+    I: IntoIterator<Item = Ipv6Addr>,
+{
+    for address in order_resolved_ipv6_candidates(addresses, hint) {
+        add_resolved_ipv6_to_device(device, address);
+    }
+}
+
+fn order_resolved_ipv6_candidates<I>(
+    addresses: I,
+    hint: Option<&DeviceDiscoveryHint>,
+) -> Vec<Ipv6Addr>
+where
+    I: IntoIterator<Item = Ipv6Addr>,
+{
+    let selected = hint.and_then(selected_hint_ipv6);
+    let mut candidates = addresses
+        .into_iter()
+        .filter(|address| is_global_ipv6(&address.to_string()))
+        .enumerate()
+        .collect::<Vec<_>>();
+
+    candidates.sort_by_key(|(index, address)| {
+        (
+            resolved_ipv6_candidate_score(address, selected.as_ref()),
+            *index,
+        )
+    });
+
+    let mut ordered = Vec::new();
+    for (_, address) in candidates {
+        if !ordered.contains(&address) {
+            ordered.push(address);
+        }
+    }
+    ordered
+}
+
+fn resolved_ipv6_candidate_score(address: &Ipv6Addr, selected: Option<&Ipv6Addr>) -> u8 {
+    if selected.is_some_and(|selected| same_ipv6_interface_identifier(address, selected)) {
+        return 0;
+    }
+    if low_ipv6_interface_identifier(address) {
+        return 1;
+    }
+    2
+}
+
+fn selected_hint_ipv6(hint: &DeviceDiscoveryHint) -> Option<Ipv6Addr> {
+    let selected = if hint.selected_ip.trim().is_empty() {
+        hint.selected_ipv6.trim()
+    } else {
+        hint.selected_ip.trim()
+    };
+    selected.parse::<Ipv6Addr>().ok()
+}
+
+fn same_ipv6_interface_identifier(left: &Ipv6Addr, right: &Ipv6Addr) -> bool {
+    ipv6_interface_identifier(left) == ipv6_interface_identifier(right)
+}
+
+fn low_ipv6_interface_identifier(address: &Ipv6Addr) -> bool {
+    let value = ipv6_interface_identifier(address);
+    value > 0 && value <= 0xffff
+}
+
+fn ipv6_interface_identifier(address: &Ipv6Addr) -> u64 {
+    let octets = address.octets();
+    u64::from_be_bytes([
+        octets[8], octets[9], octets[10], octets[11], octets[12], octets[13], octets[14],
+        octets[15],
+    ])
+}
+
+fn push_unique_ipv6_values<I>(values: &mut Vec<Ipv6Addr>, next_values: I)
+where
+    I: IntoIterator<Item = Ipv6Addr>,
+{
+    for value in next_values {
+        if !values.contains(&value) {
+            values.push(value);
+        }
+    }
+}
+
+fn push_unique_case_insensitive(values: &mut Vec<String>, value: String) {
+    if !values
+        .iter()
+        .any(|existing| existing.eq_ignore_ascii_case(&value))
+    {
+        values.push(value);
     }
 }
 
@@ -1422,6 +1635,75 @@ mod tests {
         assert_eq!(
             addresses,
             vec!["2408:8200::1234".parse::<Ipv6Addr>().unwrap()]
+        );
+    }
+
+    #[test]
+    fn parses_macos_dscacheutil_ipv6_addresses() {
+        let output = r#"
+name: nowatspc.local
+ipv6_address: 240e:358:106:9200::612
+ipv6_address: 240e:358:106:9200:8ebc:1f1:c0b2:f655
+ip_address: 192.168.100.143
+"#;
+
+        assert_eq!(
+            parse_macos_dscacheutil_ipv6_addresses(output),
+            vec![
+                "240e:358:106:9200::612".parse::<Ipv6Addr>().unwrap(),
+                "240e:358:106:9200:8ebc:1f1:c0b2:f655"
+                    .parse::<Ipv6Addr>()
+                    .unwrap()
+            ]
+        );
+    }
+
+    #[test]
+    fn resolved_hint_ipv6_candidates_prefer_same_stable_host_suffix() {
+        let hint = DeviceDiscoveryHint {
+            device_mac: "88:c9:b3:b3:02:58".to_string(),
+            device_name: "NoWatsPC".to_string(),
+            selected_ip: "240e:358:13e:3a00::612".to_string(),
+            ..DeviceDiscoveryHint::default()
+        };
+        let addresses = vec![
+            "240e:358:106:9200:8ebc:1f1:c0b2:f655"
+                .parse::<Ipv6Addr>()
+                .unwrap(),
+            "240e:358:106:9200::612".parse::<Ipv6Addr>().unwrap(),
+        ];
+
+        assert_eq!(
+            order_resolved_ipv6_candidates(addresses, Some(&hint)),
+            vec![
+                "240e:358:106:9200::612".parse::<Ipv6Addr>().unwrap(),
+                "240e:358:106:9200:8ebc:1f1:c0b2:f655"
+                    .parse::<Ipv6Addr>()
+                    .unwrap()
+            ]
+        );
+    }
+
+    #[test]
+    fn resolved_hint_ipv6_candidates_prefer_low_stable_host_when_old_was_temporary() {
+        let hint = DeviceDiscoveryHint {
+            device_mac: "88:c9:b3:b3:02:58".to_string(),
+            device_name: "NoWatsPC".to_string(),
+            selected_ip: "240e:358:13e:3a00:96d9:1e6:a9fd:c969".to_string(),
+            ..DeviceDiscoveryHint::default()
+        };
+        let addresses = vec![
+            "240e:358:106:9200:8ebc:1f1:c0b2:f655"
+                .parse::<Ipv6Addr>()
+                .unwrap(),
+            "240e:358:106:9200::612".parse::<Ipv6Addr>().unwrap(),
+        ];
+
+        assert_eq!(
+            order_resolved_ipv6_candidates(addresses, Some(&hint))
+                .first()
+                .copied(),
+            Some("240e:358:106:9200::612".parse::<Ipv6Addr>().unwrap())
         );
     }
 
