@@ -3,7 +3,15 @@ use local_ip_address::list_afinet_netifas;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::io::ErrorKind;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, UdpSocket};
+use std::thread;
+use std::time::{Duration, Instant};
+
+const ACTIVE_DISCOVERY_LIMIT: usize = 32;
+const NETBIOS_QUERY_TIMEOUT: Duration = Duration::from_millis(450);
+const LLMNR_DISCOVERY_WINDOW: Duration = Duration::from_millis(800);
+const LLMNR_MULTICAST_ADDR: &str = "224.0.0.252:5355";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LanDevice {
@@ -99,18 +107,17 @@ pub fn is_global_ipv6(value: &str) -> bool {
 
 #[cfg(windows)]
 fn discover_neighbor_devices() -> Vec<LanDevice> {
-    let script = "Get-NetNeighbor -AddressFamily IPv4,IPv6 | Where-Object { $_.IPAddress -and $_.LinkLayerAddress -and $_.State -ne 'Unreachable' } | Select-Object IPAddress,LinkLayerAddress,@{Name='State';Expression={$_.State.ToString()}},InterfaceAlias,AddressFamily | ConvertTo-Json -Compress";
-    let output = powershell_output(script);
-
-    match output {
-        Ok(output) if output.status.success() => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            merge_neighbor_rows(parse_powershell_neighbor_json(&stdout))
-        }
-        _ => Vec::new(),
+    let mut rows = read_windows_neighbor_rows();
+    if refresh_stale_global_ipv6_neighbors(&rows) {
+        rows = read_windows_neighbor_rows();
     }
+
+    let mut devices = merge_neighbor_rows(rows);
+    enrich_neighbor_devices_with_active_discovery(&mut devices);
+    devices
 }
 
+#[cfg(any(windows, test))]
 fn powershell_args(script: &str) -> [&str; 5] {
     ["-NoProfile", "-WindowStyle", "Hidden", "-Command", script]
 }
@@ -130,6 +137,34 @@ fn powershell_output(script: &str) -> std::io::Result<std::process::Output> {
 
 #[cfg(target_os = "macos")]
 fn discover_neighbor_devices() -> Vec<LanDevice> {
+    refresh_macos_ipv6_neighbors();
+
+    let mut rows = read_macos_neighbor_rows();
+    if refresh_stale_global_ipv6_neighbors(&rows) {
+        rows = read_macos_neighbor_rows();
+    }
+
+    let mut devices = merge_neighbor_rows_with_source(rows, "macos-neighbor");
+    enrich_neighbor_devices_with_active_discovery(&mut devices);
+    devices
+}
+
+#[cfg(windows)]
+fn read_windows_neighbor_rows() -> Vec<NeighborRow> {
+    let script = "Get-NetNeighbor -AddressFamily IPv4,IPv6 | Where-Object { $_.IPAddress -and $_.LinkLayerAddress -and $_.State -ne 'Unreachable' } | Select-Object IPAddress,LinkLayerAddress,@{Name='State';Expression={$_.State.ToString()}},InterfaceAlias,AddressFamily | ConvertTo-Json -Compress";
+    let output = powershell_output(script);
+
+    match output {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            parse_powershell_neighbor_json(&stdout)
+        }
+        _ => Vec::new(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn read_macos_neighbor_rows() -> Vec<NeighborRow> {
     use std::process::Command;
 
     let arp_output = Command::new("arp").arg("-an").output();
@@ -145,10 +180,7 @@ fn discover_neighbor_devices() -> Vec<LanDevice> {
         .map(|output| String::from_utf8_lossy(&output.stdout).to_string())
         .unwrap_or_default();
 
-    merge_neighbor_rows_with_source(
-        parse_macos_neighbor_tables(&arp_stdout, &ndp_stdout),
-        "macos-neighbor",
-    )
+    parse_macos_neighbor_tables(&arp_stdout, &ndp_stdout)
 }
 
 #[cfg(all(not(windows), not(target_os = "macos")))]
@@ -156,6 +188,7 @@ fn discover_neighbor_devices() -> Vec<LanDevice> {
     Vec::new()
 }
 
+#[cfg(any(windows, test))]
 fn parse_powershell_neighbor_json(value: &str) -> Vec<NeighborRow> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -177,6 +210,7 @@ fn parse_powershell_neighbor_json(value: &str) -> Vec<NeighborRow> {
     }
 }
 
+#[cfg(any(windows, test))]
 fn merge_neighbor_rows(rows: Vec<NeighborRow>) -> Vec<LanDevice> {
     merge_neighbor_rows_with_source(rows, "windows-neighbor")
 }
@@ -230,6 +264,565 @@ fn merge_neighbor_rows_with_source(rows: Vec<NeighborRow>, source: &str) -> Vec<
         .into_iter()
         .filter_map(|key| devices_by_key.remove(&key))
         .collect()
+}
+
+fn enrich_neighbor_devices_with_active_discovery(devices: &mut [LanDevice]) {
+    let targets = active_discovery_ipv4_targets(devices);
+    if targets.is_empty() {
+        return;
+    }
+
+    let hostnames_by_ip =
+        query_netbios_hostnames(&targets.iter().map(|(_, ip)| *ip).collect::<Vec<Ipv4Addr>>());
+
+    let mut llmnr_targets = Vec::new();
+    for (device_index, ip) in targets {
+        if let Some(hostname) = hostnames_by_ip.get(&ip) {
+            set_device_hostname(&mut devices[device_index], hostname);
+        }
+
+        if let Some(hostname) = normalized_device_hostname(&devices[device_index]) {
+            llmnr_targets.push((ip, hostname));
+        }
+    }
+
+    let ipv6_by_ip = query_llmnr_aaaa(&llmnr_targets);
+    for device in devices {
+        let device_ipv4 = device
+            .ipv4
+            .iter()
+            .filter_map(|value| value.parse::<Ipv4Addr>().ok())
+            .collect::<Vec<_>>();
+        for ip in device_ipv4 {
+            let Some(addresses) = ipv6_by_ip.get(&ip) else {
+                continue;
+            };
+            for address in addresses {
+                add_resolved_ipv6_to_device(device, *address);
+            }
+        }
+    }
+}
+
+fn active_discovery_ipv4_targets(devices: &[LanDevice]) -> Vec<(usize, Ipv4Addr)> {
+    let mut targets = Vec::new();
+
+    for (device_index, device) in devices.iter().enumerate() {
+        if !device.global_ipv6.is_empty() {
+            continue;
+        }
+
+        for ip in device
+            .ipv4
+            .iter()
+            .filter_map(|value| value.parse::<Ipv4Addr>().ok())
+        {
+            if targets.iter().any(|(_, existing)| *existing == ip) {
+                continue;
+            }
+            targets.push((device_index, ip));
+            if targets.len() >= ACTIVE_DISCOVERY_LIMIT {
+                return targets;
+            }
+        }
+    }
+
+    targets
+}
+
+fn set_device_hostname(device: &mut LanDevice, hostname: &str) {
+    let Some(hostname) = normalize_hostname(hostname) else {
+        return;
+    };
+
+    if device.hostname.trim().is_empty() {
+        device.hostname = hostname.clone();
+    }
+
+    let display_is_mac = normalize_mac(&device.display_name).is_some()
+        || (!device.mac.is_empty() && device.display_name.eq_ignore_ascii_case(&device.mac));
+    let display_is_ip = device.display_name.parse::<IpAddr>().is_ok();
+    if device.display_name.trim().is_empty() || display_is_mac || display_is_ip {
+        device.display_name = hostname;
+    }
+}
+
+fn normalized_device_hostname(device: &LanDevice) -> Option<String> {
+    normalize_hostname(&device.hostname).or_else(|| normalize_hostname(&device.display_name))
+}
+
+fn normalize_hostname(value: &str) -> Option<String> {
+    let hostname = value.trim().trim_end_matches('.').to_string();
+    if hostname.is_empty() {
+        return None;
+    }
+    if hostname.parse::<IpAddr>().is_ok() || normalize_mac(&hostname).is_some() {
+        return None;
+    }
+    if hostname
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+    {
+        Some(hostname)
+    } else {
+        None
+    }
+}
+
+fn add_resolved_ipv6_to_device(device: &mut LanDevice, address: Ipv6Addr) {
+    if !is_usable_ip(IpAddr::V6(address)) {
+        return;
+    }
+
+    let value = address.to_string();
+    push_unique(&mut device.ipv6, value.clone());
+    if is_global_ipv6(&value) {
+        push_unique(&mut device.global_ipv6, value);
+    }
+}
+
+fn query_netbios_hostnames(ips: &[Ipv4Addr]) -> HashMap<Ipv4Addr, String> {
+    let mut unique_ips = Vec::new();
+    for ip in ips.iter().copied() {
+        if !unique_ips.contains(&ip) {
+            unique_ips.push(ip);
+            if unique_ips.len() >= ACTIVE_DISCOVERY_LIMIT {
+                break;
+            }
+        }
+    }
+
+    let handles = unique_ips
+        .into_iter()
+        .map(|ip| thread::spawn(move || (ip, query_netbios_hostname(ip))))
+        .collect::<Vec<_>>();
+
+    let mut result = HashMap::new();
+    for handle in handles {
+        if let Ok((ip, Some(hostname))) = handle.join() {
+            result.insert(ip, hostname);
+        }
+    }
+
+    result
+}
+
+fn query_netbios_hostname(ip: Ipv4Addr) -> Option<String> {
+    let socket = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)).ok()?;
+    socket.set_read_timeout(Some(NETBIOS_QUERY_TIMEOUT)).ok()?;
+    socket.set_write_timeout(Some(NETBIOS_QUERY_TIMEOUT)).ok()?;
+
+    let transaction_id = netbios_transaction_id(ip);
+    let packet = build_netbios_node_status_query(transaction_id);
+    socket
+        .send_to(&packet, SocketAddrV4::new(ip, 137))
+        .ok()
+        .filter(|bytes| *bytes == packet.len())?;
+
+    let mut buffer = [0_u8; 1024];
+    loop {
+        match socket.recv_from(&mut buffer) {
+            Ok((length, SocketAddr::V4(source))) if *source.ip() == ip => {
+                if let Some(hostname) = parse_netbios_node_status_hostname(&buffer[..length]) {
+                    return Some(hostname);
+                }
+            }
+            Ok(_) => continue,
+            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                return None;
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
+fn netbios_transaction_id(ip: Ipv4Addr) -> u16 {
+    let octets = ip.octets();
+    u16::from_be_bytes([octets[2], octets[3]]) ^ 0x4e42
+}
+
+fn build_netbios_node_status_query(transaction_id: u16) -> Vec<u8> {
+    let mut packet = Vec::with_capacity(50);
+    packet.extend_from_slice(&transaction_id.to_be_bytes());
+    packet.extend_from_slice(&0_u16.to_be_bytes()); // query flags
+    packet.extend_from_slice(&1_u16.to_be_bytes()); // QDCOUNT
+    packet.extend_from_slice(&0_u16.to_be_bytes()); // ANCOUNT
+    packet.extend_from_slice(&0_u16.to_be_bytes()); // NSCOUNT
+    packet.extend_from_slice(&0_u16.to_be_bytes()); // ARCOUNT
+    packet.push(32);
+    packet.extend_from_slice(&encode_netbios_name("*"));
+    packet.push(0);
+    packet.extend_from_slice(&0x0021_u16.to_be_bytes()); // NBSTAT
+    packet.extend_from_slice(&0x0001_u16.to_be_bytes()); // IN
+    packet
+}
+
+fn encode_netbios_name(name: &str) -> [u8; 32] {
+    let mut raw_name = [b' '; 16];
+    for (index, byte) in name.as_bytes().iter().copied().take(15).enumerate() {
+        raw_name[index] = byte.to_ascii_uppercase();
+    }
+
+    let mut encoded = [0_u8; 32];
+    for (index, byte) in raw_name.iter().copied().enumerate() {
+        encoded[index * 2] = b'A' + ((byte >> 4) & 0x0f);
+        encoded[index * 2 + 1] = b'A' + (byte & 0x0f);
+    }
+    encoded
+}
+
+fn parse_netbios_node_status_hostname(packet: &[u8]) -> Option<String> {
+    for offset in 0..packet.len() {
+        let name_count = *packet.get(offset)? as usize;
+        if name_count == 0 || name_count > 32 {
+            continue;
+        }
+
+        let table_start = offset + 1;
+        let table_len = name_count.checked_mul(18)?;
+        if table_start + table_len > packet.len() {
+            continue;
+        }
+
+        let mut fallback = None;
+        for entry in packet[table_start..table_start + table_len].chunks_exact(18) {
+            let suffix = entry[15];
+            let flags = u16::from_be_bytes([entry[16], entry[17]]);
+            let is_group_name = flags & 0x8000 != 0;
+            let Some(name) = normalize_netbios_entry_name(&entry[..15]) else {
+                continue;
+            };
+
+            if suffix == 0x00 && !is_group_name {
+                return Some(name);
+            }
+            if fallback.is_none() && !is_group_name && suffix != 0x1e {
+                fallback = Some(name);
+            }
+        }
+
+        if fallback.is_some() {
+            return fallback;
+        }
+    }
+
+    None
+}
+
+fn normalize_netbios_entry_name(raw: &[u8]) -> Option<String> {
+    let name = String::from_utf8(
+        raw.iter()
+            .copied()
+            .take_while(|byte| *byte != 0)
+            .collect::<Vec<_>>(),
+    )
+    .ok()?
+    .trim()
+    .to_string();
+
+    normalize_hostname(&name).filter(|value| value != "*")
+}
+
+fn query_llmnr_aaaa(targets: &[(Ipv4Addr, String)]) -> HashMap<Ipv4Addr, Vec<Ipv6Addr>> {
+    let socket = match UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)) {
+        Ok(socket) => socket,
+        Err(_) => return HashMap::new(),
+    };
+    socket
+        .set_read_timeout(Some(Duration::from_millis(120)))
+        .ok();
+    socket
+        .set_write_timeout(Some(Duration::from_millis(120)))
+        .ok();
+    socket.set_multicast_ttl_v4(1).ok();
+
+    let mut transaction_ids = Vec::new();
+    let mut seen_hostnames = Vec::new();
+    for hostname in targets
+        .iter()
+        .filter_map(|(_, hostname)| normalize_hostname(hostname))
+    {
+        let lookup_name = llmnr_lookup_name(&hostname);
+        if seen_hostnames
+            .iter()
+            .any(|existing: &String| existing.eq_ignore_ascii_case(&lookup_name))
+        {
+            continue;
+        }
+        if seen_hostnames.len() >= ACTIVE_DISCOVERY_LIMIT {
+            break;
+        }
+
+        let transaction_id = llmnr_transaction_id(&lookup_name, seen_hostnames.len());
+        let packet = build_llmnr_query(transaction_id, &lookup_name);
+        if packet.is_empty() {
+            continue;
+        }
+        if socket.send_to(&packet, LLMNR_MULTICAST_ADDR).is_ok() {
+            transaction_ids.push(transaction_id);
+            seen_hostnames.push(lookup_name);
+        }
+    }
+
+    if transaction_ids.is_empty() {
+        return HashMap::new();
+    }
+
+    let target_ips = targets.iter().map(|(ip, _)| *ip).collect::<Vec<_>>();
+    let deadline = Instant::now() + LLMNR_DISCOVERY_WINDOW;
+    let mut buffer = [0_u8; 1500];
+    let mut result: HashMap<Ipv4Addr, Vec<Ipv6Addr>> = HashMap::new();
+
+    while Instant::now() < deadline {
+        match socket.recv_from(&mut buffer) {
+            Ok((length, SocketAddr::V4(source))) => {
+                if !target_ips.contains(source.ip()) {
+                    continue;
+                }
+                let Some((transaction_id, addresses)) =
+                    parse_llmnr_aaaa_response(&buffer[..length])
+                else {
+                    continue;
+                };
+                if !transaction_ids.contains(&transaction_id) {
+                    continue;
+                }
+
+                let entry = result.entry(*source.ip()).or_default();
+                for address in addresses {
+                    if !entry.contains(&address) {
+                        entry.push(address);
+                    }
+                }
+            }
+            Ok(_) => continue,
+            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                continue;
+            }
+            Err(_) => break,
+        }
+    }
+
+    result
+}
+
+fn llmnr_lookup_name(hostname: &str) -> String {
+    hostname
+        .split('.')
+        .next()
+        .unwrap_or(hostname)
+        .trim()
+        .to_string()
+}
+
+fn llmnr_transaction_id(hostname: &str, index: usize) -> u16 {
+    hostname
+        .as_bytes()
+        .iter()
+        .fold(0x4c4d_u16 ^ index as u16, |acc, byte| {
+            acc.rotate_left(5) ^ u16::from(byte.to_ascii_lowercase())
+        })
+}
+
+fn build_llmnr_query(transaction_id: u16, hostname: &str) -> Vec<u8> {
+    let Some(labels) = dns_labels(hostname) else {
+        return Vec::new();
+    };
+
+    let mut packet = Vec::with_capacity(64);
+    packet.extend_from_slice(&transaction_id.to_be_bytes());
+    packet.extend_from_slice(&0_u16.to_be_bytes()); // query flags
+    packet.extend_from_slice(&1_u16.to_be_bytes()); // QDCOUNT
+    packet.extend_from_slice(&0_u16.to_be_bytes()); // ANCOUNT
+    packet.extend_from_slice(&0_u16.to_be_bytes()); // NSCOUNT
+    packet.extend_from_slice(&0_u16.to_be_bytes()); // ARCOUNT
+    write_dns_name(&mut packet, &labels);
+    packet.extend_from_slice(&28_u16.to_be_bytes()); // AAAA
+    packet.extend_from_slice(&1_u16.to_be_bytes()); // IN
+    packet
+}
+
+fn dns_labels(hostname: &str) -> Option<Vec<String>> {
+    let labels = hostname
+        .trim()
+        .trim_end_matches('.')
+        .split('.')
+        .filter(|label| !label.is_empty())
+        .map(|label| label.to_string())
+        .collect::<Vec<_>>();
+
+    if labels.is_empty()
+        || labels
+            .iter()
+            .any(|label| label.len() > 63 || !normalize_hostname(label).is_some())
+    {
+        None
+    } else {
+        Some(labels)
+    }
+}
+
+fn write_dns_name(packet: &mut Vec<u8>, labels: &[String]) {
+    for label in labels {
+        packet.push(label.len() as u8);
+        packet.extend_from_slice(label.as_bytes());
+    }
+    packet.push(0);
+}
+
+fn parse_llmnr_aaaa_response(packet: &[u8]) -> Option<(u16, Vec<Ipv6Addr>)> {
+    if packet.len() < 12 {
+        return None;
+    }
+
+    let transaction_id = u16::from_be_bytes([packet[0], packet[1]]);
+    let flags = u16::from_be_bytes([packet[2], packet[3]]);
+    if flags & 0x8000 == 0 {
+        return None;
+    }
+
+    let question_count = u16::from_be_bytes([packet[4], packet[5]]) as usize;
+    let answer_count = u16::from_be_bytes([packet[6], packet[7]]) as usize;
+    let authority_count = u16::from_be_bytes([packet[8], packet[9]]) as usize;
+    let additional_count = u16::from_be_bytes([packet[10], packet[11]]) as usize;
+
+    let mut offset = 12;
+    for _ in 0..question_count {
+        offset = skip_dns_name(packet, offset)?;
+        offset = offset.checked_add(4)?;
+        if offset > packet.len() {
+            return None;
+        }
+    }
+
+    let mut addresses = Vec::new();
+    for _ in 0..answer_count + authority_count + additional_count {
+        offset = skip_dns_name(packet, offset)?;
+        if offset + 10 > packet.len() {
+            return None;
+        }
+
+        let record_type = u16::from_be_bytes([packet[offset], packet[offset + 1]]);
+        let record_class = u16::from_be_bytes([packet[offset + 2], packet[offset + 3]]);
+        let data_len = u16::from_be_bytes([packet[offset + 8], packet[offset + 9]]) as usize;
+        offset += 10;
+
+        if offset + data_len > packet.len() {
+            return None;
+        }
+
+        if record_type == 28 && (record_class & 0x7fff) == 1 && data_len == 16 {
+            let mut octets = [0_u8; 16];
+            octets.copy_from_slice(&packet[offset..offset + 16]);
+            let address = Ipv6Addr::from(octets);
+            if !addresses.contains(&address) {
+                addresses.push(address);
+            }
+        }
+
+        offset += data_len;
+    }
+
+    Some((transaction_id, addresses))
+}
+
+fn skip_dns_name(packet: &[u8], offset: usize) -> Option<usize> {
+    let mut cursor = offset;
+    let mut jumps = 0;
+
+    loop {
+        let length = *packet.get(cursor)?;
+        if length & 0xc0 == 0xc0 {
+            packet.get(cursor + 1)?;
+            cursor += 2;
+            return Some(cursor);
+        }
+
+        if length == 0 {
+            return Some(cursor + 1);
+        }
+
+        if length & 0xc0 != 0 {
+            return None;
+        }
+
+        cursor = cursor.checked_add(1 + length as usize)?;
+        if cursor > packet.len() {
+            return None;
+        }
+
+        jumps += 1;
+        if jumps > 128 {
+            return None;
+        }
+    }
+}
+
+fn refresh_stale_global_ipv6_neighbors(rows: &[NeighborRow]) -> bool {
+    let targets = rows
+        .iter()
+        .filter(|row| is_global_ipv6(&row.ip_address) && !is_current_neighbor_state(&row.state))
+        .filter_map(|row| row.ip_address.parse::<Ipv6Addr>().ok())
+        .take(8)
+        .collect::<Vec<_>>();
+
+    if targets.is_empty() {
+        return false;
+    }
+
+    for target in targets {
+        ping_ipv6_once(target);
+    }
+
+    true
+}
+
+#[cfg(windows)]
+fn ping_ipv6_once(address: Ipv6Addr) {
+    let value = address.to_string();
+    let _ = std::process::Command::new("ping")
+        .args(["-6", "-n", "1", "-w", "700", &value])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+}
+
+#[cfg(target_os = "macos")]
+fn ping_ipv6_once(address: Ipv6Addr) {
+    let value = address.to_string();
+    let _ = std::process::Command::new("ping6")
+        .args(["-c", "1", "-W", "700", &value])
+        .output();
+}
+
+#[cfg(all(not(windows), not(target_os = "macos")))]
+fn ping_ipv6_once(_address: Ipv6Addr) {}
+
+#[cfg(target_os = "macos")]
+fn refresh_macos_ipv6_neighbors() {
+    use std::process::Command;
+
+    let interfaces = list_afinet_netifas()
+        .ok()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(_, ip)| matches!(ip, IpAddr::V4(ipv4) if is_usable_ip(IpAddr::V4(*ipv4))))
+        .map(|(name, _)| name)
+        .collect::<Vec<_>>();
+
+    let mut seen = Vec::new();
+    for interface in interfaces {
+        if seen.contains(&interface) {
+            continue;
+        }
+        seen.push(interface.clone());
+        if seen.len() > 4 {
+            break;
+        }
+
+        let _ = Command::new("ping6")
+            .args(["-c", "1", "-I", &interface, "ff02::1"])
+            .output();
+    }
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -548,6 +1141,7 @@ fn parse_macos_ifconfig_interface_name(line: &str) -> Option<String> {
     }
 }
 
+#[cfg(any(windows, test))]
 fn parse_local_interface_mac_json(value: &str) -> HashMap<String, String> {
     let mut result = HashMap::new();
     let trimmed = value.trim();
@@ -743,6 +1337,16 @@ mod tests {
         }
     }
 
+    fn netbios_status_entry(name: &str, suffix: u8, flags: u16) -> [u8; 18] {
+        let mut entry = [b' '; 18];
+        for (index, byte) in name.as_bytes().iter().copied().take(15).enumerate() {
+            entry[index] = byte;
+        }
+        entry[15] = suffix;
+        entry[16..18].copy_from_slice(&flags.to_be_bytes());
+        entry
+    }
+
     #[test]
     fn classifies_global_ipv6_by_2000_prefix() {
         assert!(is_global_ipv6("2001:db8::1"));
@@ -776,6 +1380,46 @@ mod tests {
         assert_eq!(
             normalize_mac("88:c9:b3:b3:2:58"),
             Some("88:c9:b3:b3:02:58".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_netbios_node_status_workstation_hostname() {
+        let mut packet = vec![0_u8; 12];
+        packet.push(2);
+        packet.extend_from_slice(&netbios_status_entry("WINBOX", 0x00, 0x0000));
+        packet.extend_from_slice(&netbios_status_entry("WORKGROUP", 0x00, 0x8000));
+
+        assert_eq!(
+            parse_netbios_node_status_hostname(&packet),
+            Some("WINBOX".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_llmnr_aaaa_answers() {
+        let query = build_llmnr_query(0x1234, "WINBOX");
+        let mut response = Vec::new();
+        response.extend_from_slice(&0x1234_u16.to_be_bytes());
+        response.extend_from_slice(&0x8000_u16.to_be_bytes());
+        response.extend_from_slice(&1_u16.to_be_bytes());
+        response.extend_from_slice(&1_u16.to_be_bytes());
+        response.extend_from_slice(&0_u16.to_be_bytes());
+        response.extend_from_slice(&0_u16.to_be_bytes());
+        response.extend_from_slice(&query[12..]);
+        response.extend_from_slice(&[0xc0, 0x0c]);
+        response.extend_from_slice(&28_u16.to_be_bytes());
+        response.extend_from_slice(&1_u16.to_be_bytes());
+        response.extend_from_slice(&30_u32.to_be_bytes());
+        response.extend_from_slice(&16_u16.to_be_bytes());
+        response.extend_from_slice(&"2408:8200::1234".parse::<Ipv6Addr>().unwrap().octets());
+
+        let (transaction_id, addresses) = parse_llmnr_aaaa_response(&response).unwrap();
+
+        assert_eq!(transaction_id, 0x1234);
+        assert_eq!(
+            addresses,
+            vec!["2408:8200::1234".parse::<Ipv6Addr>().unwrap()]
         );
     }
 
