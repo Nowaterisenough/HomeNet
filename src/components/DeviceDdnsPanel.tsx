@@ -12,14 +12,13 @@ interface DeviceRow {
   id: string;
   name: string;
   nativeName: string;
-  ip: string;
   mac: string;
   online: boolean;
   configured: boolean;
   enabled: boolean;
   domain: string;
   lastSync: string;
-  selectedIpv6: string;
+  boundIp: string;
   raw: LanDevice;
   config: DeviceDdnsConfig | null;
 }
@@ -54,10 +53,6 @@ function uniqueStrings(values: string[]): string[] {
 
 function displayName(device: LanDevice, index: number): string {
   return device.hostname || device.display_name || `LAN-DEVICE-${index + 1}`;
-}
-
-function primaryIp(device: LanDevice): string {
-  return device.ipv4[0] || device.global_ipv6[0] || device.ipv6[0] || "-";
 }
 
 function firstGlobalIpv6(device: LanDevice): string {
@@ -99,13 +94,20 @@ function configForDevice(device: LanDevice, configs: DeviceDdnsConfig[]): Device
   return configs.find((config) => configMatchesDevice(config, device)) ?? null;
 }
 
-function selectedIpForDevice(config: DeviceDdnsConfig | null, device: LanDevice): string {
+function selectedIpForDraft(config: DeviceDdnsConfig | null, device: LanDevice): string {
   const configured = config?.selected_ip || config?.selected_ipv6 || "";
+  if (configured) return configured;
   if (config?.record_type.trim().toUpperCase() === "A") {
-    return configured || device.ipv4[0] || "-";
+    return device.ipv4[0] || "-";
   }
-  if (configured && device.global_ipv6.includes(configured)) return configured;
   return firstGlobalIpv6(device) || "-";
+}
+
+function boundIpForConfig(config: DeviceDdnsConfig | null): string {
+  if (!config) return "-";
+  const recordType = config.record_type.trim().toUpperCase();
+  const value = recordType === "A" ? config.selected_ip : config.selected_ip || config.selected_ipv6;
+  return value.trim() || "-";
 }
 
 function configuredDomain(config: DeviceDdnsConfig | null): string {
@@ -122,14 +124,13 @@ function mapLanDevice(device: LanDevice, index: number, configs: DeviceDdnsConfi
     id: device.id || device.mac || nativeName,
     name: config?.device_name.trim() || nativeName,
     nativeName,
-    ip: primaryIp(device),
     mac: device.mac || "-",
     online: device.online,
     configured: Boolean(config),
     enabled: Boolean(config?.enabled),
     domain: configuredDomain(config),
     lastSync: config?.last_update_time || "-",
-    selectedIpv6: selectedIpForDevice(config, device),
+    boundIp: boundIpForConfig(config),
     raw: device,
     config,
   };
@@ -139,7 +140,7 @@ function buildDraft(row: DeviceRow, configs: DeviceDdnsConfig[]): DeviceDdnsConf
   const existing = row.config;
   const template = existing ?? configs[0] ?? defaultConfig;
   const recordType = existing?.record_type?.trim().toUpperCase() === "A" ? "A" : "AAAA";
-  const selectedIp = selectedIpForDevice(existing, row.raw);
+  const selectedIp = selectedIpForDraft(existing, row.raw);
   const normalizedSelectedIp = selectedIp === "-" ? "" : selectedIp;
   return normalizeConfig({
     ...template,
@@ -183,9 +184,16 @@ export default function DeviceDdnsPanel({ className = "" }: DeviceDdnsPanelProps
     const query = searchQuery.trim().toLowerCase();
     if (!query) return rows;
     return rows.filter((device) =>
-      [device.name, device.nativeName, device.ip, device.mac, device.domain, device.selectedIpv6].some(
-        (value) => value.toLowerCase().includes(query),
-      ),
+      [
+        device.name,
+        device.nativeName,
+        device.mac,
+        device.domain,
+        device.boundIp,
+        ...device.raw.ipv4,
+        ...device.raw.ipv6,
+        ...device.raw.global_ipv6,
+      ].some((value) => value.toLowerCase().includes(query)),
     );
   }, [rows, searchQuery]);
   const availableIpOptions = useMemo(() => {
@@ -433,7 +441,7 @@ export default function DeviceDdnsPanel({ className = "" }: DeviceDdnsPanelProps
               <input
                 value={searchQuery}
                 type="search"
-                placeholder="搜索设备名称、IP 或 MAC"
+                placeholder="搜索设备名称、绑定 IP 或 MAC"
                 onChange={(event) => setSearchQuery(event.target.value)}
               />
             </label>
@@ -449,10 +457,9 @@ export default function DeviceDdnsPanel({ className = "" }: DeviceDdnsPanelProps
                 <th>设备名称</th>
                 <th>在线状态</th>
                 <th>DDNS 状态</th>
-                <th>IP 地址</th>
                 <th>MAC 地址</th>
                 <th>域名地址</th>
-                <th>可用 IP</th>
+                <th>绑定 IP</th>
                 <th>最后同步</th>
                 <th>操作</th>
               </tr>
@@ -460,7 +467,7 @@ export default function DeviceDdnsPanel({ className = "" }: DeviceDdnsPanelProps
             <tbody>
               {filteredDevices.length === 0 ? (
                 <tr>
-                  <td className="empty-cell" colSpan={9}>
+                  <td className="empty-cell" colSpan={8}>
                     {loading ? "正在扫描局域网设备" : "暂无局域网设备"}
                   </td>
                 </tr>
@@ -482,10 +489,9 @@ export default function DeviceDdnsPanel({ className = "" }: DeviceDdnsPanelProps
                         {device.configured ? (device.enabled ? "已启用" : "已配置") : "未配置"}
                       </span>
                     </td>
-                    <td>{device.ip}</td>
                     <td>{device.mac}</td>
                     <td>{device.domain}</td>
-                    <td>{device.selectedIpv6}</td>
+                    <td title={device.boundIp}>{device.boundIp}</td>
                     <td>{device.lastSync}</td>
                     <td>
                       <div className="row-actions device-row-actions">
@@ -587,7 +593,7 @@ export default function DeviceDdnsPanel({ className = "" }: DeviceDdnsPanelProps
                   </select>
                 </label>
                 <label className="field-label">
-                  <span>可用 IP</span>
+                  <span>绑定 IP</span>
                   <select value={draft.selected_ip} onChange={(event) => updateDraft("selected_ip", event.target.value)}>
                     <option value="">自动选择</option>
                     {availableIpOptions.map((ip) => (
