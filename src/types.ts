@@ -37,6 +37,7 @@ export interface ForwardRule {
 }
 
 export interface RuntimeStatus {
+  version: string;
   public_ipv4: string;
   public_ipv6: string;
   ddns_status: string;

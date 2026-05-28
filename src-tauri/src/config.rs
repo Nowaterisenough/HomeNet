@@ -238,6 +238,7 @@ pub struct ReverseProxyRule {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeStatus {
+    pub version: String,
     pub public_ipv4: String,
     pub public_ipv6: String,
     pub ddns_status: String,

@@ -206,8 +206,13 @@ fn device_ddns_update_due(config: &config::DeviceDdnsConfig) -> bool {
 
 const DEVICE_DDNS_OFFLINE_RESULT: &str = "设备离线，等待上线后自动同步";
 
-fn device_ddns_should_sync(config: &config::DeviceDdnsConfig, currently_online: bool) -> bool {
-    currently_online && (!config.last_online || device_ddns_update_due(config))
+fn device_ddns_should_sync(
+    config: &config::DeviceDdnsConfig,
+    currently_online: bool,
+    record_value_changed: bool,
+) -> bool {
+    currently_online
+        && (record_value_changed || !config.last_online || device_ddns_update_due(config))
 }
 
 fn device_ddns_should_write_offline_state(config: &config::DeviceDdnsConfig) -> bool {
@@ -217,7 +222,8 @@ fn device_ddns_should_write_offline_state(config: &config::DeviceDdnsConfig) -> 
 /// Device-level DDNS periodic-check task.
 ///
 /// It scans every enabled device config, records offline state, and syncs the
-/// Aliyun A/AAAA record when the device comes online or its interval is due.
+/// Aliyun A/AAAA record when the device comes online, its target IP changes,
+/// or its interval is due.
 async fn device_ddns_background_task(app: tauri::AppHandle) {
     config::add_log("info", "设备DDNS", "设备 DDNS 后台任务已启动");
     tokio::time::sleep(std::time::Duration::from_secs(45)).await;
@@ -243,6 +249,8 @@ async fn device_ddns_background_task(app: tauri::AppHandle) {
             let identity = commands::device_ddns_identity(&device_config);
             let domain = commands::device_ddns_domain(&device_config);
             let currently_online = commands::device_ddns_device_is_online(&device_config, &devices);
+            let record_value_changed = currently_online
+                && commands::device_ddns_record_value_has_changed(&device_config, &devices);
 
             if !currently_online {
                 if device_ddns_should_write_offline_state(&device_config) {
@@ -278,7 +286,7 @@ async fn device_ddns_background_task(app: tauri::AppHandle) {
                 continue;
             }
 
-            if !device_ddns_should_sync(&device_config, currently_online) {
+            if !device_ddns_should_sync(&device_config, currently_online, record_value_changed) {
                 continue;
             }
 
@@ -505,20 +513,27 @@ mod tests {
     fn device_ddns_should_sync_when_device_comes_online_even_if_interval_not_due() {
         let config = recent_device_ddns_config(false);
 
-        assert!(device_ddns_should_sync(&config, true));
+        assert!(device_ddns_should_sync(&config, true, false));
     }
 
     #[test]
     fn device_ddns_should_not_sync_when_online_device_is_not_due() {
         let config = recent_device_ddns_config(true);
 
-        assert!(!device_ddns_should_sync(&config, true));
+        assert!(!device_ddns_should_sync(&config, true, false));
+    }
+
+    #[test]
+    fn device_ddns_should_sync_when_record_value_changed_even_if_interval_not_due() {
+        let config = recent_device_ddns_config(true);
+
+        assert!(device_ddns_should_sync(&config, true, true));
     }
 
     #[test]
     fn device_ddns_should_not_sync_when_device_is_offline() {
         let config = recent_device_ddns_config(false);
 
-        assert!(!device_ddns_should_sync(&config, false));
+        assert!(!device_ddns_should_sync(&config, false, true));
     }
 }

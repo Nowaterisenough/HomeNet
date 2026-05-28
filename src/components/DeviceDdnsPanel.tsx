@@ -59,6 +59,32 @@ function firstGlobalIpv6(device: LanDevice): string {
   return device.global_ipv6[0] || "";
 }
 
+function recordTypeForConfig(config: DeviceDdnsConfig | null): "A" | "AAAA" {
+  return config?.record_type.trim().toUpperCase() === "A" ? "A" : "AAAA";
+}
+
+function configuredIpForConfig(config: DeviceDdnsConfig | null): string {
+  if (!config) return "";
+  const recordType = recordTypeForConfig(config);
+  if (recordType === "A") return config.selected_ip.trim();
+  return (config.selected_ip || config.selected_ipv6).trim();
+}
+
+function availableIpsForRecordType(device: LanDevice, recordType: "A" | "AAAA"): string[] {
+  if (recordType === "A") {
+    return uniqueStrings(device.ipv4);
+  }
+  return uniqueStrings(device.global_ipv6.filter((ip) => ip.includes(":")));
+}
+
+function currentIpForConfig(config: DeviceDdnsConfig | null, device: LanDevice): string {
+  const recordType = recordTypeForConfig(config);
+  const available = availableIpsForRecordType(device, recordType);
+  const configured = configuredIpForConfig(config);
+  if (configured && available.includes(configured)) return configured;
+  return available[0] || "";
+}
+
 function normalizeConfig(data: Partial<DeviceDdnsConfig> | null | undefined): DeviceDdnsConfig {
   return {
     ...defaultConfig,
@@ -95,19 +121,12 @@ function configForDevice(device: LanDevice, configs: DeviceDdnsConfig[]): Device
 }
 
 function selectedIpForDraft(config: DeviceDdnsConfig | null, device: LanDevice): string {
-  const configured = config?.selected_ip || config?.selected_ipv6 || "";
-  if (configured) return configured;
-  if (config?.record_type.trim().toUpperCase() === "A") {
-    return device.ipv4[0] || "-";
-  }
-  return firstGlobalIpv6(device) || "-";
+  return currentIpForConfig(config, device) || configuredIpForConfig(config) || "-";
 }
 
-function boundIpForConfig(config: DeviceDdnsConfig | null): string {
+function boundIpForConfig(config: DeviceDdnsConfig | null, device: LanDevice): string {
   if (!config) return "-";
-  const recordType = config.record_type.trim().toUpperCase();
-  const value = recordType === "A" ? config.selected_ip : config.selected_ip || config.selected_ipv6;
-  return value.trim() || "-";
+  return currentIpForConfig(config, device) || "-";
 }
 
 function configuredDomain(config: DeviceDdnsConfig | null): string {
@@ -130,7 +149,7 @@ function mapLanDevice(device: LanDevice, index: number, configs: DeviceDdnsConfi
     enabled: Boolean(config?.enabled),
     domain: configuredDomain(config),
     lastSync: config?.last_update_time || "-",
-    boundIp: boundIpForConfig(config),
+    boundIp: boundIpForConfig(config, device),
     raw: device,
     config,
   };
@@ -198,10 +217,7 @@ export default function DeviceDdnsPanel({ className = "" }: DeviceDdnsPanelProps
   }, [rows, searchQuery]);
   const availableIpOptions = useMemo(() => {
     if (!selectedRow || !draft) return [];
-    if (draft.record_type.trim().toUpperCase() === "A") {
-      return uniqueStrings(selectedRow.raw.ipv4);
-    }
-    return uniqueStrings(selectedRow.raw.global_ipv6.filter((ip) => ip.includes(":")));
+    return availableIpsForRecordType(selectedRow.raw, recordTypeForConfig(draft));
   }, [draft, selectedRow]);
   const previewRows = useMemo(() => {
     const domain = draft?.domain.trim() ?? "";

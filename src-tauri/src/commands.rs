@@ -607,6 +607,19 @@ fn first_ipv4(device: &LanDevice) -> Option<&str> {
         .find(|value| !value.is_empty())
 }
 
+fn configured_device_record_value(config: &DeviceDdnsConfig) -> &str {
+    if config.record_type.trim().eq_ignore_ascii_case("A") {
+        config.selected_ip.trim()
+    } else {
+        let selected_ip = config.selected_ip.trim();
+        if selected_ip.is_empty() {
+            config.selected_ipv6.trim()
+        } else {
+            selected_ip
+        }
+    }
+}
+
 pub(crate) fn resolve_device_ipv6(
     config: &DeviceDdnsConfig,
     devices: &[LanDevice],
@@ -670,6 +683,18 @@ pub(crate) fn resolve_device_record_value(
     } else {
         resolve_device_ipv6(config, devices)
     }
+}
+
+pub(crate) fn device_ddns_record_value_has_changed(
+    config: &DeviceDdnsConfig,
+    devices: &[LanDevice],
+) -> bool {
+    let Ok(current_value) = resolve_device_record_value(config, devices) else {
+        return false;
+    };
+
+    let configured_value = configured_device_record_value(config);
+    configured_value.is_empty() || current_value.trim() != configured_value
 }
 
 pub(crate) async fn update_device_ddns_record(
@@ -1053,6 +1078,7 @@ pub async fn get_runtime_status(state: State<'_, AppState>) -> Result<RuntimeSta
     let ipv6 = crate::ddns::get_local_ipv6_for_interface(&cfg.ipv6_interface);
 
     Ok(RuntimeStatus {
+        version: env!("CARGO_PKG_VERSION").to_string(),
         public_ipv4: ipv4.clone(),
         public_ipv6: ipv6.clone(),
         ddns_status: runtime_ddns_status(&cfg).to_string(),
@@ -1785,18 +1811,18 @@ mod tests {
     fn resolve_device_ipv6_falls_back_when_selected_ipv6_disappeared() {
         let config = DeviceDdnsConfig {
             device_id: "device-1".to_string(),
-            selected_ipv6: "2408:8200::old".to_string(),
+            selected_ipv6: "2408:8200::10".to_string(),
             ..DeviceDdnsConfig::default()
         };
         let devices = vec![lan_device(
             "device-1",
             "aa:bb:cc:dd:ee:ff",
-            vec!["2408:8200::new"],
+            vec!["2408:8200::20"],
         )];
 
         assert_eq!(
             resolve_device_ipv6(&config, &devices),
-            Ok("2408:8200::new".to_string())
+            Ok("2408:8200::20".to_string())
         );
     }
 
@@ -1816,6 +1842,40 @@ mod tests {
             resolve_device_ipv6(&config, &devices),
             Ok("2408:8200::2".to_string())
         );
+    }
+
+    #[test]
+    fn device_ddns_record_value_has_changed_when_selected_ipv6_disappeared() {
+        let config = DeviceDdnsConfig {
+            device_id: "device-1".to_string(),
+            selected_ipv6: "2408:8200::10".to_string(),
+            selected_ip: "2408:8200::10".to_string(),
+            ..DeviceDdnsConfig::default()
+        };
+        let devices = vec![lan_device(
+            "device-1",
+            "aa:bb:cc:dd:ee:ff",
+            vec!["2408:8200::20"],
+        )];
+
+        assert!(device_ddns_record_value_has_changed(&config, &devices));
+    }
+
+    #[test]
+    fn device_ddns_record_value_has_not_changed_when_selected_ipv6_is_current() {
+        let config = DeviceDdnsConfig {
+            device_id: "device-1".to_string(),
+            selected_ipv6: "2408:8200::10".to_string(),
+            selected_ip: "2408:8200::10".to_string(),
+            ..DeviceDdnsConfig::default()
+        };
+        let devices = vec![lan_device(
+            "device-1",
+            "aa:bb:cc:dd:ee:ff",
+            vec!["2408:8200::10"],
+        )];
+
+        assert!(!device_ddns_record_value_has_changed(&config, &devices));
     }
 
     #[test]
@@ -2027,19 +2087,19 @@ mod tests {
 
     #[test]
     fn release_version_comparison_accepts_github_tag_prefix() {
-        assert!(is_release_version_newer("0.1.4", "v0.1.5"));
-        assert!(is_release_version_newer("0.1.4", "0.2.0"));
+        assert!(is_release_version_newer("1.2.3", "v1.2.4"));
+        assert!(is_release_version_newer("1.2.3", "1.3.0"));
     }
 
     #[test]
     fn release_version_comparison_rejects_same_or_older_versions() {
-        assert!(!is_release_version_newer("0.1.4", "v0.1.4"));
-        assert!(!is_release_version_newer("0.1.4", "v0.1.3"));
+        assert!(!is_release_version_newer("1.2.3", "v1.2.3"));
+        assert!(!is_release_version_newer("1.2.3", "v1.2.2"));
     }
 
     #[test]
     fn release_version_comparison_rejects_invalid_versions() {
-        assert!(!is_release_version_newer("0.1.4", "latest"));
+        assert!(!is_release_version_newer("1.2.3", "latest"));
         assert!(!is_release_version_newer("dev", "v0.1.5"));
     }
 

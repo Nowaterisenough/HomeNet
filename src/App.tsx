@@ -16,6 +16,7 @@ import {
 import type { AppUpdateResult, LanDevice, RuntimeStatus } from "./types";
 
 const emptyStatus: RuntimeStatus = {
+  version: "",
   public_ipv4: "",
   public_ipv6: "",
   ddns_status: "",
@@ -45,7 +46,6 @@ export default function App() {
   const [autoStartEnabled, setAutoStartEnabled] = useState(false);
   const [autoStartSaving, setAutoStartSaving] = useState(false);
   const [updateChecking, setUpdateChecking] = useState(false);
-  const [appVersion, setAppVersion] = useState("0.1.4");
   const [updateStatusMessage, setUpdateStatusMessage] = useState("");
   const [updateStatusType, setUpdateStatusType] = useState<"normal" | "success" | "error">(
     "normal",
@@ -169,7 +169,6 @@ export default function App() {
     try {
       const result = await invokeCommand<AppUpdateResult>("install_app_update");
       setUpdateStatusMessage(result.message);
-      setAppVersion(result.current_version || appVersion);
       setUpdateStatusType(result.status === "installed" ? "success" : "normal");
       notifyLogsChanged();
     } catch (error) {
@@ -264,7 +263,7 @@ export default function App() {
           <LogPanel />
           <RuntimeSettingsPanel
             uptime={statusData.uptime}
-            version={appVersion}
+            version={statusData.version || "--"}
             autoStartEnabled={autoStartEnabled}
             autoStartSaving={autoStartSaving}
             updateChecking={updateChecking}
