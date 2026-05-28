@@ -280,6 +280,7 @@ fn enrich_neighbor_devices_with_active_discovery(
     hints: &[DeviceDiscoveryHint],
 ) {
     apply_device_discovery_hints(devices, hints);
+    refresh_hinted_device_ipv6_candidates(devices, hints);
 
     let targets = active_discovery_ipv4_targets(devices);
     if targets.is_empty() {
@@ -323,6 +324,43 @@ fn enrich_neighbor_devices_with_active_discovery(
             add_resolved_ipv6_candidates_to_device(device, addresses.iter().copied(), None);
         }
     }
+}
+
+fn refresh_hinted_device_ipv6_candidates(
+    devices: &mut [LanDevice],
+    hints: &[DeviceDiscoveryHint],
+) {
+    refresh_hinted_device_ipv6_candidates_with_resolver(
+        devices,
+        hints,
+        resolve_hint_ipv6_addresses,
+    );
+}
+
+fn refresh_hinted_device_ipv6_candidates_with_resolver<F>(
+    devices: &mut [LanDevice],
+    hints: &[DeviceDiscoveryHint],
+    mut resolve_addresses: F,
+) where
+    F: FnMut(&DeviceDiscoveryHint) -> Vec<Ipv6Addr>,
+{
+    for device in devices {
+        let Some(hint) = matching_device_hint(device, hints) else {
+            continue;
+        };
+        if hint.device_name.trim().is_empty() {
+            continue;
+        }
+
+        clear_global_ipv6_candidates(device);
+        let addresses = resolve_addresses(hint);
+        add_resolved_ipv6_candidates_to_device(device, addresses, Some(hint));
+    }
+}
+
+fn clear_global_ipv6_candidates(device: &mut LanDevice) {
+    device.ipv6.retain(|value| !is_global_ipv6(value));
+    device.global_ipv6.clear();
 }
 
 fn apply_device_discovery_hints(devices: &mut [LanDevice], hints: &[DeviceDiscoveryHint]) {
@@ -369,6 +407,12 @@ fn local_hostname_candidates(hostname: &str) -> Vec<String> {
     };
 
     let mut candidates = Vec::new();
+    if let Some(base_name) = hostname.strip_suffix("-local") {
+        if !base_name.trim().is_empty() && !base_name.contains('.') {
+            push_unique_case_insensitive(&mut candidates, format!("{base_name}.local"));
+            push_unique_case_insensitive(&mut candidates, base_name.to_string());
+        }
+    }
     if hostname.contains('.') {
         push_unique_case_insensitive(&mut candidates, hostname);
         return candidates;
@@ -462,10 +506,10 @@ where
 }
 
 fn resolved_ipv6_candidate_score(address: &Ipv6Addr, selected: Option<&Ipv6Addr>) -> u8 {
-    if selected.is_some_and(|selected| same_ipv6_interface_identifier(address, selected)) {
+    if low_ipv6_interface_identifier(address) {
         return 0;
     }
-    if low_ipv6_interface_identifier(address) {
+    if selected.is_some_and(|selected| same_ipv6_interface_identifier(address, selected)) {
         return 1;
     }
     2
@@ -1705,6 +1749,118 @@ ip_address: 192.168.100.143
                 .copied(),
             Some("240e:358:106:9200::612".parse::<Ipv6Addr>().unwrap())
         );
+    }
+
+    #[test]
+    fn resolved_hint_ipv6_candidates_prefer_low_stable_host_over_same_old_random_address() {
+        let hint = DeviceDiscoveryHint {
+            device_mac: "88:c9:b3:b3:02:58".to_string(),
+            device_name: "NoWatsPC".to_string(),
+            selected_ip: "240e:358:130:7f00:fa35:5668:3636:1b1f".to_string(),
+            ..DeviceDiscoveryHint::default()
+        };
+        let addresses = vec![
+            "240e:358:130:7f00:fa35:5668:3636:1b1f"
+                .parse::<Ipv6Addr>()
+                .unwrap(),
+            "240e:358:130:7f00::612".parse::<Ipv6Addr>().unwrap(),
+        ];
+
+        assert_eq!(
+            order_resolved_ipv6_candidates(addresses, Some(&hint))
+                .first()
+                .copied(),
+            Some("240e:358:130:7f00::612".parse::<Ipv6Addr>().unwrap())
+        );
+    }
+
+    #[test]
+    fn local_hostname_candidates_accepts_dash_local_alias() {
+        assert_eq!(
+            local_hostname_candidates("NoWatsPC-local"),
+            vec![
+                "NoWatsPC.local",
+                "NoWatsPC",
+                "NoWatsPC-local.local",
+                "NoWatsPC-local"
+            ]
+        );
+    }
+
+    #[test]
+    fn hinted_device_refresh_replaces_stale_global_ipv6_candidates() {
+        let mut devices = vec![test_device(
+            "mac-88-c9-b3-b3-02-58",
+            "88:c9:b3:b3:02:58",
+            "windows-neighbor",
+            vec!["192.168.100.143"],
+            vec![
+                "240e:358:130:7f00:fa35:5668:3636:1b1f",
+                "fe80::5d21:b00:d0aa:b8db",
+            ],
+        )];
+        devices[0].mac = "88:c9:b3:b3:02:58".to_string();
+        let hint = DeviceDiscoveryHint {
+            device_mac: "88:c9:b3:b3:02:58".to_string(),
+            device_name: "NoWatsPC".to_string(),
+            selected_ip: "240e:358:130:7f00:fa35:5668:3636:1b1f".to_string(),
+            ..DeviceDiscoveryHint::default()
+        };
+
+        refresh_hinted_device_ipv6_candidates_with_resolver(
+            &mut devices,
+            &[hint],
+            |_| {
+                vec![
+                    "240e:358:1f9:b700:8e7:364e:ff6a:7ec"
+                        .parse::<Ipv6Addr>()
+                        .unwrap(),
+                    "240e:358:130:7f00::612".parse::<Ipv6Addr>().unwrap(),
+                ]
+            },
+        );
+
+        assert_eq!(
+            devices[0].ipv6,
+            vec![
+                "fe80::5d21:b00:d0aa:b8db",
+                "240e:358:130:7f00::612",
+                "240e:358:1f9:b700:8e7:364e:ff6a:7ec"
+            ]
+        );
+        assert_eq!(
+            devices[0].global_ipv6,
+            vec![
+                "240e:358:130:7f00::612",
+                "240e:358:1f9:b700:8e7:364e:ff6a:7ec"
+            ]
+        );
+    }
+
+    #[test]
+    fn hinted_device_refresh_drops_stale_global_ipv6_when_name_resolution_fails() {
+        let mut devices = vec![test_device(
+            "device-1",
+            "NoWatsPC",
+            "windows-neighbor",
+            vec!["192.168.100.143"],
+            vec![
+                "240e:358:130:7f00:fa35:5668:3636:1b1f",
+                "fe80::5d21:b00:d0aa:b8db",
+            ],
+        )];
+        let hint = DeviceDiscoveryHint {
+            device_id: "device-1".to_string(),
+            device_name: "NoWatsPC".to_string(),
+            ..DeviceDiscoveryHint::default()
+        };
+
+        refresh_hinted_device_ipv6_candidates_with_resolver(&mut devices, &[hint], |_| {
+            Vec::new()
+        });
+
+        assert_eq!(devices[0].ipv6, vec!["fe80::5d21:b00:d0aa:b8db"]);
+        assert!(devices[0].global_ipv6.is_empty());
     }
 
     #[test]
