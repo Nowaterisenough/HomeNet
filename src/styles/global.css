@@ -233,14 +233,22 @@ select {
 .dashboard-grid {
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(560px, 0.95fr) minmax(620px, 1.05fr);
-  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: minmax(560px, 1.85fr) minmax(200px, 0.45fr);
+  grid-template-rows: minmax(0, 1fr);
   gap: 12px;
 }
 
 .device-ddns-column {
-  grid-column: 2;
-  grid-row: 1 / span 2;
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.routing-column {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
 }
 
 .bottom-grid {

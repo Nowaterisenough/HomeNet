@@ -215,16 +215,6 @@ pub(crate) fn is_stable_global_ipv6_candidate(candidate: &Ipv6AddressCandidate) 
         && !candidate.skip_as_source
 }
 
-pub(crate) fn first_stable_global_ipv6_value<'a, I>(values: I) -> Option<&'a str>
-where
-    I: IntoIterator<Item = &'a String>,
-{
-    values
-        .into_iter()
-        .map(|value| value.trim())
-        .find(|value| is_global_unicast_ipv6(value))
-}
-
 pub(crate) fn stable_local_ipv6_candidate_set() -> Option<BTreeSet<(String, Ipv6Addr)>> {
     let candidates = local_ipv6_candidates();
     if candidates.is_empty() {

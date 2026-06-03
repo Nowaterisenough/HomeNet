@@ -107,6 +107,7 @@ export interface DeviceDdnsConfig {
   record_type: string;
   ttl: number;
   interval_minutes: number;
+  ip_candidate_index: number;
   device_id: string;
   device_mac: string;
   device_name: string;

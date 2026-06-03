@@ -33,6 +33,7 @@ const defaultConfig: DeviceDdnsConfig = {
   record_type: "AAAA",
   ttl: 600,
   interval_minutes: 10,
+  ip_candidate_index: 1,
   device_id: "",
   device_mac: "",
   device_name: "",
@@ -80,6 +81,10 @@ function availableIpsForRecordType(device: LanDevice, recordType: "A" | "AAAA"):
 function currentIpForConfig(config: DeviceDdnsConfig | null, device: LanDevice): string {
   const recordType = recordTypeForConfig(config);
   const available = availableIpsForRecordType(device, recordType);
+  if (recordType === "AAAA") {
+    const candidateIndex = Math.max(1, Math.floor(Number(config?.ip_candidate_index) || 1));
+    return available[candidateIndex - 1] || "";
+  }
   const configured = configuredIpForConfig(config);
   if (configured && available.includes(configured)) return configured;
   return available[0] || "";
@@ -98,6 +103,7 @@ function normalizeConfig(data: Partial<DeviceDdnsConfig> | null | undefined): De
     record_type: data?.record_type?.trim().toUpperCase() === "A" ? "A" : "AAAA",
     ttl: Number(data?.ttl) || defaultConfig.ttl,
     interval_minutes: Number(data?.interval_minutes) || defaultConfig.interval_minutes,
+    ip_candidate_index: Math.max(1, Math.floor(Number(data?.ip_candidate_index) || 1)),
     device_id: data?.device_id || "",
     device_mac: data?.device_mac || "",
     device_name: data?.device_name || "",
@@ -168,6 +174,7 @@ function buildDraft(row: DeviceRow, configs: DeviceDdnsConfig[]): DeviceDdnsConf
     device_mac: row.raw.mac,
     device_name: existing?.device_name || row.name || row.nativeName,
     record_type: recordType,
+    ip_candidate_index: Math.max(1, Math.floor(Number(existing?.ip_candidate_index) || 1)),
     selected_ip: normalizedSelectedIp,
     selected_ipv6: recordType === "AAAA" ? normalizedSelectedIp : "",
     last_update_time: existing?.last_update_time || "",
@@ -309,8 +316,9 @@ export default function DeviceDdnsPanel({ className = "" }: DeviceDdnsPanelProps
     }
     if (draft.record_type.trim().toUpperCase() === "AAAA") {
       if (availableIpOptions.length === 0) return "当前设备没有可用于 DDNS 的稳定公网 IPv6";
-      if (draft.selected_ip && !availableIpOptions.includes(draft.selected_ip)) {
-        return "已选 IPv6 不再适合 DDNS，请重新选择";
+      const candidateIndex = Math.max(1, Math.floor(Number(draft.ip_candidate_index) || 1));
+      if (candidateIndex > availableIpOptions.length) {
+        return `当前只有 ${availableIpOptions.length} 个可用于 DDNS 的公网 IPv6 候选`;
       }
     }
     if (draft.sub_domain.trim().includes(",")) return "每台设备请填写一个独立子域名";
@@ -320,9 +328,11 @@ export default function DeviceDdnsPanel({ className = "" }: DeviceDdnsPanelProps
   function buildPayload(): DeviceDdnsConfig | null {
     if (!selectedRow || !draft) return null;
     const recordType = draft.record_type.trim().toUpperCase() === "A" ? "A" : "AAAA";
+    const candidateIndex = Math.max(1, Math.floor(Number(draft.ip_candidate_index) || 1));
     const selectedIp =
-      draft.selected_ip ||
-      (recordType === "A" ? selectedRow.raw.ipv4[0] : firstGlobalIpv6(selectedRow.raw)) ||
+      (recordType === "A"
+        ? draft.selected_ip || selectedRow.raw.ipv4[0]
+        : availableIpsForRecordType(selectedRow.raw, "AAAA")[candidateIndex - 1] || firstGlobalIpv6(selectedRow.raw)) ||
       "";
     return {
       ...draft,
@@ -331,6 +341,7 @@ export default function DeviceDdnsPanel({ className = "" }: DeviceDdnsPanelProps
       record_type: recordType,
       ttl: Number(draft.ttl) || defaultConfig.ttl,
       interval_minutes: Number(draft.interval_minutes) || defaultConfig.interval_minutes,
+      ip_candidate_index: candidateIndex,
       device_id: selectedRow.raw.id,
       device_mac: selectedRow.raw.mac,
       device_name: deviceDisplayNameForDraft(),
@@ -609,15 +620,25 @@ export default function DeviceDdnsPanel({ className = "" }: DeviceDdnsPanelProps
                   </select>
                 </label>
                 <label className="field-label">
-                  <span>绑定 IP</span>
-                  <select value={draft.selected_ip} onChange={(event) => updateDraft("selected_ip", event.target.value)}>
-                    <option value="">自动选择</option>
-                    {availableIpOptions.map((ip) => (
-                      <option key={ip} value={ip}>
-                        {ip}
-                      </option>
-                    ))}
-                  </select>
+                  <span>{recordTypeForConfig(draft) === "AAAA" ? "候选顺位" : "绑定 IP"}</span>
+                  {recordTypeForConfig(draft) === "AAAA" ? (
+                    <input
+                      value={draft.ip_candidate_index}
+                      type="number"
+                      min={1}
+                      max={Math.max(availableIpOptions.length, draft.ip_candidate_index || 1)}
+                      onChange={(event) => updateDraft("ip_candidate_index", Math.max(1, Number(event.target.value) || 1))}
+                    />
+                  ) : (
+                    <select value={draft.selected_ip} onChange={(event) => updateDraft("selected_ip", event.target.value)}>
+                      <option value="">自动选择</option>
+                      {availableIpOptions.map((ip) => (
+                        <option key={ip} value={ip}>
+                          {ip}
+                        </option>
+                      ))}
+                    </select>
+                  )}
                 </label>
                 <label className="field-label">
                   <span>最短 TTL</span>

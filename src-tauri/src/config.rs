@@ -102,6 +102,9 @@ pub struct DeviceDdnsConfig {
     #[serde(default = "default_interval_minutes")]
     pub interval_minutes: u32,
 
+    #[serde(default = "default_ip_candidate_index")]
+    pub ip_candidate_index: u32,
+
     #[serde(default)]
     pub device_id: String,
 
@@ -285,6 +288,10 @@ fn default_ttl() -> u32 {
 
 fn default_interval_minutes() -> u32 {
     10
+}
+
+fn default_ip_candidate_index() -> u32 {
+    1
 }
 
 fn default_protocol() -> String {
@@ -478,6 +485,10 @@ fn normalize_device_ddns_config(config: &mut DeviceDdnsConfig) -> bool {
         config.selected_ip = config.selected_ipv6.trim().to_string();
         changed = true;
     }
+    if config.ip_candidate_index == 0 {
+        config.ip_candidate_index = default_ip_candidate_index();
+        changed = true;
+    }
 
     changed
 }
@@ -607,6 +618,7 @@ impl Default for DeviceDdnsConfig {
             record_type: default_record_type(),
             ttl: default_ttl(),
             interval_minutes: default_interval_minutes(),
+            ip_candidate_index: default_ip_candidate_index(),
             device_id: String::new(),
             device_mac: String::new(),
             device_name: String::new(),
@@ -811,6 +823,7 @@ mod tests {
         assert_eq!(config.provider, "aliyun");
         assert_eq!(config.ttl, 600);
         assert_eq!(config.interval_minutes, 10);
+        assert_eq!(config.ip_candidate_index, 1);
         assert_eq!(config.record_type, "AAAA");
         assert_eq!(config.device_id, "");
         assert_eq!(config.device_mac, "");

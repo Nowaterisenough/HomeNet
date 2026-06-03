@@ -366,6 +366,7 @@ pub(crate) struct DeviceDdnsOperationIdentity {
     sub_domain: String,
     ttl: u32,
     interval_minutes: u32,
+    ip_candidate_index: u32,
     device_id: String,
     device_mac: String,
     record_type: String,
@@ -383,6 +384,7 @@ pub(crate) fn device_ddns_identity(config: &DeviceDdnsConfig) -> DeviceDdnsOpera
         sub_domain: config.sub_domain.trim().to_string(),
         ttl: config.ttl,
         interval_minutes: config.interval_minutes,
+        ip_candidate_index: config.ip_candidate_index.max(1),
         device_id: config.device_id.trim().to_string(),
         device_mac: config.device_mac.trim().to_ascii_lowercase(),
         record_type: config.record_type.trim().to_uppercase(),
@@ -445,12 +447,23 @@ pub(crate) fn device_discovery_hints(
     configs
         .iter()
         .filter(|config| device_ddns_has_device_selector(config))
-        .map(|config| crate::device_discovery::DeviceDiscoveryHint {
-            device_id: config.device_id.trim().to_string(),
-            device_mac: config.device_mac.trim().to_string(),
-            device_name: config.device_name.trim().to_string(),
-            selected_ip: config.selected_ip.trim().to_string(),
-            selected_ipv6: config.selected_ipv6.trim().to_string(),
+        .map(|config| {
+            let use_candidate_index = !config.record_type.trim().eq_ignore_ascii_case("A");
+            crate::device_discovery::DeviceDiscoveryHint {
+                device_id: config.device_id.trim().to_string(),
+                device_mac: config.device_mac.trim().to_string(),
+                device_name: config.device_name.trim().to_string(),
+                selected_ip: if use_candidate_index {
+                    String::new()
+                } else {
+                    config.selected_ip.trim().to_string()
+                },
+                selected_ipv6: if use_candidate_index {
+                    String::new()
+                } else {
+                    config.selected_ipv6.trim().to_string()
+                },
+            }
         })
         .collect()
 }
@@ -459,6 +472,9 @@ fn normalize_device_ddns_payload(mut config: DeviceDdnsConfig) -> DeviceDdnsConf
     config.record_type = config.record_type.trim().to_uppercase();
     if config.record_type != "A" && config.record_type != "AAAA" {
         config.record_type = "AAAA".to_string();
+    }
+    if config.ip_candidate_index == 0 {
+        config.ip_candidate_index = 1;
     }
     if config.selected_ip.trim().is_empty() && !config.selected_ipv6.trim().is_empty() {
         config.selected_ip = config.selected_ipv6.trim().to_string();
@@ -595,8 +611,17 @@ pub(crate) fn device_ddns_device_is_online(
         .any(|device| device.online && device_matches_config(device, config))
 }
 
-fn first_global_ipv6(device: &LanDevice) -> Option<&str> {
-    crate::ddns::first_stable_global_ipv6_value(device.global_ipv6.iter())
+fn global_ipv6_by_candidate_index<'a>(
+    config: &DeviceDdnsConfig,
+    device: &'a LanDevice,
+) -> Option<&'a str> {
+    let candidate_index = config.ip_candidate_index.max(1) as usize;
+    device
+        .global_ipv6
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| crate::device_discovery::is_global_ipv6(value))
+        .nth(candidate_index - 1)
 }
 
 fn first_ipv4(device: &LanDevice) -> Option<&str> {
@@ -629,27 +654,15 @@ pub(crate) fn resolve_device_ipv6(
         .find(|device| device_matches_config(device, config))
         .ok_or_else(|| "未找到匹配的局域网设备".to_string())?;
 
-    let selected_ip = config.selected_ip.trim();
-    let selected_ipv6 = if selected_ip.is_empty() {
-        config.selected_ipv6.trim()
-    } else {
-        selected_ip
-    };
-    if !selected_ipv6.is_empty() {
-        let selected_is_available = device
-            .global_ipv6
-            .iter()
-            .any(|value| value.trim() == selected_ipv6)
-            && crate::device_discovery::is_global_ipv6(selected_ipv6);
-
-        if selected_is_available {
-            return Ok(selected_ipv6.to_string());
-        }
-    }
-
-    first_global_ipv6(device)
+    global_ipv6_by_candidate_index(config, device)
         .map(|value| value.to_string())
-        .ok_or_else(|| format!("设备 {} 没有可用的公网 IPv6", device.display_name))
+        .ok_or_else(|| {
+            format!(
+                "设备 {} 没有第 {} 个可用的公网 IPv6 候选",
+                device.display_name,
+                config.ip_candidate_index.max(1)
+            )
+        })
 }
 
 pub(crate) fn resolve_device_ipv4(
@@ -1756,10 +1769,11 @@ mod tests {
     }
 
     #[test]
-    fn resolve_device_ipv6_accepts_selected_global_ipv6_when_present() {
+    fn resolve_device_ipv6_uses_first_candidate_by_default() {
         let config = DeviceDdnsConfig {
             device_id: "device-1".to_string(),
-            selected_ipv6: "2408:8200::10".to_string(),
+            selected_ipv6: "2408:8200::11".to_string(),
+            selected_ip: "2408:8200::11".to_string(),
             ..DeviceDdnsConfig::default()
         };
         let devices = vec![lan_device(
@@ -1771,6 +1785,27 @@ mod tests {
         assert_eq!(
             resolve_device_ipv6(&config, &devices),
             Ok("2408:8200::10".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_device_ipv6_uses_configured_candidate_index() {
+        let config = DeviceDdnsConfig {
+            device_id: "device-1".to_string(),
+            ip_candidate_index: 2,
+            selected_ipv6: "2408:8200::10".to_string(),
+            selected_ip: "2408:8200::10".to_string(),
+            ..DeviceDdnsConfig::default()
+        };
+        let devices = vec![lan_device(
+            "device-1",
+            "aa:bb:cc:dd:ee:ff",
+            vec!["2408:8200::10", "2408:8200::11"],
+        )];
+
+        assert_eq!(
+            resolve_device_ipv6(&config, &devices),
+            Ok("2408:8200::11".to_string())
         );
     }
 
@@ -1966,6 +2001,23 @@ mod tests {
             &current_same_identity,
             &identity
         ));
+    }
+
+    #[test]
+    fn device_ddns_identity_tracks_ip_candidate_index() {
+        let original = DeviceDdnsConfig {
+            device_id: "device-1".to_string(),
+            ip_candidate_index: 1,
+            ..DeviceDdnsConfig::default()
+        };
+        let current = DeviceDdnsConfig {
+            ip_candidate_index: 2,
+            ..original.clone()
+        };
+
+        let identity = device_ddns_identity(&original);
+
+        assert!(!device_ddns_identity_matches(&current, &identity));
     }
 
     #[test]

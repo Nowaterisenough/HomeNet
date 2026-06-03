@@ -254,9 +254,11 @@ export default function App() {
         </section>
 
         <section className="dashboard-grid" aria-label="网络配置">
-          <ForwardRulesPanel />
           <DeviceDdnsPanel className="device-ddns-column" />
-          <ReverseProxyPanel />
+          <div className="routing-column">
+            <ForwardRulesPanel />
+            <ReverseProxyPanel />
+          </div>
         </section>
 
         <section className="bottom-grid" aria-label="日志与设置">
