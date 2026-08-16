@@ -665,6 +665,36 @@ input:read-only {
   height: 16px;
 }
 
+.candidate-index-control {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+}
+
+.global-ipv6-hint {
+  height: 26px;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  border-radius: 3px;
+  background: #f1f6fd;
+  color: #6f8098;
+  padding: 3px 7px;
+  font-size: 9.5px;
+  font-weight: 500;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.global-ipv6-hint.is-empty {
+  background: #f6f8fb;
+  color: #98a3b3;
+}
+
 .binding-footer {
   height: 38px;
   color: #596579;
