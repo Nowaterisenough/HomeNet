@@ -42,6 +42,8 @@ const requiredChecks = [
   ],
   ["src/components/DeviceDdnsPanel.tsx", 'invokeCommand("save_device_ddns_config"'],
   ["src/components/DeviceDdnsPanel.tsx", 'invokeCommand("delete_device_ddns_config"'],
+  ["src/components/DeviceDdnsPanel.tsx", "function updateIpv6CandidateIndex"],
+  ["src/components/DeviceDdnsPanel.tsx", "selectedIpv6Candidate"],
   ["src/components/DeviceDdnsPanel.tsx", "useDraggableModal"],
   [
     "src/components/ReverseProxyPanel.tsx",
@@ -63,6 +65,7 @@ const requiredChecks = [
   ["src/lib/tauri.ts", "currentTauriWindow"],
   ["src/styles/global.css", "--titlebar-height"],
   ["src/styles/panels.css", ".modal-backdrop"],
+  ["src/styles/panels.css", ".ipv6-candidate-value"],
   ["src-tauri/tauri.conf.json", '"productName": "HomeNet"'],
   ["src-tauri/tauri.conf.json", '"title": "HomeNet"'],
   ["src-tauri/tauri.conf.json", '"devUrl": "http://localhost:1420"'],
@@ -115,6 +118,8 @@ const forbiddenChecks = [
   ["src/App.tsx", 'import { Menu } from "lucide-react"'],
   ["src/App.tsx", 'className="menu-button"'],
   ["src/styles/global.css", ".menu-button"],
+  ["src/components/DeviceDdnsPanel.tsx", "Global Unicast IPv6"],
+  ["src/styles/panels.css", ".global-ipv6-hint"],
   [".github/workflows/build.yml", "Read-UpdaterSignature"],
   [".github/workflows/build.yml", "macos_signing_enabled"],
 ];

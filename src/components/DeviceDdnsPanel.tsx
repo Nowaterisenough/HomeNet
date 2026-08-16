@@ -226,7 +226,7 @@ export default function DeviceDdnsPanel({ className = "" }: DeviceDdnsPanelProps
     if (!selectedRow || !draft) return [];
     return availableIpsForRecordType(selectedRow.raw, recordTypeForConfig(draft));
   }, [draft, selectedRow]);
-  const selectedGlobalIpv6 = useMemo(() => {
+  const selectedIpv6Candidate = useMemo(() => {
     if (!draft || recordTypeForConfig(draft) !== "AAAA") return "";
     const candidateIndex = Math.max(1, Math.floor(Number(draft.ip_candidate_index) || 1));
     return availableIpOptions[candidateIndex - 1] || "";
@@ -446,6 +446,21 @@ export default function DeviceDdnsPanel({ className = "" }: DeviceDdnsPanelProps
     setDraft((current) => (current ? { ...current, [key]: value } : current));
   }
 
+  function updateIpv6CandidateIndex(value: number) {
+    const candidateIndex = Math.max(1, Math.floor(Number(value) || 1));
+    const selectedIp = availableIpOptions[candidateIndex - 1] || "";
+    setDraft((current) =>
+      current
+        ? {
+            ...current,
+            ip_candidate_index: candidateIndex,
+            selected_ip: selectedIp,
+            selected_ipv6: selectedIp,
+          }
+        : current,
+    );
+  }
+
   function onDraftCheckbox(key: keyof DeviceDdnsConfig, event: ChangeEvent<HTMLInputElement>) {
     updateDraft(key, event.target.checked as never);
   }
@@ -624,7 +639,7 @@ export default function DeviceDdnsPanel({ className = "" }: DeviceDdnsPanelProps
                     <option value="A">A - IPv4</option>
                   </select>
                 </label>
-                <label className="field-label">
+                <label className="field-label candidate-index-field">
                   <span>{recordTypeForConfig(draft) === "AAAA" ? "候选顺位" : "绑定 IP"}</span>
                   {recordTypeForConfig(draft) === "AAAA" ? (
                     <div className="candidate-index-control">
@@ -633,19 +648,16 @@ export default function DeviceDdnsPanel({ className = "" }: DeviceDdnsPanelProps
                         type="number"
                         min={1}
                         max={Math.max(availableIpOptions.length, draft.ip_candidate_index || 1)}
-                        onChange={(event) =>
-                          updateDraft("ip_candidate_index", Math.max(1, Number(event.target.value) || 1))
-                        }
+                        onChange={(event) => updateIpv6CandidateIndex(Number(event.target.value))}
                       />
                       <small
-                        className={`global-ipv6-hint${selectedGlobalIpv6 ? "" : " is-empty"}`}
-                        title={selectedGlobalIpv6 || undefined}
+                        className={`ipv6-candidate-value${selectedIpv6Candidate ? "" : " is-empty"}`}
                       >
-                        {selectedGlobalIpv6
-                          ? `Global Unicast IPv6 · ${selectedGlobalIpv6}`
+                        {selectedIpv6Candidate
+                          ? selectedIpv6Candidate
                           : availableIpOptions.length === 0
-                            ? "未发现 Global Unicast IPv6"
-                            : `第 ${draft.ip_candidate_index} 顺位暂无 Global Unicast IPv6`}
+                            ? "未发现可用 IPv6 候选"
+                            : `第 ${draft.ip_candidate_index} 顺位暂无地址`}
                       </small>
                     </div>
                   ) : (
