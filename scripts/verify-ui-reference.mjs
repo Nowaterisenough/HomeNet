@@ -112,6 +112,9 @@ const forbiddenChecks = [
   ["index.html", 'src="/src/main.ts"'],
   ["src/vite-env.d.ts", "*.vue"],
   ["src/vite-env.d.ts", 'from "vue"'],
+  ["src/App.tsx", 'import { Menu } from "lucide-react"'],
+  ["src/App.tsx", 'className="menu-button"'],
+  ["src/styles/global.css", ".menu-button"],
   [".github/workflows/build.yml", "Read-UpdaterSignature"],
   [".github/workflows/build.yml", "macos_signing_enabled"],
 ];

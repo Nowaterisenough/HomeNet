@@ -1,5 +1,4 @@
 import { MouseEvent, useEffect, useMemo, useState } from "react";
-import { Menu } from "lucide-react";
 import DeviceDdnsPanel from "./components/DeviceDdnsPanel";
 import ForwardRulesPanel from "./components/ForwardRulesPanel";
 import LogPanel from "./components/LogPanel";
@@ -212,9 +211,6 @@ export default function App() {
     <div className="window-frame">
       <header className="titlebar" onMouseDown={startWindowDrag}>
         <div className="titlebar-left">
-          <button className="menu-button" type="button" aria-label="菜单" onMouseDown={(event) => event.stopPropagation()}>
-            <Menu size={21} strokeWidth={2.1} />
-          </button>
           <h1>HomeNet</h1>
           {updateStatusMessage ? (
             <span className={`update-status update-${updateStatusType}`}>{updateStatusMessage}</span>

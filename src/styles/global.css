@@ -101,21 +101,6 @@ select {
   gap: 13px;
 }
 
-.menu-button {
-  width: 24px;
-  height: 24px;
-  display: grid;
-  place-items: center;
-  border: 0;
-  border-radius: 5px;
-  background: transparent;
-  color: #344052;
-}
-
-.menu-button:hover {
-  background: #eef3f9;
-}
-
 .titlebar h1 {
   color: #101522;
   font-size: 15px;
