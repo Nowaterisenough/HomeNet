@@ -44,7 +44,7 @@ pub fn run() {
     };
 
     // Build and run the Tauri application.
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(app_state)
@@ -125,8 +125,18 @@ pub fn run() {
             config::add_log("info", "系统", "应用初始化完成");
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|app_handle, event| {
+        #[cfg(target_os = "macos")]
+        if let tauri::RunEvent::Reopen { .. } = event {
+            tray::show_main_window(app_handle);
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        let _ = (app_handle, event);
+    });
 }
 
 // ---------------------------------------------------------------------------

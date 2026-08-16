@@ -1,6 +1,6 @@
 use tauri::{
     menu::{Menu, MenuItem},
-    tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Manager,
 };
 
@@ -14,7 +14,12 @@ const TRAY_TOOLTIP: &str = "HomeNet";
 
 fn tray_icon_action(event: &TrayIconEvent) -> TrayIconAction {
     match event {
-        TrayIconEvent::DoubleClick {
+        TrayIconEvent::Click {
+            button: MouseButton::Left,
+            button_state: MouseButtonState::Up,
+            ..
+        }
+        | TrayIconEvent::DoubleClick {
             button: MouseButton::Left,
             ..
         } => TrayIconAction::RestoreMainWindow,
@@ -22,7 +27,7 @@ fn tray_icon_action(event: &TrayIconEvent) -> TrayIconAction {
     }
 }
 
-fn show_main_window(app: &AppHandle) {
+pub(crate) fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
         let _ = window.show();
@@ -130,13 +135,26 @@ mod tests {
     }
 
     #[test]
-    fn regular_click_does_not_restore_main_window() {
+    fn regular_left_click_restores_main_window() {
         let event = TrayIconEvent::Click {
             id: TrayIconId::new("main"),
             position: PhysicalPosition::new(0.0, 0.0),
             rect: empty_rect(),
             button: MouseButton::Left,
             button_state: MouseButtonState::Up,
+        };
+
+        assert_eq!(tray_icon_action(&event), TrayIconAction::RestoreMainWindow);
+    }
+
+    #[test]
+    fn left_mouse_down_does_not_restore_main_window_twice() {
+        let event = TrayIconEvent::Click {
+            id: TrayIconId::new("main"),
+            position: PhysicalPosition::new(0.0, 0.0),
+            rect: empty_rect(),
+            button: MouseButton::Left,
+            button_state: MouseButtonState::Down,
         };
 
         assert_eq!(tray_icon_action(&event), TrayIconAction::Ignore);
