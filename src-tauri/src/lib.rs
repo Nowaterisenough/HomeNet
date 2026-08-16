@@ -36,6 +36,15 @@ pub fn run() {
     config::add_log("info", "系统", "应用启动中");
     forward::system::log_capabilities();
 
+    #[cfg(target_os = "macos")]
+    if let Err(error) = autostart::migrate_macos_autostart(app_config.auto_start) {
+        config::add_log(
+            "warn",
+            "自启动",
+            &format!("macOS 自启动项迁移失败：{}", error),
+        );
+    }
+
     // Wrap config and forward manager in shared state.
     let app_state = commands::AppState {
         config: Mutex::new(app_config),
