@@ -1,4 +1,4 @@
-import { MouseEvent, useEffect, useMemo, useState } from "react";
+import { MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 import DeviceDdnsPanel from "./components/DeviceDdnsPanel";
 import ForwardRulesPanel from "./components/ForwardRulesPanel";
 import LogPanel from "./components/LogPanel";
@@ -27,6 +27,8 @@ const emptyStatus: RuntimeStatus = {
   uptime: 0,
 };
 
+const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
 function displayValue(value: string): string {
   return value?.trim() ? value : "--";
 }
@@ -44,11 +46,16 @@ export default function App() {
   const [deviceSummary, setDeviceSummary] = useState({ online: 0, total: 0 });
   const [autoStartEnabled, setAutoStartEnabled] = useState(false);
   const [autoStartSaving, setAutoStartSaving] = useState(false);
+  const [autoUpdateCheckEnabled, setAutoUpdateCheckEnabled] = useState(false);
+  const [autoUpdateCheckSaving, setAutoUpdateCheckSaving] = useState(false);
   const [updateChecking, setUpdateChecking] = useState(false);
+  const [updateInstalling, setUpdateInstalling] = useState(false);
+  const [availableUpdate, setAvailableUpdate] = useState<AppUpdateResult | null>(null);
   const [updateStatusMessage, setUpdateStatusMessage] = useState("");
   const [updateStatusType, setUpdateStatusType] = useState<"normal" | "success" | "error">(
     "normal",
   );
+  const updateBusyRef = useRef(false);
 
   const disabledRuleCount = Math.max(0, statusData.rule_count - statusData.enabled_rule_count);
   const disabledReverseProxyCount = Math.max(
@@ -139,6 +146,14 @@ export default function App() {
     }
   }
 
+  async function loadAutoUpdateCheck() {
+    try {
+      setAutoUpdateCheckEnabled(await invokeCommand<boolean>("get_auto_update_check"));
+    } catch {
+      setAutoUpdateCheckEnabled(false);
+    }
+  }
+
   function notifyLogsChanged() {
     window.dispatchEvent(new CustomEvent("homenet:logs-refresh"));
   }
@@ -159,22 +174,110 @@ export default function App() {
     }
   }
 
-  async function installAppUpdate() {
-    if (updateChecking) return;
-    setUpdateChecking(true);
-    setUpdateStatusType("normal");
-    setUpdateStatusMessage("正在检查更新");
+  async function toggleAutoUpdateCheck(enabled: boolean) {
+    const previous = autoUpdateCheckEnabled;
+    setAutoUpdateCheckEnabled(enabled);
+    setAutoUpdateCheckSaving(true);
 
     try {
-      const result = await invokeCommand<AppUpdateResult>("install_app_update");
-      setUpdateStatusMessage(result.message);
-      setUpdateStatusType(result.status === "installed" ? "success" : "normal");
+      await invokeCommand("set_auto_update_check", { enabled });
       notifyLogsChanged();
     } catch (error) {
-      setUpdateStatusMessage(`检查更新失败：${String(error)}`);
-      setUpdateStatusType("error");
+      setAutoUpdateCheckEnabled(previous);
+      console.warn("设置自动检查更新失败:", error);
+    } finally {
+      setAutoUpdateCheckSaving(false);
+    }
+  }
+
+  async function checkAppUpdate(automatic = false): Promise<AppUpdateResult | null> {
+    if (updateBusyRef.current) return null;
+    updateBusyRef.current = true;
+    setUpdateChecking(true);
+    setUpdateStatusType("normal");
+    if (!automatic) setUpdateStatusMessage("正在检查更新");
+
+    try {
+      const result = await invokeCommand<AppUpdateResult>("check_app_update");
+      if (result.status === "available") {
+        setAvailableUpdate(result);
+        setUpdateStatusMessage(
+          automatic ? `发现新版本 ${result.latest_version}，请手动确认安装` : result.message,
+        );
+        setUpdateStatusType("normal");
+      } else {
+        setAvailableUpdate(null);
+        if (!automatic) {
+          setUpdateStatusMessage(result.message);
+          setUpdateStatusType("success");
+        }
+      }
+      notifyLogsChanged();
+      return result;
+    } catch (error) {
+      if (!automatic) {
+        setUpdateStatusMessage(`检查更新失败：${String(error)}`);
+        setUpdateStatusType("error");
+      }
+      return null;
     } finally {
       setUpdateChecking(false);
+      updateBusyRef.current = false;
+    }
+  }
+
+  async function installAvailableUpdate(update: AppUpdateResult) {
+    const notes = update.notes.trim();
+    const notesPreview = notes.length > 600 ? `${notes.slice(0, 600)}…` : notes;
+    const verificationMessage =
+      update.verification === "signed"
+        ? "更新包将通过内置公钥验证签名。"
+        : "此版本未配置 updater 签名，将通过 GitHub HTTPS 下载；macOS 安装完成后会解除应用隔离属性。";
+    const confirmed = window.confirm(
+      [
+        `发现 HomeNet ${update.latest_version}。`,
+        verificationMessage,
+        notesPreview,
+        "是否立即下载并安装？",
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
+    );
+    if (!confirmed || updateBusyRef.current) return;
+
+    updateBusyRef.current = true;
+    setUpdateInstalling(true);
+    setUpdateStatusType("normal");
+    setUpdateStatusMessage(
+      update.verification === "signed"
+        ? `正在下载并验证 ${update.latest_version}`
+        : `正在从 GitHub 下载 ${update.latest_version}`,
+    );
+    try {
+      const result = await invokeCommand<AppUpdateResult>("install_app_update", {
+        expectedVersion: update.latest_version,
+      });
+      setAvailableUpdate(null);
+      setUpdateStatusMessage(result.message);
+      setUpdateStatusType("success");
+      notifyLogsChanged();
+    } catch (error) {
+      setUpdateStatusMessage(`安装更新失败：${String(error)}`);
+      setUpdateStatusType("error");
+    } finally {
+      setUpdateInstalling(false);
+      updateBusyRef.current = false;
+    }
+  }
+
+  async function handleUpdateAction() {
+    if (availableUpdate) {
+      await installAvailableUpdate(availableUpdate);
+      return;
+    }
+    const result = await checkAppUpdate(false);
+    if (result?.status === "available") {
+      await installAvailableUpdate(result);
     }
   }
 
@@ -193,6 +296,7 @@ export default function App() {
     loadRuntimeStatus();
     loadDeviceSummary();
     loadAutoStart();
+    loadAutoUpdateCheck();
     window.addEventListener("homenet:refresh-status", loadRuntimeStatus);
     window.addEventListener("homenet:devices-refresh", loadDeviceSummary);
 
@@ -206,6 +310,13 @@ export default function App() {
       window.clearInterval(deviceTimer);
     };
   }, []);
+
+  useEffect(() => {
+    if (!autoUpdateCheckEnabled) return;
+    void checkAppUpdate(true);
+    const timer = window.setInterval(() => void checkAppUpdate(true), UPDATE_CHECK_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [autoUpdateCheckEnabled]);
 
   return (
     <div className="window-frame">
@@ -264,9 +375,14 @@ export default function App() {
             version={statusData.version || "--"}
             autoStartEnabled={autoStartEnabled}
             autoStartSaving={autoStartSaving}
+            autoUpdateCheckEnabled={autoUpdateCheckEnabled}
+            autoUpdateCheckSaving={autoUpdateCheckSaving}
             updateChecking={updateChecking}
+            updateInstalling={updateInstalling}
+            availableUpdateVersion={availableUpdate?.latest_version || ""}
             onToggleAutostart={toggleAutoStart}
-            onCheckUpdate={installAppUpdate}
+            onToggleAutoUpdateCheck={toggleAutoUpdateCheck}
+            onUpdateAction={handleUpdateAction}
           />
         </section>
       </main>

@@ -5,9 +5,14 @@ interface RuntimeSettingsPanelProps {
   version: string;
   autoStartEnabled: boolean;
   autoStartSaving: boolean;
+  autoUpdateCheckEnabled: boolean;
+  autoUpdateCheckSaving: boolean;
   updateChecking: boolean;
+  updateInstalling: boolean;
+  availableUpdateVersion: string;
   onToggleAutostart: (enabled: boolean) => void;
-  onCheckUpdate: () => void;
+  onToggleAutoUpdateCheck: (enabled: boolean) => void;
+  onUpdateAction: () => void;
 }
 
 function formattedUptime(uptime: number): string {
@@ -27,10 +32,24 @@ export default function RuntimeSettingsPanel({
   version,
   autoStartEnabled,
   autoStartSaving,
+  autoUpdateCheckEnabled,
+  autoUpdateCheckSaving,
   updateChecking,
+  updateInstalling,
+  availableUpdateVersion,
   onToggleAutostart,
-  onCheckUpdate,
+  onToggleAutoUpdateCheck,
+  onUpdateAction,
 }: RuntimeSettingsPanelProps) {
+  const updateBusy = updateChecking || updateInstalling;
+  const updateButtonLabel = updateInstalling
+    ? "正在安装"
+    : updateChecking
+      ? "正在检查"
+      : availableUpdateVersion
+        ? "安装更新"
+        : "检查更新";
+
   return (
     <aside className="runtime-panel">
       <h2>运行时与设置</h2>
@@ -47,9 +66,9 @@ export default function RuntimeSettingsPanel({
         <div className="update-row">
           <dt>检查更新</dt>
           <dd>
-            <button className="check-button" type="button" disabled={updateChecking} onClick={onCheckUpdate}>
-              <RefreshCw className={updateChecking ? "spinning" : undefined} size={13} strokeWidth={2.2} />
-              检查更新
+            <button className="check-button" type="button" disabled={updateBusy} onClick={onUpdateAction}>
+              <RefreshCw className={updateBusy ? "spinning" : undefined} size={13} strokeWidth={2.2} />
+              {updateButtonLabel}
             </button>
           </dd>
         </div>
@@ -70,7 +89,12 @@ export default function RuntimeSettingsPanel({
       </label>
       <label className="setting-toggle">
         <span>自动检查更新</span>
-        <input type="checkbox" disabled />
+        <input
+          type="checkbox"
+          checked={autoUpdateCheckEnabled}
+          disabled={autoUpdateCheckSaving}
+          onChange={(event) => onToggleAutoUpdateCheck(event.target.checked)}
+        />
       </label>
     </aside>
   );

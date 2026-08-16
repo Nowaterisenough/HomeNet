@@ -1,6 +1,7 @@
 export interface AppConfig {
   version: string;
   auto_start: boolean;
+  auto_check_updates: boolean;
   start_minimized: boolean;
   log_level: string;
   ipv6_interface: string;
@@ -76,10 +77,12 @@ export interface ReverseProxyRule {
 }
 
 export interface AppUpdateResult {
-  status: "up_to_date" | "installed" | "unavailable" | string;
+  status: "available" | "up_to_date" | "installed" | "unavailable" | string;
   current_version: string;
   latest_version: string;
   message: string;
+  notes: string;
+  verification: "signed" | "github_https" | string;
 }
 
 export interface NetworkInterfaceInfo {

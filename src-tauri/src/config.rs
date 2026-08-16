@@ -19,6 +19,9 @@ pub struct AppConfig {
     pub auto_start: bool,
 
     #[serde(default)]
+    pub auto_check_updates: bool,
+
+    #[serde(default)]
     pub start_minimized: bool,
 
     #[serde(default = "default_log_level")]
@@ -578,6 +581,7 @@ impl Default for AppConfig {
         Self {
             version: default_version(),
             auto_start: false,
+            auto_check_updates: false,
             start_minimized: false,
             log_level: default_log_level(),
             ipv6_interface: String::new(),
@@ -833,6 +837,11 @@ mod tests {
         assert_eq!(config.last_update_time, "");
         assert_eq!(config.last_result, "");
         assert!(!config.last_online);
+    }
+
+    #[test]
+    fn app_config_disables_automatic_update_checks_by_default() {
+        assert!(!AppConfig::default().auto_check_updates);
     }
 
     #[test]

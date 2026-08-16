@@ -87,6 +87,9 @@ pub fn run() {
             commands::clear_logs,
             commands::get_auto_start,
             commands::set_auto_start,
+            commands::get_auto_update_check,
+            commands::set_auto_update_check,
+            commands::check_app_update,
             commands::install_app_update,
         ])
         .setup(|app| {
