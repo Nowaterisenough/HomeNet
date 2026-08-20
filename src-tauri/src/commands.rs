@@ -516,17 +516,19 @@ fn device_ddns_selector_matches(
     device_id: &str,
     device_mac: &str,
 ) -> bool {
-    let config_id = config.device_id.trim();
-    let requested_id = device_id.trim();
-    if !config_id.is_empty() && !requested_id.is_empty() && config_id == requested_id {
-        return true;
+    device_selectors_match(&config.device_id, &config.device_mac, device_id, device_mac)
+}
+
+fn device_selectors_match(left_id: &str, left_mac: &str, right_id: &str, right_mac: &str) -> bool {
+    let left_mac = left_mac.trim();
+    let right_mac = right_mac.trim();
+    if !left_mac.is_empty() && !right_mac.is_empty() {
+        return left_mac.eq_ignore_ascii_case(right_mac);
     }
 
-    let config_mac = config.device_mac.trim();
-    let requested_mac = device_mac.trim();
-    !config_mac.is_empty()
-        && !requested_mac.is_empty()
-        && config_mac.eq_ignore_ascii_case(requested_mac)
+    let left_id = left_id.trim();
+    let right_id = right_id.trim();
+    !left_id.is_empty() && !right_id.is_empty() && left_id == right_id
 }
 
 fn device_ddns_configs_target_same_device(
@@ -702,11 +704,12 @@ fn apply_device_ddns_status(
 }
 
 fn device_matches_config(device: &LanDevice, config: &DeviceDdnsConfig) -> bool {
-    let device_id = config.device_id.trim();
-    let device_mac = config.device_mac.trim();
-
-    (!device_id.is_empty() && device.id == device_id)
-        || (!device_mac.is_empty() && device.mac.eq_ignore_ascii_case(device_mac))
+    device_selectors_match(
+        &device.id,
+        &device.mac,
+        &config.device_id,
+        &config.device_mac,
+    )
 }
 
 pub(crate) fn device_ddns_device_is_online(
@@ -2212,6 +2215,52 @@ mod tests {
         )];
 
         assert!(device_ddns_device_is_online(&config, &devices));
+    }
+
+    #[test]
+    fn device_matching_prefers_mac_when_local_machine_id_conflicts() {
+        let config = DeviceDdnsConfig {
+            device_id: "local-machine".to_string(),
+            device_mac: "8c:a6:82:71:b2:19".to_string(),
+            ..DeviceDdnsConfig::default()
+        };
+        let local = lan_device(
+            "local-machine",
+            "d0:11:e5:a1:cb:dd",
+            vec!["240e:358:1a2:df00::699"],
+        );
+        let target = lan_device(
+            "mac-8c-a6-82-71-b2-19",
+            "8c:a6:82:71:b2:19",
+            vec!["240e:358:1a2:df00::cf0"],
+        );
+
+        assert!(!device_matches_config(&local, &config));
+        assert!(device_matches_config(&target, &config));
+        assert_eq!(
+            resolve_device_ipv6(&config, &[local, target]),
+            Ok("240e:358:1a2:df00::cf0".to_string())
+        );
+    }
+
+    #[test]
+    fn config_selector_does_not_merge_same_id_with_different_macs() {
+        let config = DeviceDdnsConfig {
+            device_id: "local-machine".to_string(),
+            device_mac: "8c:a6:82:71:b2:19".to_string(),
+            ..DeviceDdnsConfig::default()
+        };
+
+        assert!(!device_ddns_selector_matches(
+            &config,
+            "local-machine",
+            "d0:11:e5:a1:cb:dd"
+        ));
+        assert!(device_ddns_selector_matches(
+            &config,
+            "mac-8c-a6-82-71-b2-19",
+            "8C:A6:82:71:B2:19"
+        ));
     }
 
     #[test]

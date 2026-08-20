@@ -116,10 +116,14 @@ function normalizeConfig(data: Partial<DeviceDdnsConfig> | null | undefined): De
 }
 
 function configMatchesDevice(config: DeviceDdnsConfig, device: LanDevice): boolean {
-  const configId = config.device_id.trim();
-  if (configId && configId === device.id) return true;
   const configMac = config.device_mac.trim();
-  return !!configMac && !!device.mac && configMac.toLowerCase() === device.mac.toLowerCase();
+  const deviceMac = device.mac.trim();
+  if (configMac && deviceMac) {
+    return configMac.toLowerCase() === deviceMac.toLowerCase();
+  }
+
+  const configId = config.device_id.trim();
+  return !!configId && configId === device.id.trim();
 }
 
 function configForDevice(device: LanDevice, configs: DeviceDdnsConfig[]): DeviceDdnsConfig | null {

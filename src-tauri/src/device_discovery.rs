@@ -296,15 +296,6 @@ fn enrich_neighbor_devices_with_active_discovery(
             set_device_hostname(&mut devices[device_index], hostname);
         }
 
-        if let Some(hint) = matching_device_hint(&devices[device_index], hints) {
-            let addresses = resolve_hint_ipv6_addresses(hint);
-            add_resolved_ipv6_candidates_to_device(
-                &mut devices[device_index],
-                addresses,
-                Some(hint),
-            );
-        }
-
         if let Some(hostname) = normalized_device_hostname(&devices[device_index]) {
             llmnr_targets.push((ip, hostname));
         }
@@ -326,15 +317,11 @@ fn enrich_neighbor_devices_with_active_discovery(
     }
 }
 
-fn refresh_hinted_device_ipv6_candidates(
-    devices: &mut [LanDevice],
-    hints: &[DeviceDiscoveryHint],
-) {
-    refresh_hinted_device_ipv6_candidates_with_resolver(
-        devices,
-        hints,
-        resolve_hint_ipv6_addresses,
-    );
+fn refresh_hinted_device_ipv6_candidates(devices: &mut [LanDevice], hints: &[DeviceDiscoveryHint]) {
+    let local_addresses = local_interface_ip_set();
+    refresh_hinted_device_ipv6_candidates_with_resolver(devices, hints, |device, hint| {
+        resolve_hint_ipv6_addresses_for_device(device, hint, &local_addresses)
+    });
 }
 
 fn refresh_hinted_device_ipv6_candidates_with_resolver<F>(
@@ -342,7 +329,7 @@ fn refresh_hinted_device_ipv6_candidates_with_resolver<F>(
     hints: &[DeviceDiscoveryHint],
     mut resolve_addresses: F,
 ) where
-    F: FnMut(&DeviceDiscoveryHint) -> Vec<Ipv6Addr>,
+    F: FnMut(&LanDevice, &DeviceDiscoveryHint) -> Vec<Ipv6Addr>,
 {
     for device in devices {
         let Some(hint) = matching_device_hint(device, hints) else {
@@ -352,8 +339,12 @@ fn refresh_hinted_device_ipv6_candidates_with_resolver<F>(
             continue;
         }
 
+        let addresses = resolve_addresses(device, hint);
+        if addresses.is_empty() {
+            continue;
+        }
+
         clear_global_ipv6_candidates(device);
-        let addresses = resolve_addresses(hint);
         add_resolved_ipv6_candidates_to_device(device, addresses, Some(hint));
     }
 }
@@ -377,28 +368,85 @@ fn matching_device_hint<'a>(
     device: &LanDevice,
     hints: &'a [DeviceDiscoveryHint],
 ) -> Option<&'a DeviceDiscoveryHint> {
-    let device_id = device.id.trim();
-    if !device_id.is_empty() {
-        if let Some(hint) = hints
-            .iter()
-            .find(|hint| !hint.device_id.trim().is_empty() && hint.device_id.trim() == device_id)
-        {
+    let device_mac = normalize_mac(&device.mac);
+    if let Some(device_mac) = device_mac.as_ref() {
+        if let Some(hint) = hints.iter().find(|hint| {
+            normalize_mac(&hint.device_mac).is_some_and(|hint_mac| hint_mac == *device_mac)
+        }) {
             return Some(hint);
         }
     }
 
-    let device_mac = normalize_mac(&device.mac)?;
-    hints
-        .iter()
-        .find(|hint| normalize_mac(&hint.device_mac).is_some_and(|mac| mac == device_mac))
+    let device_id = device.id.trim();
+    if !device_id.is_empty() {
+        if let Some(hint) = hints.iter().find(|hint| {
+            !hint.device_id.trim().is_empty()
+                && hint.device_id.trim() == device_id
+                && (device_mac.is_none() || normalize_mac(&hint.device_mac).is_none())
+        }) {
+            return Some(hint);
+        }
+    }
+
+    None
 }
 
-fn resolve_hint_ipv6_addresses(hint: &DeviceDiscoveryHint) -> Vec<Ipv6Addr> {
+fn resolve_hint_ipv6_addresses_for_device(
+    device: &LanDevice,
+    hint: &DeviceDiscoveryHint,
+    local_addresses: &BTreeSet<IpAddr>,
+) -> Vec<Ipv6Addr> {
     let mut addresses = Vec::new();
+
     for hostname in local_hostname_candidates(&hint.device_name) {
-        push_unique_ipv6_values(&mut addresses, resolve_hostname_ipv6(&hostname));
+        let (resolved_ipv4, resolved_ipv6) = resolve_hostname_addresses(&hostname);
+        if !hostname_resolution_matches_device(device, &resolved_ipv4, &resolved_ipv6) {
+            continue;
+        }
+
+        push_unique_ipv6_values(
+            &mut addresses,
+            resolved_ipv6
+                .into_iter()
+                .filter(|address| !local_addresses.contains(&IpAddr::V6(*address))),
+        );
     }
+
     order_resolved_ipv6_candidates(addresses, Some(hint))
+}
+
+fn hostname_resolution_matches_device(
+    device: &LanDevice,
+    resolved_ipv4: &[Ipv4Addr],
+    resolved_ipv6: &[Ipv6Addr],
+) -> bool {
+    let known_ipv4 = device
+        .ipv4
+        .iter()
+        .filter_map(|value| value.parse::<Ipv4Addr>().ok())
+        .collect::<Vec<_>>();
+    if !known_ipv4.is_empty() && !resolved_ipv4.is_empty() {
+        return resolved_ipv4
+            .iter()
+            .any(|address| known_ipv4.contains(address));
+    }
+
+    let known_ipv6 = device
+        .ipv6
+        .iter()
+        .filter_map(|value| value.parse::<Ipv6Addr>().ok())
+        .collect::<Vec<_>>();
+    resolved_ipv6
+        .iter()
+        .any(|address| known_ipv6.contains(address))
+}
+
+fn local_interface_ip_set() -> BTreeSet<IpAddr> {
+    list_afinet_netifas()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(_, address)| address)
+        .collect()
 }
 
 fn local_hostname_candidates(hostname: &str) -> Vec<String> {
@@ -423,44 +471,69 @@ fn local_hostname_candidates(hostname: &str) -> Vec<String> {
     candidates
 }
 
-fn resolve_hostname_ipv6(hostname: &str) -> Vec<Ipv6Addr> {
-    let mut addresses = Vec::new();
+fn resolve_hostname_addresses(hostname: &str) -> (Vec<Ipv4Addr>, Vec<Ipv6Addr>) {
+    let mut ipv4 = Vec::new();
+    let mut ipv6 = Vec::new();
     if let Ok(socket_addrs) = (hostname, 0).to_socket_addrs() {
-        push_unique_ipv6_values(
-            &mut addresses,
-            socket_addrs.filter_map(|addr| match addr.ip() {
-                IpAddr::V6(ipv6) => Some(ipv6),
-                IpAddr::V4(_) => None,
-            }),
-        );
+        for address in socket_addrs {
+            match address.ip() {
+                IpAddr::V4(address) if !ipv4.contains(&address) => ipv4.push(address),
+                IpAddr::V6(address) if !ipv6.contains(&address) => ipv6.push(address),
+                _ => {}
+            }
+        }
     }
 
     #[cfg(target_os = "macos")]
-    push_unique_ipv6_values(&mut addresses, resolve_macos_dscacheutil_ipv6(hostname));
+    {
+        let (resolved_ipv4, resolved_ipv6) = resolve_macos_dscacheutil_addresses(hostname);
+        for address in resolved_ipv4 {
+            if !ipv4.contains(&address) {
+                ipv4.push(address);
+            }
+        }
+        push_unique_ipv6_values(&mut ipv6, resolved_ipv6);
+    }
 
-    addresses
+    (ipv4, ipv6)
 }
 
 #[cfg(target_os = "macos")]
-fn resolve_macos_dscacheutil_ipv6(hostname: &str) -> Vec<Ipv6Addr> {
+fn resolve_macos_dscacheutil_addresses(hostname: &str) -> (Vec<Ipv4Addr>, Vec<Ipv6Addr>) {
     std::process::Command::new("dscacheutil")
         .args(["-q", "host", "-a", "name", hostname])
         .output()
         .ok()
         .filter(|output| output.status.success())
-        .map(|output| {
-            parse_macos_dscacheutil_ipv6_addresses(&String::from_utf8_lossy(&output.stdout))
-        })
+        .map(|output| parse_macos_dscacheutil_addresses(&String::from_utf8_lossy(&output.stdout)))
         .unwrap_or_default()
 }
 
 #[cfg(any(target_os = "macos", test))]
-fn parse_macos_dscacheutil_ipv6_addresses(value: &str) -> Vec<Ipv6Addr> {
-    value
-        .lines()
-        .filter_map(|line| line.trim().strip_prefix("ipv6_address:"))
-        .filter_map(|value| value.trim().parse::<Ipv6Addr>().ok())
-        .collect()
+fn parse_macos_dscacheutil_addresses(value: &str) -> (Vec<Ipv4Addr>, Vec<Ipv6Addr>) {
+    let mut ipv4 = Vec::new();
+    let mut ipv6 = Vec::new();
+
+    for line in value.lines().map(str::trim) {
+        if let Some(address) = line
+            .strip_prefix("ip_address:")
+            .and_then(|value| value.trim().parse::<Ipv4Addr>().ok())
+        {
+            if !ipv4.contains(&address) {
+                ipv4.push(address);
+            }
+        }
+        if let Some(address) = line
+            .strip_prefix("ipv6_address:")
+            .and_then(|value| value.trim().parse::<Ipv6Addr>().ok())
+        {
+            if !ipv6.contains(&address) {
+                ipv6.push(address);
+            }
+        }
+    }
+
+    (ipv4, ipv6)
 }
 
 fn add_resolved_ipv6_candidates_to_device<I>(
@@ -1227,24 +1300,28 @@ fn merge_local_and_neighbor_devices(
         .collect::<Vec<_>>();
     let local_macs = local_devices
         .iter()
-        .map(|device| device.mac.trim().to_ascii_lowercase())
-        .filter(|mac| !mac.is_empty())
+        .filter_map(|device| normalize_mac(&device.mac))
         .collect::<Vec<_>>();
 
-    local_devices
-        .into_iter()
-        .chain(neighbor_devices.into_iter().filter(|device| {
-            let duplicate_ip = device
-                .ipv4
-                .iter()
-                .chain(device.ipv6.iter())
-                .any(|ip| local_ips.contains(ip));
-            let device_mac = device.mac.trim().to_ascii_lowercase();
-            let duplicate_mac = !device_mac.is_empty() && local_macs.contains(&device_mac);
+    let mut merged = local_devices;
+    for mut device in neighbor_devices {
+        let duplicate_mac =
+            normalize_mac(&device.mac).is_some_and(|device_mac| local_macs.contains(&device_mac));
+        if duplicate_mac {
+            continue;
+        }
 
-            !duplicate_ip && !duplicate_mac
-        }))
-        .collect()
+        device.ipv4.retain(|ip| !local_ips.contains(ip));
+        device.ipv6.retain(|ip| !local_ips.contains(ip));
+        device.global_ipv6.retain(|ip| !local_ips.contains(ip));
+        if device.ipv4.is_empty() && device.ipv6.is_empty() {
+            continue;
+        }
+
+        merged.push(device);
+    }
+
+    merged
 }
 
 fn discover_local_interface_devices() -> Vec<LanDevice> {
@@ -1683,7 +1760,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_macos_dscacheutil_ipv6_addresses() {
+    fn parses_macos_dscacheutil_addresses() {
         let output = r#"
 name: nowatspc.local
 ipv6_address: 240e:358:106:9200::612
@@ -1691,8 +1768,11 @@ ipv6_address: 240e:358:106:9200:8ebc:1f1:c0b2:f655
 ip_address: 192.168.100.143
 "#;
 
+        let (ipv4, ipv6) = parse_macos_dscacheutil_addresses(output);
+
+        assert_eq!(ipv4, vec!["192.168.100.143".parse::<Ipv4Addr>().unwrap()]);
         assert_eq!(
-            parse_macos_dscacheutil_ipv6_addresses(output),
+            ipv6,
             vec![
                 "240e:358:106:9200::612".parse::<Ipv6Addr>().unwrap(),
                 "240e:358:106:9200:8ebc:1f1:c0b2:f655"
@@ -1807,18 +1887,14 @@ ip_address: 192.168.100.143
             ..DeviceDiscoveryHint::default()
         };
 
-        refresh_hinted_device_ipv6_candidates_with_resolver(
-            &mut devices,
-            &[hint],
-            |_| {
-                vec![
-                    "240e:358:1f9:b700:8e7:364e:ff6a:7ec"
-                        .parse::<Ipv6Addr>()
-                        .unwrap(),
-                    "240e:358:130:7f00::612".parse::<Ipv6Addr>().unwrap(),
-                ]
-            },
-        );
+        refresh_hinted_device_ipv6_candidates_with_resolver(&mut devices, &[hint], |_, _| {
+            vec![
+                "240e:358:1f9:b700:8e7:364e:ff6a:7ec"
+                    .parse::<Ipv6Addr>()
+                    .unwrap(),
+                "240e:358:130:7f00::612".parse::<Ipv6Addr>().unwrap(),
+            ]
+        });
 
         assert_eq!(
             devices[0].ipv6,
@@ -1838,7 +1914,7 @@ ip_address: 192.168.100.143
     }
 
     #[test]
-    fn hinted_device_refresh_drops_stale_global_ipv6_when_name_resolution_fails() {
+    fn hinted_device_refresh_preserves_neighbor_ipv6_when_name_resolution_fails() {
         let mut devices = vec![test_device(
             "device-1",
             "NoWatsPC",
@@ -1855,12 +1931,68 @@ ip_address: 192.168.100.143
             ..DeviceDiscoveryHint::default()
         };
 
-        refresh_hinted_device_ipv6_candidates_with_resolver(&mut devices, &[hint], |_| {
+        refresh_hinted_device_ipv6_candidates_with_resolver(&mut devices, &[hint], |_, _| {
             Vec::new()
         });
 
-        assert_eq!(devices[0].ipv6, vec!["fe80::5d21:b00:d0aa:b8db"]);
-        assert!(devices[0].global_ipv6.is_empty());
+        assert_eq!(
+            devices[0].ipv6,
+            vec![
+                "240e:358:130:7f00:fa35:5668:3636:1b1f",
+                "fe80::5d21:b00:d0aa:b8db"
+            ]
+        );
+        assert_eq!(
+            devices[0].global_ipv6,
+            vec!["240e:358:130:7f00:fa35:5668:3636:1b1f"]
+        );
+    }
+
+    #[test]
+    fn device_hint_mac_overrides_conflicting_local_machine_id() {
+        let mut local = test_device(
+            "local-machine",
+            "local",
+            "local-interface",
+            vec!["192.168.100.3"],
+            Vec::new(),
+        );
+        local.mac = "d0:11:e5:a1:cb:dd".to_string();
+        let hint = DeviceDiscoveryHint {
+            device_id: "local-machine".to_string(),
+            device_mac: "8c:a6:82:71:b2:19".to_string(),
+            device_name: "NoWatsMacMini".to_string(),
+            ..DeviceDiscoveryHint::default()
+        };
+
+        assert!(matching_device_hint(&local, &[hint]).is_none());
+    }
+
+    #[test]
+    fn hostname_resolution_requires_an_address_owned_by_device() {
+        let device = test_device(
+            "mac-8c-a6-82-71-b2-19",
+            "8c:a6:82:71:b2:19",
+            "macos-neighbor",
+            vec!["192.168.100.193"],
+            vec!["240e:358:1a2:df00::cf0"],
+        );
+        let local_ipv4 = vec!["192.168.100.3".parse::<Ipv4Addr>().unwrap()];
+        let local_ipv6 = vec!["240e:358:1a2:df00:a4:5ec3:c5f4:2f71"
+            .parse::<Ipv6Addr>()
+            .unwrap()];
+        let target_ipv4 = vec!["192.168.100.193".parse::<Ipv4Addr>().unwrap()];
+
+        assert!(!hostname_resolution_matches_device(
+            &device,
+            &local_ipv4,
+            &local_ipv6
+        ));
+        assert!(hostname_resolution_matches_device(
+            &device,
+            &target_ipv4,
+            &local_ipv6
+        ));
     }
 
     #[test]
@@ -2183,6 +2315,34 @@ lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> mtu 16384
         assert_eq!(devices.len(), 1);
         assert_eq!(devices[0].id, "local-machine");
         assert_eq!(devices[0].global_ipv6, vec!["240e:358:13e:3a00::7a7"]);
+    }
+
+    #[test]
+    fn merged_lan_devices_keep_distinct_neighbor_after_removing_local_addresses() {
+        let mut local = test_device(
+            "local-machine",
+            "local",
+            "local-interface",
+            vec!["192.168.100.3"],
+            vec!["240e:358:1a2:df00::699"],
+        );
+        local.mac = "d0:11:e5:a1:cb:dd".to_string();
+
+        let mut target = test_device(
+            "mac-8c-a6-82-71-b2-19",
+            "8c:a6:82:71:b2:19",
+            "macos-neighbor",
+            vec!["192.168.100.193"],
+            vec!["240e:358:1a2:df00::699", "240e:358:1a2:df00::cf0"],
+        );
+        target.mac = "8c:a6:82:71:b2:19".to_string();
+
+        let devices = merge_local_and_neighbor_devices(vec![local], vec![target]);
+
+        assert_eq!(devices.len(), 2);
+        assert_eq!(devices[1].ipv4, vec!["192.168.100.193"]);
+        assert_eq!(devices[1].ipv6, vec!["240e:358:1a2:df00::cf0"]);
+        assert_eq!(devices[1].global_ipv6, vec!["240e:358:1a2:df00::cf0"]);
     }
 
     #[test]
