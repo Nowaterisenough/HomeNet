@@ -15,6 +15,7 @@ import {
 import { useDraggableModal } from "../hooks/useDraggableModal";
 import { invokeCommand } from "../lib/tauri";
 import type { DeviceDdnsConfig, LanDevice } from "../types";
+import { formatSyncTime } from "../utils/time";
 
 interface DeviceDdnsPanelProps {
   className?: string;
@@ -170,7 +171,7 @@ function mapLanDevice(device: LanDevice, index: number, configs: DeviceDdnsConfi
     configured: Boolean(config),
     enabled: Boolean(config?.enabled),
     domain: configuredDomain(config),
-    lastSync: config?.last_update_time || "-",
+    lastSync: formatSyncTime(config?.last_update_time || ""),
     boundIp: boundIpForConfig(config, device),
     raw: device,
     config,

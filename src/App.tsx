@@ -14,6 +14,7 @@ import {
   toggleMaximizeCurrentWindow,
 } from "./lib/tauri";
 import type { AppUpdateResult, LanDevice, RuntimeStatus } from "./types";
+import { formatSyncTime } from "./utils/time";
 
 const emptyStatus: RuntimeStatus = {
   version: "",
@@ -90,7 +91,7 @@ export default function App() {
       {
         title: "DDNS 状态",
         value: statusData.ddns_status || "未连接",
-        subtitle: `最后同步：${statusData.last_update_time || "暂无"}`,
+        subtitle: `最后同步：${formatSyncTime(statusData.last_update_time, "暂无")}`,
         icon: "shield",
         status: ddnsStatusType(),
       },
