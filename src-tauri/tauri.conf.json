@@ -14,7 +14,7 @@
       {
         "title": "HomeNet",
         "width": 1280,
-        "height": 992,
+        "height": 900,
         "minWidth": 1024,
         "minHeight": 768,
         "resizable": true,
