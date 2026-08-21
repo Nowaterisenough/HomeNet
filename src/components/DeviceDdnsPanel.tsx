@@ -165,6 +165,17 @@ function mapLanDevice(device: LanDevice, index: number, configs: DeviceDdnsConfi
   };
 }
 
+function prioritizeEnabledDeviceRows(rows: DeviceRow[]): DeviceRow[] {
+  const enabledRows: DeviceRow[] = [];
+  const remainingRows: DeviceRow[] = [];
+
+  for (const row of rows) {
+    (row.enabled ? enabledRows : remainingRows).push(row);
+  }
+
+  return [...enabledRows, ...remainingRows];
+}
+
 function buildDraft(row: DeviceRow, configs: DeviceDdnsConfig[]): DeviceDdnsConfig {
   const existing = row.config;
   const template = existing ?? configs[0] ?? defaultConfig;
@@ -203,7 +214,7 @@ export default function DeviceDdnsPanel({ className = "" }: DeviceDdnsPanelProps
   const { modalStyle, resetModalPosition, startModalDrag } = useDraggableModal();
 
   const rows = useMemo(
-    () => devices.map((device, index) => mapLanDevice(device, index, configs)),
+    () => prioritizeEnabledDeviceRows(devices.map((device, index) => mapLanDevice(device, index, configs))),
     [configs, devices],
   );
   const selectedRow = useMemo(

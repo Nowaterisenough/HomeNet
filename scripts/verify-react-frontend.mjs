@@ -19,6 +19,7 @@ const checks = [
     'invokeCommand<DeviceDdnsConfig[]>("list_device_ddns_configs")',
   ],
   ["src/components/DeviceDdnsPanel.tsx", 'invokeCommand("save_device_ddns_config"'],
+  ["src/components/DeviceDdnsPanel.tsx", "prioritizeEnabledDeviceRows"],
   [
     "src/components/ReverseProxyPanel.tsx",
     'invokeCommand<ReverseProxyRule[]>("list_reverse_proxy_rules")',

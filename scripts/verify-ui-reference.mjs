@@ -50,6 +50,7 @@ const requiredChecks = [
   ["src/components/DeviceDdnsPanel.tsx", 'invokeCommand("delete_device_ddns_config"'],
   ["src/components/DeviceDdnsPanel.tsx", "function updateIpv6CandidateIndex"],
   ["src/components/DeviceDdnsPanel.tsx", "selectedIpv6Candidate"],
+  ["src/components/DeviceDdnsPanel.tsx", "prioritizeEnabledDeviceRows"],
   ["src/components/DeviceDdnsPanel.tsx", "useDraggableModal"],
   [
     "src/components/ReverseProxyPanel.tsx",
