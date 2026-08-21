@@ -6,6 +6,7 @@ import ReverseProxyPanel from "./components/ReverseProxyPanel";
 import RuntimeSettingsPanel from "./components/RuntimeSettingsPanel";
 import StatusCard from "./components/StatusCard";
 import UpdateConfirmDialog from "./components/UpdateConfirmDialog";
+import WebDavPanel from "./components/WebDavPanel";
 import {
   closeCurrentWindow,
   invokeCommand,
@@ -364,6 +365,7 @@ export default function App() {
           <div className="routing-column">
             <ForwardRulesPanel />
             <ReverseProxyPanel />
+            <WebDavPanel />
           </div>
         </section>
 

@@ -8,6 +8,7 @@ mod forward;
 mod logging;
 mod reverse_proxy;
 mod tray;
+mod webdav;
 
 use std::sync::Mutex;
 use tauri::Manager;
@@ -50,12 +51,14 @@ pub fn run() {
         config: Mutex::new(app_config),
         forward_manager: TokioMutex::new(forward::manager::ForwardManager::new()),
         reverse_proxy_manager: TokioMutex::new(reverse_proxy::ReverseProxyManager::new()),
+        webdav_manager: TokioMutex::new(webdav::WebDavManager::new()),
     };
 
     // Build and run the Tauri application.
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![
             commands::get_runtime_status,
@@ -83,6 +86,11 @@ pub fn run() {
             commands::delete_reverse_proxy_rule,
             commands::enable_reverse_proxy_rule,
             commands::issue_reverse_proxy_certificate,
+            commands::get_webdav_config,
+            commands::save_webdav_config,
+            commands::set_webdav_enabled,
+            commands::test_webdav_service,
+            commands::select_webdav_directory,
             commands::get_recent_logs,
             commands::clear_logs,
             commands::get_auto_start,
@@ -132,6 +140,12 @@ pub fn run() {
             let reverse_proxy_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 reverse_proxy_background_task(reverse_proxy_handle).await;
+            });
+
+            // -- WebDAV manager background task -----------------------
+            let webdav_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                webdav_background_task(webdav_handle).await;
             });
 
             config::add_log("info", "系统", "应用初始化完成");
@@ -514,6 +528,26 @@ async fn reverse_proxy_background_task(app: tauri::AppHandle) {
             }
         }
         let _ = config::save_config(&config);
+    }
+}
+
+async fn webdav_background_task(app: tauri::AppHandle) {
+    config::add_log("info", "WebDAV", "WebDAV 管理后台任务已启动");
+
+    loop {
+        let webdav_config = {
+            let state = app.state::<commands::AppState>();
+            let config = state.config.lock().unwrap();
+            config.webdav.clone()
+        };
+        let state = app.state::<commands::AppState>();
+        state
+            .webdav_manager
+            .lock()
+            .await
+            .apply(&webdav_config)
+            .await;
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
     }
 }
 

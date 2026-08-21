@@ -1124,3 +1124,608 @@ input:read-only {
   height: 16px;
   accent-color: var(--color-primary);
 }
+
+.webdav-panel {
+  position: relative;
+  min-height: 116px;
+}
+
+.webdav-header-controls,
+.webdav-running-state,
+.webdav-summary-meta,
+.webdav-summary-meta span,
+.webdav-summary-actions,
+.webdav-modal-title,
+.webdav-tabs button,
+.webdav-security-note,
+.webdav-account-list header,
+.webdav-account-form header,
+.webdav-account-form header > div,
+.webdav-account-enabled,
+.webdav-modal-footer,
+.webdav-modal-footer > span,
+.webdav-modal-footer > div {
+  display: flex;
+  align-items: center;
+}
+
+.webdav-header-controls {
+  gap: 9px;
+}
+
+.webdav-running-state {
+  gap: 5px;
+  color: #8a94a4;
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
+.webdav-running-state i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #aab3c0;
+}
+
+.webdav-running-state.is-running {
+  color: #118a47;
+}
+
+.webdav-running-state.is-running i {
+  background: #16a45a;
+  box-shadow: 0 0 0 3px #e8f7ee;
+}
+
+.webdav-running-state.is-error {
+  color: #b91c1c;
+}
+
+.webdav-running-state.is-error i {
+  background: #dc2626;
+  box-shadow: 0 0 0 3px #fee2e2;
+}
+
+.webdav-inline-message {
+  position: absolute;
+  z-index: 3;
+  top: 40px;
+  right: 8px;
+  max-width: calc(100% - 16px);
+  overflow: hidden;
+  padding: 4px 7px;
+  border: 1px solid #cfe2ff;
+  border-radius: 4px;
+  color: #1769f6;
+  background: #f1f6ff;
+  box-shadow: var(--shadow-soft);
+  font-size: 10px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.webdav-inline-message.is-error {
+  border-color: #fecaca;
+  color: #b91c1c;
+  background: #fff1f2;
+}
+
+.webdav-summary {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  grid-template-rows: minmax(0, 1fr) 28px;
+  grid-template-areas:
+    "icon text meta"
+    "icon actions actions";
+  column-gap: 8px;
+  padding: 7px 9px 7px 12px;
+}
+
+.webdav-server-icon {
+  grid-area: icon;
+  align-self: center;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 7px;
+  color: #7d8797;
+  background: #f0f3f7;
+}
+
+.webdav-server-icon.is-active {
+  color: #1769f6;
+  background: #eaf2ff;
+}
+
+.webdav-summary-text {
+  grid-area: text;
+  min-width: 0;
+  align-self: center;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.webdav-summary-text strong,
+.webdav-summary-text span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.webdav-summary-text strong {
+  color: #1e293b;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 10px;
+}
+
+.webdav-summary-text span {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: #7b8495;
+  font-size: 9.5px;
+}
+
+.webdav-summary-text span svg {
+  flex: 0 0 auto;
+}
+
+.webdav-summary-meta {
+  grid-area: meta;
+  align-self: center;
+  flex-direction: column;
+  gap: 3px;
+  color: #667085;
+  font-size: 9.5px;
+}
+
+.webdav-summary-meta span {
+  width: 36px;
+  gap: 4px;
+}
+
+.webdav-summary-actions {
+  grid-area: actions;
+  align-self: end;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
+.webdav-icon-action {
+  width: 24px;
+  height: 24px;
+  border: 1px solid #d8e1ec;
+  border-radius: 4px;
+  background: #fff;
+}
+
+.webdav-icon-action:hover,
+.webdav-settings-button:hover {
+  color: #1769f6;
+  background: #f2f7ff;
+}
+
+.webdav-settings-button {
+  height: 24px;
+  padding: 0 7px;
+  font-size: 10px;
+}
+
+.webdav-modal {
+  width: min(820px, calc(100vw - 48px));
+  max-height: calc(100vh - 64px);
+  display: flex;
+  flex-direction: column;
+}
+
+.webdav-modal-title {
+  gap: 7px;
+  color: #1769f6;
+}
+
+.webdav-tabs {
+  height: 42px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  padding: 6px 18px 0;
+  border-bottom: 1px solid #e6edf5;
+  background: #fbfcfe;
+}
+
+.webdav-tabs button {
+  position: relative;
+  gap: 6px;
+  padding: 0 12px 6px;
+  border: 0;
+  color: #6b7280;
+  background: transparent;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.webdav-tabs button::after {
+  position: absolute;
+  right: 8px;
+  bottom: -1px;
+  left: 8px;
+  height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: transparent;
+  content: "";
+}
+
+.webdav-tabs button.is-active {
+  color: #1769f6;
+}
+
+.webdav-tabs button.is-active::after {
+  background: #1769f6;
+}
+
+.webdav-tabs button > span {
+  min-width: 18px;
+  height: 17px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 9px;
+  color: #667085;
+  background: #edf1f6;
+  font-size: 9px;
+}
+
+.webdav-modal-message {
+  margin: 8px 18px 0;
+  padding: 5px 8px;
+  border: 1px solid #cfe2ff;
+  border-radius: 4px;
+  color: #1769f6;
+  background: #f1f6ff;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.webdav-modal-message.is-error {
+  border-color: #fecaca;
+  color: #b91c1c;
+  background: #fff1f2;
+}
+
+.webdav-service-editor {
+  min-height: 330px;
+  overflow: auto;
+  padding: 18px;
+}
+
+.webdav-editor-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 22px;
+}
+
+.webdav-editor-grid .field-label {
+  grid-template-columns: 72px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+}
+
+.webdav-editor-grid .field-label > span {
+  padding-top: 6px;
+}
+
+.webdav-editor-grid .field-control {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.webdav-editor-grid small {
+  color: #8a94a4;
+  font-size: 9.5px;
+  line-height: 1.45;
+}
+
+.webdav-path-control {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: 6px !important;
+}
+
+.webdav-path-control small {
+  grid-column: 1 / -1;
+}
+
+.webdav-path-control .btn {
+  height: 26px;
+}
+
+.webdav-security-note {
+  gap: 11px;
+  margin-top: 20px;
+  padding: 12px 13px;
+  border: 1px solid #d7e5fb;
+  border-radius: 6px;
+  color: #1769f6;
+  background: #f5f9ff;
+}
+
+.webdav-security-note > svg {
+  flex: 0 0 auto;
+}
+
+.webdav-security-note > div {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.webdav-security-note strong {
+  color: #26354d;
+  font-size: 11px;
+}
+
+.webdav-security-note p {
+  margin-top: 2px;
+  color: #64748b;
+  font-size: 10px;
+}
+
+.webdav-security-note .btn {
+  flex: 0 0 auto;
+}
+
+.webdav-account-editor {
+  min-height: 330px;
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(260px, 0.8fr);
+}
+
+.webdav-account-list {
+  min-width: 0;
+  padding: 16px 18px 18px;
+  border-right: 1px solid #e6edf5;
+}
+
+.webdav-account-list header {
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.webdav-account-list header > div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.webdav-account-list header strong,
+.webdav-account-form header strong {
+  color: #263142;
+  font-size: 11px;
+}
+
+.webdav-account-list header span {
+  color: #8a94a4;
+  font-size: 9.5px;
+}
+
+.webdav-account-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.webdav-empty-accounts {
+  padding: 28px 12px;
+  color: #8a94a4;
+  font-size: 10px;
+  text-align: center;
+}
+
+.webdav-account-row {
+  width: 100%;
+  min-width: 0;
+  min-height: 48px;
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 9px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  color: inherit;
+  background: #fff;
+  text-align: left;
+}
+
+.webdav-account-row:hover {
+  border-color: #c9d8eb;
+  background: #fafcff;
+}
+
+.webdav-account-row.is-selected {
+  border-color: #aecdff;
+  background: #f3f7ff;
+  box-shadow: inset 3px 0 #1769f6;
+}
+
+.webdav-account-avatar {
+  width: 29px;
+  height: 29px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: #1769f6;
+  background: #e6f0ff;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.webdav-account-avatar.is-disabled {
+  color: #8791a0;
+  background: #edf0f4;
+}
+
+.webdav-account-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.webdav-account-main strong {
+  overflow: hidden;
+  color: #263142;
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.webdav-account-main small {
+  color: #8a94a4;
+  font-size: 9px;
+}
+
+.webdav-access-label,
+.webdav-disabled-label {
+  grid-column: 3;
+  padding: 2px 5px;
+  border-radius: 3px;
+  font-size: 8.5px;
+  font-weight: 800;
+}
+
+.webdav-access-label {
+  color: #1769f6;
+  background: #e8f1ff;
+}
+
+.webdav-access-label.is-read-only {
+  color: #9a5b08;
+  background: #fff4d9;
+}
+
+.webdav-disabled-label {
+  margin-top: 2px;
+  color: #6b7280;
+  background: #edf0f4;
+}
+
+.webdav-account-form {
+  min-width: 0;
+  padding: 16px 18px 18px;
+  background: #fbfcfe;
+}
+
+.webdav-account-form header {
+  height: 26px;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.webdav-account-form header > div {
+  gap: 6px;
+  color: #1769f6;
+}
+
+.webdav-delete-account {
+  width: 25px;
+  height: 25px;
+  border: 1px solid #f1d3d3;
+  border-radius: 4px;
+  color: #c24141;
+  background: #fff;
+}
+
+.webdav-account-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.webdav-account-fields .field-label {
+  grid-template-columns: 70px minmax(0, 1fr);
+}
+
+.webdav-password-control {
+  position: relative;
+}
+
+.webdav-password-control svg {
+  position: absolute;
+  top: 7px;
+  left: 8px;
+  color: #8a94a4;
+  pointer-events: none;
+}
+
+.webdav-password-control input {
+  padding-left: 27px;
+}
+
+.webdav-account-enabled {
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 0;
+  border-top: 1px solid #e6edf5;
+  border-bottom: 1px solid #e6edf5;
+}
+
+.webdav-account-enabled > span {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.webdav-account-enabled strong {
+  color: #374151;
+  font-size: 10.5px;
+}
+
+.webdav-account-enabled small {
+  color: #8a94a4;
+  font-size: 9px;
+}
+
+.webdav-save-account {
+  width: 100%;
+  margin-top: 12px;
+}
+
+.webdav-modal-footer {
+  min-height: 48px;
+  flex: 0 0 auto;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 18px;
+  border-top: 1px solid #e6edf5;
+  background: #fff;
+}
+
+.webdav-modal-footer > span {
+  min-width: 0;
+  gap: 6px;
+  color: #718096;
+  font-size: 9.5px;
+}
+
+.webdav-modal-footer > div {
+  flex: 0 0 auto;
+  gap: 7px;
+}
+
+@media (max-width: 760px) {
+  .webdav-editor-grid,
+  .webdav-account-editor {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .webdav-account-list {
+    border-right: 0;
+    border-bottom: 1px solid #e6edf5;
+  }
+}

@@ -76,6 +76,49 @@ export interface ReverseProxyRule {
   status: string;
 }
 
+export interface WebDavRuntimeStatus {
+  state: "running" | "disabled" | "error" | string;
+  message: string;
+  endpoint: string;
+  active_since: string;
+}
+
+export interface WebDavAccountView {
+  id: string;
+  username: string;
+  read_only: boolean;
+  enabled: boolean;
+  password_configured: boolean;
+  last_used: string;
+}
+
+export interface WebDavConfigView {
+  enabled: boolean;
+  listen_addr: string;
+  listen_port: number;
+  root_path: string;
+  global_read_only: boolean;
+  accounts: WebDavAccountView[];
+  status: WebDavRuntimeStatus;
+}
+
+export interface SaveWebDavAccountRequest {
+  id: string;
+  username: string;
+  password: string;
+  read_only: boolean;
+  enabled: boolean;
+}
+
+export interface SaveWebDavConfigRequest {
+  enabled: boolean;
+  listen_addr: string;
+  listen_port: number;
+  root_path: string;
+  global_read_only: boolean;
+  accounts: SaveWebDavAccountRequest[];
+}
+
 export interface AppUpdateResult {
   status: "available" | "up_to_date" | "installed" | "unavailable" | string;
   current_version: string;

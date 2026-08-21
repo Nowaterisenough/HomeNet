@@ -33,6 +33,9 @@ const checks = [
     "src/components/ReverseProxyPanel.tsx",
     'invokeCommand<ReverseProxyRule>("issue_reverse_proxy_certificate"',
   ],
+  ["src/components/WebDavPanel.tsx", 'invokeCommand<WebDavConfigView>("get_webdav_config")'],
+  ["src/components/WebDavPanel.tsx", 'invokeCommand<WebDavConfigView>("save_webdav_config"'],
+  ["src/components/WebDavPanel.tsx", "账号管理"],
   ["src/components/LogPanel.tsx", 'invokeCommand<LogEntry[]>("get_recent_logs")'],
   ["src/components/RuntimeSettingsPanel.tsx", "检查更新"],
   ["src/components/UpdateConfirmDialog.tsx", 'role="dialog"'],
@@ -41,6 +44,7 @@ const checks = [
   ["src/lib/tauri.ts", "currentTauriWindow"],
   ["src/styles/global.css", "--titlebar-height"],
   ["src/styles/panels.css", ".modal-backdrop"],
+  ["src/styles/panels.css", ".webdav-panel"],
 ];
 
 for (const [file, needle] of checks) {

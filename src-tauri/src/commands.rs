@@ -1,6 +1,6 @@
 use chrono::Local;
 use semver::Version;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -9,6 +9,7 @@ use std::{
     time::Duration,
 };
 use tauri::{AppHandle, State};
+use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_updater::{Update, Updater, UpdaterExt};
 use tokio::sync::Mutex as TokioMutex;
 use url::Url;
@@ -17,11 +18,16 @@ use uuid::Uuid;
 use crate::config::{
     add_log, normalize_forward_rule, normalize_reverse_proxy_rule, save_config, AppConfig,
     DdnsConfig, DeviceDdnsConfig, ForwardRule, LogEntry, ReverseProxyRule, RuntimeStatus,
+    WebDavAccount, WebDavConfig,
 };
 use crate::ddns::NetworkInterfaceInfo;
 use crate::device_discovery::LanDevice;
 use crate::forward::manager::ForwardManager;
 use crate::reverse_proxy::ReverseProxyManager;
+use crate::webdav::{
+    hash_webdav_password, probe_webdav_listener, validate_webdav_config, WebDavManager,
+    WebDavRuntimeStatus,
+};
 
 // ---------------------------------------------------------------------------
 // App state shared across all Tauri commands
@@ -31,6 +37,7 @@ pub struct AppState {
     pub config: Mutex<AppConfig>,
     pub forward_manager: TokioMutex<ForwardManager>,
     pub reverse_proxy_manager: TokioMutex<ReverseProxyManager>,
+    pub webdav_manager: TokioMutex<WebDavManager>,
 }
 
 const UPDATE_MANIFEST_URL: &str =
@@ -51,6 +58,49 @@ pub struct AppUpdateResult {
     pub message: String,
     pub notes: String,
     pub verification: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SaveWebDavConfigRequest {
+    pub enabled: bool,
+    pub listen_addr: String,
+    pub listen_port: u16,
+    pub root_path: String,
+    pub global_read_only: bool,
+    #[serde(default)]
+    pub accounts: Vec<SaveWebDavAccountRequest>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SaveWebDavAccountRequest {
+    #[serde(default)]
+    pub id: String,
+    pub username: String,
+    #[serde(default)]
+    pub password: String,
+    pub read_only: bool,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WebDavConfigView {
+    pub enabled: bool,
+    pub listen_addr: String,
+    pub listen_port: u16,
+    pub root_path: String,
+    pub global_read_only: bool,
+    pub accounts: Vec<WebDavAccountView>,
+    pub status: WebDavRuntimeStatus,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WebDavAccountView {
+    pub id: String,
+    pub username: String,
+    pub read_only: bool,
+    pub enabled: bool,
+    pub password_configured: bool,
+    pub last_used: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1190,6 +1240,92 @@ async fn reapply_reverse_proxy_rules(state: &AppState) {
     }
 }
 
+async fn reapply_webdav(state: &AppState) -> WebDavRuntimeStatus {
+    let config = {
+        let config = state.config.lock().unwrap();
+        config.webdav.clone()
+    };
+    let mut manager = state.webdav_manager.lock().await;
+    manager.apply(&config).await
+}
+
+async fn webdav_config_from_request(
+    existing: &WebDavConfig,
+    request: SaveWebDavConfigRequest,
+) -> Result<WebDavConfig, String> {
+    let mut accounts = Vec::with_capacity(request.accounts.len());
+    for input in request.accounts {
+        let existing_account = existing
+            .accounts
+            .iter()
+            .find(|account| !input.id.trim().is_empty() && account.id == input.id);
+        let id = existing_account
+            .map(|account| account.id.clone())
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        if accounts
+            .iter()
+            .any(|account: &WebDavAccount| account.id == id)
+        {
+            return Err("WebDAV 账号标识重复，请重新加载配置".to_string());
+        }
+        let password_hash = if input.password.is_empty() {
+            existing_account
+                .map(|account| account.password_hash.clone())
+                .unwrap_or_default()
+        } else {
+            let password = input.password;
+            tokio::task::spawn_blocking(move || hash_webdav_password(&password))
+                .await
+                .map_err(|error| format!("生成 WebDAV 密码哈希失败：{}", error))??
+        };
+        accounts.push(WebDavAccount {
+            id,
+            username: input.username.trim().to_string(),
+            password_hash,
+            read_only: input.read_only,
+            enabled: input.enabled,
+        });
+    }
+
+    let config = WebDavConfig {
+        enabled: request.enabled,
+        listen_addr: request.listen_addr.trim().to_string(),
+        listen_port: request.listen_port,
+        root_path: request.root_path.trim().to_string(),
+        global_read_only: request.global_read_only,
+        accounts,
+    };
+    validate_webdav_config(&config)?;
+    Ok(config)
+}
+
+fn webdav_config_view(
+    config: &WebDavConfig,
+    status: WebDavRuntimeStatus,
+    last_used: &std::collections::HashMap<String, String>,
+) -> WebDavConfigView {
+    WebDavConfigView {
+        enabled: config.enabled,
+        listen_addr: config.listen_addr.clone(),
+        listen_port: config.listen_port,
+        root_path: config.root_path.clone(),
+        global_read_only: config.global_read_only,
+        accounts: config
+            .accounts
+            .iter()
+            .map(|account| WebDavAccountView {
+                id: account.id.clone(),
+                username: account.username.clone(),
+                read_only: account.read_only,
+                enabled: account.enabled,
+                password_configured: !account.password_hash.trim().is_empty(),
+                last_used: last_used.get(&account.id).cloned().unwrap_or_default(),
+            })
+            .collect(),
+        status,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
@@ -1747,6 +1883,99 @@ pub async fn issue_reverse_proxy_certificate(
     rule_id: String,
 ) -> Result<ReverseProxyRule, String> {
     issue_reverse_proxy_certificate_by_id(&state, &rule_id).await
+}
+
+#[tauri::command]
+pub async fn get_webdav_config(state: State<'_, AppState>) -> Result<WebDavConfigView, String> {
+    let config = read_config(&state)?.webdav;
+    let manager = state.webdav_manager.lock().await;
+    Ok(webdav_config_view(
+        &config,
+        manager.status(),
+        &manager.account_last_used(),
+    ))
+}
+
+#[tauri::command]
+pub async fn save_webdav_config(
+    state: State<'_, AppState>,
+    request: SaveWebDavConfigRequest,
+) -> Result<WebDavConfigView, String> {
+    let mut app_config = read_config(&state)?;
+    let webdav_config = webdav_config_from_request(&app_config.webdav, request).await?;
+    app_config.webdav = webdav_config.clone();
+    write_config(&state, &app_config)?;
+    add_log(
+        "info",
+        "WebDAV",
+        &format!(
+            "WebDAV 配置已保存：{}:{}，{} 个账号",
+            webdav_config.listen_addr,
+            webdav_config.listen_port,
+            webdav_config.accounts.len()
+        ),
+    );
+    let status = reapply_webdav(&state).await;
+    let manager = state.webdav_manager.lock().await;
+    Ok(webdav_config_view(
+        &webdav_config,
+        status,
+        &manager.account_last_used(),
+    ))
+}
+
+#[tauri::command]
+pub async fn set_webdav_enabled(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<WebDavConfigView, String> {
+    let mut app_config = read_config(&state)?;
+    app_config.webdav.enabled = enabled;
+    validate_webdav_config(&app_config.webdav)?;
+    let webdav_config = app_config.webdav.clone();
+    write_config(&state, &app_config)?;
+    add_log(
+        "info",
+        "WebDAV",
+        if enabled {
+            "WebDAV 服务已启用"
+        } else {
+            "WebDAV 服务已停用"
+        },
+    );
+    let status = reapply_webdav(&state).await;
+    let manager = state.webdav_manager.lock().await;
+    Ok(webdav_config_view(
+        &webdav_config,
+        status,
+        &manager.account_last_used(),
+    ))
+}
+
+#[tauri::command]
+pub async fn test_webdav_service(state: State<'_, AppState>) -> Result<String, String> {
+    let config = read_config(&state)?.webdav;
+    let status = state.webdav_manager.lock().await.status();
+    if status.state != "running" {
+        return Err(status.message);
+    }
+    let result = probe_webdav_listener(&config).await?;
+    add_log("info", "WebDAV", &result);
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn select_webdav_directory(app: AppHandle) -> Result<Option<String>, String> {
+    let selected = tokio::task::spawn_blocking(move || app.dialog().file().blocking_pick_folder())
+        .await
+        .map_err(|error| format!("打开目录选择器失败：{}", error))?;
+    selected
+        .map(|path| {
+            path.into_path()
+                .map(|path| path.to_string_lossy().to_string())
+                .map_err(|error| format!("读取所选目录失败：{}", error))
+        })
+        .transpose()
 }
 
 #[tauri::command]
@@ -2607,5 +2836,41 @@ mod tests {
 
         assert_eq!(runtime_ddns_status(&config), "已停止");
         assert_eq!(latest_runtime_ddns_update_time(&config), "暂无");
+    }
+
+    #[tokio::test]
+    async fn webdav_config_update_retains_unchanged_password_hashes() {
+        let existing = WebDavConfig {
+            accounts: vec![WebDavAccount {
+                id: "account-1".to_string(),
+                username: "backup".to_string(),
+                password_hash: "$argon2id$existing".to_string(),
+                read_only: false,
+                enabled: true,
+            }],
+            ..WebDavConfig::default()
+        };
+        let updated = webdav_config_from_request(
+            &existing,
+            SaveWebDavConfigRequest {
+                enabled: false,
+                listen_addr: "127.0.0.1".to_string(),
+                listen_port: 19080,
+                root_path: String::new(),
+                global_read_only: false,
+                accounts: vec![SaveWebDavAccountRequest {
+                    id: "account-1".to_string(),
+                    username: "backup".to_string(),
+                    password: String::new(),
+                    read_only: true,
+                    enabled: true,
+                }],
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(updated.accounts[0].password_hash, "$argon2id$existing");
+        assert!(updated.accounts[0].read_only);
     }
 }

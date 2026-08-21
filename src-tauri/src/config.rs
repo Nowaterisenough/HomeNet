@@ -44,6 +44,9 @@ pub struct AppConfig {
 
     #[serde(default)]
     pub reverse_proxy_rules: Vec<ReverseProxyRule>,
+
+    #[serde(default)]
+    pub webdav: WebDavConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -238,6 +241,45 @@ pub struct ReverseProxyRule {
     pub status: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebDavConfig {
+    #[serde(default)]
+    pub enabled: bool,
+
+    #[serde(default = "default_webdav_listen_addr")]
+    pub listen_addr: String,
+
+    #[serde(default = "default_webdav_listen_port")]
+    pub listen_port: u16,
+
+    #[serde(default)]
+    pub root_path: String,
+
+    #[serde(default)]
+    pub global_read_only: bool,
+
+    #[serde(default)]
+    pub accounts: Vec<WebDavAccount>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebDavAccount {
+    #[serde(default)]
+    pub id: String,
+
+    #[serde(default)]
+    pub username: String,
+
+    #[serde(default)]
+    pub password_hash: String,
+
+    #[serde(default)]
+    pub read_only: bool,
+
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
 // ---------------------------------------------------------------------------
 // Data models – runtime (not persisted, used for IPC)
 // ---------------------------------------------------------------------------
@@ -311,6 +353,18 @@ fn default_mode() -> String {
 
 fn default_status() -> String {
     "正常".into()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_webdav_listen_addr() -> String {
+    "127.0.0.1".into()
+}
+
+fn default_webdav_listen_port() -> u16 {
+    19080
 }
 
 fn default_reverse_proxy_protocol() -> String {
@@ -451,6 +505,36 @@ pub fn normalize_reverse_proxy_rule(rule: &mut ReverseProxyRule) -> bool {
         || rule.status != original_status
 }
 
+fn normalize_webdav_config(config: &mut WebDavConfig) -> bool {
+    let mut changed = false;
+    if config.listen_addr.trim().is_empty() {
+        config.listen_addr = default_webdav_listen_addr();
+        changed = true;
+    } else if config.listen_addr != config.listen_addr.trim() {
+        config.listen_addr = config.listen_addr.trim().to_string();
+        changed = true;
+    }
+    if config.listen_port == 0 {
+        config.listen_port = default_webdav_listen_port();
+        changed = true;
+    }
+    if config.root_path != config.root_path.trim() {
+        config.root_path = config.root_path.trim().to_string();
+        changed = true;
+    }
+    for account in &mut config.accounts {
+        if account.id.trim().is_empty() {
+            account.id = Uuid::new_v4().to_string();
+            changed = true;
+        }
+        if account.username != account.username.trim() {
+            account.username = account.username.trim().to_string();
+            changed = true;
+        }
+    }
+    changed
+}
+
 fn clear_placeholder_device_ddns_config(config: &mut DeviceDdnsConfig) -> bool {
     let uses_placeholder_credentials = config.access_key_id.trim() == "LTAI5****************"
         || config.access_key_secret.trim() == "************************";
@@ -569,6 +653,7 @@ fn normalize_app_config(config: &mut AppConfig) -> bool {
     for rule in &mut config.reverse_proxy_rules {
         changed |= normalize_reverse_proxy_rule(rule);
     }
+    changed |= normalize_webdav_config(&mut config.webdav);
     changed
 }
 
@@ -590,6 +675,7 @@ impl Default for AppConfig {
             device_ddns_configs: Vec::new(),
             forward_rules: Vec::new(),
             reverse_proxy_rules: Vec::new(),
+            webdav: WebDavConfig::default(),
         }
     }
 }
@@ -661,6 +747,19 @@ impl Default for ReverseProxyRule {
             certificate_last_error: String::new(),
             remark: String::new(),
             status: "已禁用".into(),
+        }
+    }
+}
+
+impl Default for WebDavConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            listen_addr: default_webdav_listen_addr(),
+            listen_port: default_webdav_listen_port(),
+            root_path: String::new(),
+            global_read_only: false,
+            accounts: Vec::new(),
         }
     }
 }
@@ -748,6 +847,12 @@ pub fn save_config(config: &AppConfig) -> Result<(), String> {
     let tmp_path = path.with_extension("toml.tmp");
 
     let mut f = fs::File::create(&tmp_path).map_err(|e| format!("创建临时配置文件失败：{}", e))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&tmp_path, fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("设置配置文件权限失败：{}", e))?;
+    }
     f.write_all(toml_str.as_bytes())
         .map_err(|e| format!("写入临时配置文件失败：{}", e))?;
     f.flush()
@@ -959,6 +1064,7 @@ interval_minutes = 10
             protocol: "https".to_string(),
             domain: "Proxy.Example.COM.".to_string(),
             tls: "AUTO".to_string(),
+            listen_port: 0,
             ..ReverseProxyRule::default()
         };
 
