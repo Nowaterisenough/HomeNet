@@ -309,6 +309,78 @@ input[type="checkbox"] {
   font-weight: 800;
 }
 
+.update-confirm-backdrop {
+  z-index: 60;
+}
+
+.update-confirm-modal {
+  width: min(520px, calc(100vw - 48px));
+}
+
+.update-confirm-content {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+}
+
+.update-verification {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #d8e6ff;
+  border-radius: 6px;
+  color: #1d5bbf;
+  background: #f2f7ff;
+}
+
+.update-verification.is-unsigned {
+  border-color: #f2d49a;
+  color: #a15c05;
+  background: #fff8e8;
+}
+
+.update-verification svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.update-verification strong,
+.update-release-notes h3 {
+  color: #1f2937;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.update-verification p {
+  margin-top: 3px;
+  color: #596579;
+  font-size: 11px;
+}
+
+.update-release-notes {
+  min-height: 84px;
+}
+
+.update-release-notes p {
+  max-height: 180px;
+  margin-top: 7px;
+  overflow: auto;
+  color: #4b5563;
+  font-size: 11px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.update-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 18px;
+  border-top: 1px solid #e6edf5;
+  background: #f9fbfd;
+}
+
 .draggable-header {
   cursor: move;
 }

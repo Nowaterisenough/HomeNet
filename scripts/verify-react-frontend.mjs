@@ -33,6 +33,8 @@ const checks = [
   ],
   ["src/components/LogPanel.tsx", 'invokeCommand<LogEntry[]>("get_recent_logs")'],
   ["src/components/RuntimeSettingsPanel.tsx", "检查更新"],
+  ["src/components/UpdateConfirmDialog.tsx", 'role="dialog"'],
+  ["src/components/UpdateConfirmDialog.tsx", "下载并安装"],
   ["src/hooks/useDraggableModal.ts", "startModalDrag"],
   ["src/lib/tauri.ts", "currentTauriWindow"],
   ["src/styles/global.css", "--titlebar-height"],
@@ -50,6 +52,11 @@ for (const [file, needle] of checks) {
   if (!content.includes(needle)) {
     missing.push(`${file}: ${needle}`);
   }
+}
+
+const appContent = readFileSync(join(root, "src/App.tsx"), "utf8");
+if (appContent.includes("window.confirm")) {
+  missing.push("src/App.tsx: browser confirm must not gate app update installation");
 }
 
 if (missing.length > 0) {

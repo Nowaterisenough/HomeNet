@@ -5,6 +5,7 @@ import LogPanel from "./components/LogPanel";
 import ReverseProxyPanel from "./components/ReverseProxyPanel";
 import RuntimeSettingsPanel from "./components/RuntimeSettingsPanel";
 import StatusCard from "./components/StatusCard";
+import UpdateConfirmDialog from "./components/UpdateConfirmDialog";
 import {
   closeCurrentWindow,
   invokeCommand,
@@ -51,6 +52,7 @@ export default function App() {
   const [updateChecking, setUpdateChecking] = useState(false);
   const [updateInstalling, setUpdateInstalling] = useState(false);
   const [availableUpdate, setAvailableUpdate] = useState<AppUpdateResult | null>(null);
+  const [updateToConfirm, setUpdateToConfirm] = useState<AppUpdateResult | null>(null);
   const [updateStatusMessage, setUpdateStatusMessage] = useState("");
   const [updateStatusType, setUpdateStatusType] = useState<"normal" | "success" | "error">(
     "normal",
@@ -227,23 +229,7 @@ export default function App() {
   }
 
   async function installAvailableUpdate(update: AppUpdateResult) {
-    const notes = update.notes.trim();
-    const notesPreview = notes.length > 600 ? `${notes.slice(0, 600)}…` : notes;
-    const verificationMessage =
-      update.verification === "signed"
-        ? "更新包将通过内置公钥验证签名。"
-        : "此版本未配置 updater 签名，将通过 GitHub HTTPS 下载；macOS 安装完成后会解除应用隔离属性。";
-    const confirmed = window.confirm(
-      [
-        `发现 HomeNet ${update.latest_version}。`,
-        verificationMessage,
-        notesPreview,
-        "是否立即下载并安装？",
-      ]
-        .filter(Boolean)
-        .join("\n\n"),
-    );
-    if (!confirmed || updateBusyRef.current) return;
+    if (updateBusyRef.current) return;
 
     updateBusyRef.current = true;
     setUpdateInstalling(true);
@@ -270,14 +256,26 @@ export default function App() {
     }
   }
 
+  function requestUpdateInstallation(update: AppUpdateResult) {
+    if (updateBusyRef.current) return;
+    setUpdateToConfirm(update);
+  }
+
+  async function confirmUpdateInstallation() {
+    const update = updateToConfirm;
+    if (!update || updateBusyRef.current) return;
+    setUpdateToConfirm(null);
+    await installAvailableUpdate(update);
+  }
+
   async function handleUpdateAction() {
     if (availableUpdate) {
-      await installAvailableUpdate(availableUpdate);
+      requestUpdateInstallation(availableUpdate);
       return;
     }
     const result = await checkAppUpdate(false);
     if (result?.status === "available") {
-      await installAvailableUpdate(result);
+      requestUpdateInstallation(result);
     }
   }
 
@@ -386,6 +384,14 @@ export default function App() {
           />
         </section>
       </main>
+
+      {updateToConfirm ? (
+        <UpdateConfirmDialog
+          update={updateToConfirm}
+          onCancel={() => setUpdateToConfirm(null)}
+          onConfirm={confirmUpdateInstallation}
+        />
+      ) : null}
     </div>
   );
 }
