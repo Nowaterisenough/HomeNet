@@ -1,5 +1,17 @@
 import { ChangeEvent, useEffect, useMemo, useState } from "react";
-import { Info, Pencil, RefreshCw, Save, Search, Trash2, Zap } from "lucide-react";
+import {
+  Cloud,
+  CloudOff,
+  Info,
+  Pencil,
+  RefreshCw,
+  Save,
+  Search,
+  Trash2,
+  Wifi,
+  WifiOff,
+  Zap,
+} from "lucide-react";
 import { useDraggableModal } from "../hooks/useDraggableModal";
 import { invokeCommand } from "../lib/tauri";
 import type { DeviceDdnsConfig, LanDevice } from "../types";
@@ -517,8 +529,7 @@ export default function DeviceDdnsPanel({ className = "" }: DeviceDdnsPanelProps
             <thead>
               <tr>
                 <th>设备名称</th>
-                <th>在线状态</th>
-                <th>DDNS 状态</th>
+                <th>状态</th>
                 <th>MAC 地址</th>
                 <th>域名地址</th>
                 <th>绑定 IP</th>
@@ -529,7 +540,7 @@ export default function DeviceDdnsPanel({ className = "" }: DeviceDdnsPanelProps
             <tbody>
               {filteredDevices.length === 0 ? (
                 <tr>
-                  <td className="empty-cell" colSpan={8}>
+                  <td className="empty-cell" colSpan={7}>
                     {loading ? "正在扫描局域网设备" : "暂无局域网设备"}
                   </td>
                 </tr>
@@ -540,18 +551,40 @@ export default function DeviceDdnsPanel({ className = "" }: DeviceDdnsPanelProps
                     className={selectedId === device.id ? "selected-row" : undefined}
                     onClick={() => selectRow(device)}
                   >
-                    <td title={device.nativeName}>{device.name}</td>
-                    <td>
-                      <span className={`state-pill ${device.online ? "pill-online" : "pill-offline"}`}>
-                        {device.online ? "在线" : "离线"}
-                      </span>
+                    <td title={device.name}>{device.name}</td>
+                    <td className="device-status-cell">
+                      <div className="device-status-icons">
+                        <span
+                          className={`device-status-icon ${device.online ? "is-online" : "is-offline"}`}
+                          title={`在线状态：${device.online ? "在线" : "离线"}`}
+                          aria-label={`在线状态：${device.online ? "在线" : "离线"}`}
+                        >
+                          {device.online ? (
+                            <Wifi size={13} strokeWidth={2.2} aria-hidden="true" />
+                          ) : (
+                            <WifiOff size={13} strokeWidth={2.2} aria-hidden="true" />
+                          )}
+                        </span>
+                        <span
+                          className={`device-status-icon ${
+                            device.enabled
+                              ? "is-ddns-enabled"
+                              : device.configured
+                                ? "is-ddns-configured"
+                                : "is-ddns-unconfigured"
+                          }`}
+                          title={`DDNS 状态：${device.enabled ? "已启用" : device.configured ? "已配置" : "未配置"}`}
+                          aria-label={`DDNS 状态：${device.enabled ? "已启用" : device.configured ? "已配置" : "未配置"}`}
+                        >
+                          {device.enabled || device.configured ? (
+                            <Cloud size={13} strokeWidth={2.2} aria-hidden="true" />
+                          ) : (
+                            <CloudOff size={13} strokeWidth={2.2} aria-hidden="true" />
+                          )}
+                        </span>
+                      </div>
                     </td>
-                    <td>
-                      <span className={`bind-pill ${device.configured ? "pill-bound" : "pill-unbound"}`}>
-                        {device.configured ? (device.enabled ? "已启用" : "已配置") : "未配置"}
-                      </span>
-                    </td>
-                    <td>{device.mac}</td>
+                    <td title={device.mac}>{device.mac}</td>
                     <td>{device.domain}</td>
                     <td title={device.boundIp}>{device.boundIp}</td>
                     <td>{device.lastSync}</td>

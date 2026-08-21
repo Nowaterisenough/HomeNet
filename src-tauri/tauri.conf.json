@@ -13,9 +13,9 @@
     "windows": [
       {
         "title": "HomeNet",
-        "width": 1586,
+        "width": 1280,
         "height": 992,
-        "minWidth": 1366,
+        "minWidth": 1024,
         "minHeight": 768,
         "resizable": true,
         "decorations": false,

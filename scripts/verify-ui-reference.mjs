@@ -51,6 +51,7 @@ const requiredChecks = [
   ["src/components/DeviceDdnsPanel.tsx", "function updateIpv6CandidateIndex"],
   ["src/components/DeviceDdnsPanel.tsx", "selectedIpv6Candidate"],
   ["src/components/DeviceDdnsPanel.tsx", "prioritizeEnabledDeviceRows"],
+  ["src/components/DeviceDdnsPanel.tsx", "device-status-icons"],
   ["src/components/DeviceDdnsPanel.tsx", "useDraggableModal"],
   [
     "src/components/ReverseProxyPanel.tsx",
@@ -75,6 +76,8 @@ const requiredChecks = [
   ["src/styles/panels.css", ".ipv6-candidate-value"],
   ["src-tauri/tauri.conf.json", '"productName": "HomeNet"'],
   ["src-tauri/tauri.conf.json", '"title": "HomeNet"'],
+  ["src-tauri/tauri.conf.json", '"width": 1280'],
+  ["src-tauri/tauri.conf.json", '"minWidth": 1024'],
   ["src-tauri/tauri.conf.json", '"devUrl": "http://localhost:1420"'],
   ["src-tauri/tauri.conf.json", '"updater"'],
   ["src-tauri/tauri.updater.conf.json", '"createUpdaterArtifacts": true'],

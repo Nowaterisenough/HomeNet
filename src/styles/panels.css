@@ -166,7 +166,7 @@ th {
 }
 
 .device-table {
-  min-width: 1120px;
+  min-width: 780px;
   font-size: 10.5px;
 }
 
@@ -422,8 +422,6 @@ input:read-only {
   background: #f4f7fb;
 }
 
-.state-pill,
-.bind-pill,
 .status-pill {
   display: inline-flex;
   align-items: center;
@@ -431,21 +429,10 @@ input:read-only {
   min-width: 42px;
   height: 18px;
   border-radius: 4px;
-  font-size: 10px;
-  font-weight: 800;
-}
-
-.pill-online,
-.pill-bound,
-.status-pill {
   color: #0e9f4f;
   background: #eaf8ef;
-}
-
-.pill-offline,
-.pill-unbound {
-  color: #4b5563;
-  background: #f0f3f7;
+  font-size: 10px;
+  font-weight: 800;
 }
 
 .panel-footer {
@@ -662,40 +649,74 @@ input:read-only {
 
 .device-table th:nth-child(1),
 .device-table td:nth-child(1) {
-  width: 150px;
+  width: 112px;
+  max-width: 112px;
+}
+
+.device-table th:nth-child(2),
+.device-table td:nth-child(2) {
+  width: 58px;
+  text-align: center;
+}
+
+.device-table th:nth-child(3),
+.device-table td:nth-child(3) {
+  width: 118px;
+  max-width: 118px;
 }
 
 .device-table th:nth-child(4),
 .device-table td:nth-child(4) {
-  width: 132px;
-}
-
-.device-table th:nth-child(5),
-.device-table td:nth-child(5) {
-  width: 190px;
+  width: 140px;
 }
 
 .device-table th:nth-child(6),
 .device-table td:nth-child(6) {
-  width: 260px;
-}
-
-.device-table th:nth-child(2),
-.device-table td:nth-child(2),
-.device-table th:nth-child(3),
-.device-table td:nth-child(3) {
-  width: 76px;
+  width: 120px;
 }
 
 .device-table th:nth-child(7),
 .device-table td:nth-child(7) {
-  width: 122px;
+  width: 58px;
+  text-align: center;
 }
 
-.device-table th:nth-child(8),
-.device-table td:nth-child(8) {
-  width: 66px;
-  text-align: center;
+.device-status-cell {
+  padding-right: 4px !important;
+  padding-left: 4px !important;
+}
+
+.device-status-icons {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+}
+
+.device-status-icon {
+  width: 19px;
+  height: 19px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  color: #64748b;
+  background: #f0f3f7;
+}
+
+.device-status-icon.is-online {
+  color: #0e9f4f;
+  background: #eaf8ef;
+}
+
+.device-status-icon.is-ddns-enabled {
+  color: #1769f6;
+  background: #eaf2ff;
+}
+
+.device-status-icon.is-ddns-configured {
+  color: #b76705;
+  background: #fff6df;
 }
 
 .device-row-actions {
