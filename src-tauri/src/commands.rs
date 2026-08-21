@@ -328,13 +328,24 @@ do shell script "rm -rf /Applications/HomeNet.app && ditto " & quoted form of so
 APPLESCRIPT
 fi
 
-if sudo -n true 2>/dev/null; then
-  sudo xattr -dr {MACOS_QUARANTINE_ATTRIBUTE} {MACOS_APPLICATION_PATH}
-else
-  osascript -e '{apple_script}'
+if ! xattr -dr {MACOS_QUARANTINE_ATTRIBUTE} {MACOS_APPLICATION_PATH} 2>/dev/null; then
+  if sudo -n true 2>/dev/null; then
+    sudo xattr -dr {MACOS_QUARANTINE_ATTRIBUTE} {MACOS_APPLICATION_PATH} || true
+  else
+    osascript -e '{apple_script}' || true
+  fi
 fi
 
-open "{MACOS_APPLICATION_PATH}"
+ATTEMPT=1
+while [ "$ATTEMPT" -le 5 ]; do
+  open -n "$APP_PATH" >/dev/null 2>&1 || true
+  sleep 1
+  if pgrep -x "HomeNet" >/dev/null 2>&1; then
+    exit 0
+  fi
+  ATTEMPT=$((ATTEMPT + 1))
+done
+exit 1
 "#,
         apple_script = macos_quarantine_apple_script().replace('\'', "'\\''")
     )
@@ -2422,11 +2433,13 @@ mod tests {
     }
 
     #[test]
-    fn unsigned_macos_update_script_clears_quarantine_before_reopening() {
+    fn unsigned_macos_update_script_reopens_after_best_effort_quarantine_cleanup() {
         let script = build_unsigned_macos_update_script(std::path::Path::new("/tmp/HomeNet.zip"));
 
         assert!(script.contains("sudo xattr -dr com.apple.quarantine /Applications/HomeNet.app"));
-        assert!(script.contains("open \"/Applications/HomeNet.app\""));
+        assert!(script.contains("osascript -e") && script.contains("|| true"));
+        assert!(script.contains("open -n \"$APP_PATH\""));
+        assert!(script.contains("pgrep -x \"HomeNet\""));
     }
 
     #[test]

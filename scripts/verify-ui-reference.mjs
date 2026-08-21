@@ -98,6 +98,7 @@ const requiredChecks = [
   ["src-tauri/src/commands.rs", "install_unsigned_app_update"],
   ["src-tauri/src/commands.rs", 'verification: "github_https".to_string()'],
   ["src-tauri/src/commands.rs", "clear_macos_application_quarantine"],
+  ["src-tauri/src/commands.rs", 'open -n "$APP_PATH"'],
   ["src-tauri/src/commands.rs", "xattr -dr {} {}"],
   ["src-tauri/src/tray.rs", 'const TRAY_TOOLTIP: &str = "HomeNet";'],
   ["src-tauri/src/tray.rs", "TrayIconEvent::DoubleClick"],
