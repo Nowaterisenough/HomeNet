@@ -1325,47 +1325,152 @@ fn merge_local_and_neighbor_devices(
 }
 
 fn discover_local_interface_devices() -> Vec<LanDevice> {
-    let now = Utc::now().to_rfc3339();
-
     let Ok(interfaces) = list_afinet_netifas() else {
         return Vec::new();
     };
     let local_macs = local_interface_mac_map();
-    let stable_local_ipv6 = crate::ddns::stable_local_ipv6_candidate_set();
+    let stable_local_ipv6 = crate::ddns::stable_local_ipv6_candidates_by_preference();
 
-    let mut device = LanDevice {
-        id: "local-machine".to_string(),
-        display_name: "本机设备".to_string(),
-        hostname: "本机设备".to_string(),
-        mac: String::new(),
-        ipv4: Vec::new(),
-        ipv6: Vec::new(),
-        global_ipv6: Vec::new(),
-        online: true,
-        source: "local-interface".to_string(),
-        last_seen: now,
-    };
+    build_local_interface_device(interfaces, &local_macs, stable_local_ipv6.as_deref())
+        .into_iter()
+        .collect()
+}
+
+fn build_local_interface_device(
+    interfaces: Vec<(String, IpAddr)>,
+    local_macs: &HashMap<String, String>,
+    stable_local_ipv6: Option<&[(String, Ipv6Addr)]>,
+) -> Option<LanDevice> {
+    let now = Utc::now().to_rfc3339();
+    let stable_local_ipv6_set = stable_local_ipv6.map(|candidates| {
+        candidates
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<(String, Ipv6Addr)>>()
+    });
+    let mut grouped_interfaces: Vec<(String, Vec<IpAddr>)> = Vec::new();
 
     for (name, ip) in interfaces {
-        if is_usable_ip(ip) {
-            add_local_interface_ip_to_device(&mut device, &name, ip, stable_local_ipv6.as_ref());
+        if !is_usable_ip(ip) {
+            continue;
         }
-        if device.mac.is_empty() {
-            if let Some(mac) = local_macs.get(&name).filter(|mac| is_usable_mac(mac)) {
-                device.mac = mac.clone();
-            }
-        }
-        if !name.trim().is_empty() && device.display_name == "本机设备" {
-            device.display_name = format!("本机设备（{}）", name.trim());
-            device.hostname = device.display_name.clone();
+
+        if let Some((_, addresses)) = grouped_interfaces
+            .iter_mut()
+            .find(|(interface_name, _)| interface_names_match(interface_name, &name))
+        {
+            addresses.push(ip);
+        } else {
+            grouped_interfaces.push((name, vec![ip]));
         }
     }
 
-    if device.ipv4.is_empty() && device.ipv6.is_empty() {
-        Vec::new()
-    } else {
-        vec![device]
+    let mut selected: Option<(LanDevice, (bool, bool, bool, bool, bool))> = None;
+    for (name, addresses) in grouped_interfaces {
+        let mac = local_macs
+            .get(&name)
+            .filter(|mac| is_usable_mac(mac))
+            .cloned()
+            .unwrap_or_default();
+        let mut device = LanDevice {
+            id: "local-machine".to_string(),
+            display_name: format!("本机设备（{}）", name.trim()),
+            hostname: format!("本机设备（{}）", name.trim()),
+            mac,
+            ipv4: Vec::new(),
+            ipv6: Vec::new(),
+            global_ipv6: Vec::new(),
+            online: true,
+            source: "local-interface".to_string(),
+            last_seen: now.clone(),
+        };
+
+        for ip in addresses {
+            add_local_interface_ip_to_device(
+                &mut device,
+                &name,
+                ip,
+                stable_local_ipv6_set.as_ref(),
+            );
+        }
+
+        if let Some(candidates) = stable_local_ipv6 {
+            let available_ipv6 = device
+                .ipv6
+                .iter()
+                .filter_map(|value| value.parse::<Ipv6Addr>().ok())
+                .collect::<BTreeSet<_>>();
+            device.global_ipv6 = candidates
+                .iter()
+                .filter(|(interface_name, address)| {
+                    interface_names_match(interface_name, &name) && available_ipv6.contains(address)
+                })
+                .map(|(_, address)| address.to_string())
+                .collect();
+        }
+
+        let score = local_interface_device_score(&name, &device);
+        if selected
+            .as_ref()
+            .is_none_or(|(_, selected_score)| score > *selected_score)
+        {
+            selected = Some((device, score));
+        }
     }
+
+    selected.map(|(device, _)| device)
+}
+
+fn local_interface_device_score(
+    interface_name: &str,
+    device: &LanDevice,
+) -> (bool, bool, bool, bool, bool) {
+    (
+        is_likely_physical_lan_interface(interface_name),
+        !device.global_ipv6.is_empty(),
+        !device.ipv4.is_empty(),
+        !device.mac.is_empty(),
+        device.ipv6.iter().any(|value| {
+            value
+                .parse::<Ipv6Addr>()
+                .is_ok_and(|address| !address.is_unicast_link_local())
+        }),
+    )
+}
+
+fn is_likely_physical_lan_interface(interface_name: &str) -> bool {
+    let name = interface_name.trim().to_ascii_lowercase();
+    let macos_virtual_prefix = ["lo", "awdl", "llw", "utun", "gif", "stf", "anpi", "ap"];
+    let common_virtual_prefix = ["veth", "docker", "virbr", "tun", "tap"];
+    let common_virtual_fragment = [
+        "loopback",
+        "teredo",
+        "isatap",
+        "vethernet",
+        "hyper-v",
+        "vpn",
+    ];
+
+    !name.is_empty()
+        && !macos_virtual_prefix
+            .iter()
+            .any(|prefix| interface_name_has_numeric_suffix(&name, prefix))
+        && !common_virtual_prefix
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
+        && !common_virtual_fragment
+            .iter()
+            .any(|fragment| name.contains(fragment))
+}
+
+fn interface_name_has_numeric_suffix(interface_name: &str, prefix: &str) -> bool {
+    interface_name.strip_prefix(prefix).is_some_and(|suffix| {
+        !suffix.is_empty() && suffix.chars().all(|character| character.is_ascii_digit())
+    })
+}
+
+fn interface_names_match(left: &str, right: &str) -> bool {
+    left.trim().eq_ignore_ascii_case(right.trim())
 }
 
 fn add_local_interface_ip_to_device(
@@ -2165,6 +2270,78 @@ ff02::1                              33:33:00:00:00:01 en0 permanent  R
 
         assert_eq!(device.ipv6, vec!["2408:8200::1", "2408:8200::2"]);
         assert_eq!(device.global_ipv6, vec!["2408:8200::2"]);
+    }
+
+    #[test]
+    fn local_interface_device_keeps_ip_and_mac_on_the_same_physical_interface() {
+        let interfaces = vec![
+            ("lo0".to_string(), "127.0.0.1".parse::<IpAddr>().unwrap()),
+            ("lo0".to_string(), "fe80::1".parse::<IpAddr>().unwrap()),
+            (
+                "llw0".to_string(),
+                "fe80::34d6:8eff:fe98:9f1f".parse::<IpAddr>().unwrap(),
+            ),
+            (
+                "en0".to_string(),
+                "fe80::c3a:95d0:6397:957".parse::<IpAddr>().unwrap(),
+            ),
+            (
+                "en0".to_string(),
+                "192.168.100.3".parse::<IpAddr>().unwrap(),
+            ),
+            (
+                "en0".to_string(),
+                "240e:358:134:6c00::699".parse::<IpAddr>().unwrap(),
+            ),
+            (
+                "en0".to_string(),
+                "240e:358:1f9:4900:1428:57c3:39ea:1388"
+                    .parse::<IpAddr>()
+                    .unwrap(),
+            ),
+            ("utun4".to_string(), "172.19.0.1".parse::<IpAddr>().unwrap()),
+            (
+                "utun4".to_string(),
+                "fdfe:dcbe:9876::1".parse::<IpAddr>().unwrap(),
+            ),
+        ];
+        let local_macs = HashMap::from([
+            ("llw0".to_string(), "36:d6:8e:98:9f:1f".to_string()),
+            ("en0".to_string(), "d0:11:e5:a1:cb:dd".to_string()),
+        ]);
+        let stable = vec![
+            (
+                "en0".to_string(),
+                "240e:358:1f9:4900:1428:57c3:39ea:1388"
+                    .parse::<Ipv6Addr>()
+                    .unwrap(),
+            ),
+            (
+                "en0".to_string(),
+                "240e:358:134:6c00::699".parse::<Ipv6Addr>().unwrap(),
+            ),
+        ];
+
+        let device = build_local_interface_device(interfaces, &local_macs, Some(&stable)).unwrap();
+
+        assert_eq!(device.display_name, "本机设备（en0）");
+        assert_eq!(device.mac, "d0:11:e5:a1:cb:dd");
+        assert_eq!(device.ipv4, vec!["192.168.100.3"]);
+        assert_eq!(
+            device.ipv6,
+            vec![
+                "fe80::c3a:95d0:6397:957",
+                "240e:358:134:6c00::699",
+                "240e:358:1f9:4900:1428:57c3:39ea:1388"
+            ]
+        );
+        assert_eq!(
+            device.global_ipv6,
+            vec![
+                "240e:358:1f9:4900:1428:57c3:39ea:1388",
+                "240e:358:134:6c00::699"
+            ]
+        );
     }
 
     #[test]

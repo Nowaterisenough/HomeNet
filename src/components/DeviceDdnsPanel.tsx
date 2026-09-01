@@ -128,19 +128,39 @@ function normalizeConfig(data: Partial<DeviceDdnsConfig> | null | undefined): De
   };
 }
 
-function configMatchesDevice(config: DeviceDdnsConfig, device: LanDevice): boolean {
-  const configMac = config.device_mac.trim();
-  const deviceMac = device.mac.trim();
-  if (configMac && deviceMac) {
-    return configMac.toLowerCase() === deviceMac.toLowerCase();
-  }
-
-  const configId = config.device_id.trim();
-  return !!configId && configId === device.id.trim();
+function isGeneratedLocalMachineConfig(config: DeviceDdnsConfig): boolean {
+  return config.device_id.trim() === "local-machine" && config.device_name.trim().startsWith("本机设备");
 }
 
-function configForDevice(device: LanDevice, configs: DeviceDdnsConfig[]): DeviceDdnsConfig | null {
-  return configs.find((config) => configMatchesDevice(config, device)) ?? null;
+function matchingDeviceForConfig(config: DeviceDdnsConfig, devices: LanDevice[]): LanDevice | null {
+  const configId = config.device_id.trim();
+  const configMac = config.device_mac.trim();
+  if (configMac) {
+    const macMatch = devices.find(
+      (device) => device.mac.trim() && device.mac.trim().toLowerCase() === configMac.toLowerCase(),
+    );
+    if (macMatch) return macMatch;
+  }
+
+  if (isGeneratedLocalMachineConfig(config)) {
+    return devices.find((device) => device.id.trim() === "local-machine") ?? null;
+  }
+
+  if (!configId) return null;
+  return (
+    devices.find((device) => {
+      const deviceMac = device.mac.trim();
+      return (!configMac || !deviceMac) && device.id.trim() === configId;
+    }) ?? null
+  );
+}
+
+function configForDevice(
+  device: LanDevice,
+  configs: DeviceDdnsConfig[],
+  devices: LanDevice[],
+): DeviceDdnsConfig | null {
+  return configs.find((config) => matchingDeviceForConfig(config, devices) === device) ?? null;
 }
 
 function selectedIpForDraft(config: DeviceDdnsConfig | null, device: LanDevice): string {
@@ -159,12 +179,18 @@ function configuredDomain(config: DeviceDdnsConfig | null): string {
   return sub ? `${sub}.${domain}` : domain;
 }
 
-function mapLanDevice(device: LanDevice, index: number, configs: DeviceDdnsConfig[]): DeviceRow {
-  const config = configForDevice(device, configs);
+function mapLanDevice(
+  device: LanDevice,
+  index: number,
+  configs: DeviceDdnsConfig[],
+  devices: LanDevice[],
+): DeviceRow {
+  const config = configForDevice(device, configs, devices);
   const nativeName = displayName(device, index);
+  const configuredName = config && !isGeneratedLocalMachineConfig(config) ? config.device_name.trim() : "";
   return {
     id: device.id || device.mac || nativeName,
-    name: config?.device_name.trim() || nativeName,
+    name: configuredName || nativeName,
     nativeName,
     mac: device.mac || "-",
     online: device.online,
@@ -195,12 +221,13 @@ function buildDraft(row: DeviceRow, configs: DeviceDdnsConfig[]): DeviceDdnsConf
   const recordType = existing?.record_type?.trim().toUpperCase() === "A" ? "A" : "AAAA";
   const selectedIp = selectedIpForDraft(existing, row.raw);
   const normalizedSelectedIp = selectedIp === "-" ? "" : selectedIp;
+  const configuredName = existing && !isGeneratedLocalMachineConfig(existing) ? existing.device_name : "";
   return normalizeConfig({
     ...template,
     enabled: existing?.enabled ?? true,
     device_id: row.raw.id,
     device_mac: row.raw.mac,
-    device_name: existing?.device_name || row.name || row.nativeName,
+    device_name: configuredName || row.name || row.nativeName,
     record_type: recordType,
     ip_candidate_index: Math.max(1, Math.floor(Number(existing?.ip_candidate_index) || 1)),
     selected_ip: normalizedSelectedIp,
@@ -227,7 +254,7 @@ export default function DeviceDdnsPanel({ className = "" }: DeviceDdnsPanelProps
   const { modalStyle, resetModalPosition, startModalDrag } = useDraggableModal();
 
   const rows = useMemo(
-    () => prioritizeEnabledDeviceRows(devices.map((device, index) => mapLanDevice(device, index, configs))),
+    () => prioritizeEnabledDeviceRows(devices.map((device, index) => mapLanDevice(device, index, configs, devices))),
     [configs, devices],
   );
   const selectedRow = useMemo(
@@ -287,7 +314,7 @@ export default function DeviceDdnsPanel({ className = "" }: DeviceDdnsPanelProps
     try {
       const nextConfigs = await loadConfigsData();
       const nextDevices = await invokeCommand<LanDevice[]>("list_lan_devices");
-      const nextRows = nextDevices.map((device, index) => mapLanDevice(device, index, nextConfigs));
+      const nextRows = nextDevices.map((device, index) => mapLanDevice(device, index, nextConfigs, nextDevices));
       const current = nextRows.find((row) => row.id === selectedId);
       const next = current ?? nextRows.find((row) => row.configured) ?? nextRows[0] ?? null;
 
@@ -398,7 +425,7 @@ export default function DeviceDdnsPanel({ className = "" }: DeviceDdnsPanelProps
     try {
       await invokeCommand("save_device_ddns_config", { config: payload });
       const nextConfigs = await loadConfigsData();
-      const nextRows = devices.map((device, index) => mapLanDevice(device, index, nextConfigs));
+      const nextRows = devices.map((device, index) => mapLanDevice(device, index, nextConfigs, devices));
       setConfigs(nextConfigs);
       syncDraftWithSelection(nextConfigs, nextRows);
       if (showSuccess) {
@@ -426,7 +453,7 @@ export default function DeviceDdnsPanel({ className = "" }: DeviceDdnsPanelProps
         deviceMac: row.raw.mac,
       });
       const nextConfigs = await loadConfigsData();
-      const nextRows = devices.map((device, index) => mapLanDevice(device, index, nextConfigs));
+      const nextRows = devices.map((device, index) => mapLanDevice(device, index, nextConfigs, devices));
       setConfigs(nextConfigs);
       syncDraftWithSelection(nextConfigs, nextRows, selectedId === row.id ? row.id : selectedId);
       setStatusMessage("设备 DDNS 绑定已解除");
@@ -455,7 +482,7 @@ export default function DeviceDdnsPanel({ className = "" }: DeviceDdnsPanelProps
       if (!payload) return;
       const result = await invokeCommand<string>("trigger_device_ddns_update", { config: payload });
       const nextConfigs = await loadConfigsData();
-      const nextRows = devices.map((device, index) => mapLanDevice(device, index, nextConfigs));
+      const nextRows = devices.map((device, index) => mapLanDevice(device, index, nextConfigs, devices));
       setConfigs(nextConfigs);
       syncDraftWithSelection(nextConfigs, nextRows);
       setStatusMessage(result || "设备 DDNS 已同步");

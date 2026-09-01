@@ -18,6 +18,7 @@ pub(crate) struct Ipv6AddressCandidate {
     pub address: String,
     pub interface_name: String,
     pub preferred: bool,
+    pub preferred_lifetime_secs: Option<u64>,
     pub temporary: bool,
     pub deprecated: bool,
     pub detached: bool,
@@ -196,12 +197,61 @@ pub(crate) fn select_stable_ipv6_candidate<'a>(
     interface_name: &str,
 ) -> Option<&'a Ipv6AddressCandidate> {
     let selected = interface_name.trim();
+    let mut best = None;
+
+    for candidate in candidates.iter().filter(|candidate| {
+        (selected.is_empty() || interface_matches(&candidate.interface_name, selected))
+            && is_stable_global_ipv6_candidate(candidate)
+    }) {
+        if best
+            .is_none_or(|current| ipv6_candidate_is_preferred_over(candidates, candidate, current))
+        {
+            best = Some(candidate);
+        }
+    }
+
+    best
+}
+
+fn ipv6_candidate_is_preferred_over(
+    candidates: &[Ipv6AddressCandidate],
+    candidate: &Ipv6AddressCandidate,
+    current: &Ipv6AddressCandidate,
+) -> bool {
+    match (
+        stable_ipv6_prefix_preferred_lifetime(candidates, candidate),
+        stable_ipv6_prefix_preferred_lifetime(candidates, current),
+    ) {
+        (Some(candidate_lifetime), Some(current_lifetime)) => candidate_lifetime > current_lifetime,
+        (Some(_), None) => true,
+        (None, Some(_)) | (None, None) => false,
+    }
+}
+
+fn stable_ipv6_prefix_preferred_lifetime(
+    candidates: &[Ipv6AddressCandidate],
+    candidate: &Ipv6AddressCandidate,
+) -> Option<u64> {
+    let address = candidate.address.parse::<Ipv6Addr>().ok()?;
+    let prefix = ipv6_64_prefix(&address);
+
     candidates
         .iter()
-        .filter(|candidate| {
-            selected.is_empty() || interface_matches(&candidate.interface_name, selected)
+        .filter(|other| {
+            interface_matches(&other.interface_name, &candidate.interface_name)
+                && is_stable_global_ipv6_candidate(other)
+                && other
+                    .address
+                    .parse::<Ipv6Addr>()
+                    .is_ok_and(|address| ipv6_64_prefix(&address) == prefix)
         })
-        .find(|candidate| is_stable_global_ipv6_candidate(candidate))
+        .filter_map(|other| other.preferred_lifetime_secs)
+        .max()
+}
+
+fn ipv6_64_prefix(address: &Ipv6Addr) -> [u16; 4] {
+    let segments = address.segments();
+    [segments[0], segments[1], segments[2], segments[3]]
 }
 
 pub(crate) fn is_stable_global_ipv6_candidate(candidate: &Ipv6AddressCandidate) -> bool {
@@ -215,13 +265,40 @@ pub(crate) fn is_stable_global_ipv6_candidate(candidate: &Ipv6AddressCandidate) 
         && !candidate.skip_as_source
 }
 
-pub(crate) fn stable_local_ipv6_candidate_set() -> Option<BTreeSet<(String, Ipv6Addr)>> {
+pub(crate) fn stable_local_ipv6_candidates_by_preference() -> Option<Vec<(String, Ipv6Addr)>> {
     let candidates = local_ipv6_candidates();
     if candidates.is_empty() {
         None
     } else {
-        Some(stable_candidate_set(&candidates))
+        Some(stable_candidate_values_by_preference(&candidates))
     }
+}
+
+fn stable_candidate_values_by_preference(
+    candidates: &[Ipv6AddressCandidate],
+) -> Vec<(String, Ipv6Addr)> {
+    let mut stable = candidates
+        .iter()
+        .enumerate()
+        .filter(|(_, candidate)| is_stable_global_ipv6_candidate(candidate))
+        .collect::<Vec<_>>();
+
+    stable.sort_by(|(left_index, left), (right_index, right)| {
+        stable_ipv6_prefix_preferred_lifetime(candidates, right)
+            .cmp(&stable_ipv6_prefix_preferred_lifetime(candidates, left))
+            .then_with(|| left_index.cmp(right_index))
+    });
+
+    stable
+        .into_iter()
+        .filter_map(|(_, candidate)| {
+            candidate
+                .address
+                .parse::<Ipv6Addr>()
+                .ok()
+                .map(|address| (normalize_interface_name(&candidate.interface_name), address))
+        })
+        .collect()
 }
 
 fn stable_candidate_set(candidates: &[Ipv6AddressCandidate]) -> BTreeSet<(String, Ipv6Addr)> {
@@ -288,7 +365,7 @@ fn powershell_output(script: &str) -> std::io::Result<std::process::Output> {
 #[cfg(target_os = "macos")]
 fn macos_ipv6_candidates() -> Vec<Ipv6AddressCandidate> {
     std::process::Command::new("ifconfig")
-        .arg("-a")
+        .args(["-L", "-a"])
         .output()
         .ok()
         .filter(|output| output.status.success())
@@ -338,11 +415,19 @@ pub(crate) fn parse_macos_ifconfig_ipv6_candidates(value: &str) -> Vec<Ipv6Addre
                     .eq_ignore_ascii_case(flag)
             })
         };
+        let preferred_lifetime_secs = tokens
+            .windows(2)
+            .find(|pair| pair[0].eq_ignore_ascii_case("pltime"))
+            .and_then(|pair| parse_macos_address_lifetime(pair[1]));
 
         candidates.push(Ipv6AddressCandidate {
             address,
             interface_name: current_interface.clone(),
-            preferred: !has_flag("deprecated") && !has_flag("detached") && !has_flag("duplicated"),
+            preferred: preferred_lifetime_secs != Some(0)
+                && !has_flag("deprecated")
+                && !has_flag("detached")
+                && !has_flag("duplicated"),
+            preferred_lifetime_secs,
             temporary: has_flag("temporary"),
             deprecated: has_flag("deprecated"),
             detached: has_flag("detached"),
@@ -353,6 +438,16 @@ pub(crate) fn parse_macos_ifconfig_ipv6_candidates(value: &str) -> Vec<Ipv6Addre
     }
 
     candidates
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn parse_macos_address_lifetime(value: &str) -> Option<u64> {
+    let value = value.trim_matches(|ch: char| !ch.is_ascii_alphanumeric());
+    if value.eq_ignore_ascii_case("infty") || value.eq_ignore_ascii_case("infinite") {
+        Some(u64::MAX)
+    } else {
+        value.parse::<u64>().ok()
+    }
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -413,6 +508,7 @@ pub(crate) fn parse_windows_net_ip_address_json(value: &str) -> Vec<Ipv6AddressC
                 address,
                 interface_name,
                 preferred: state.is_empty() || state.eq_ignore_ascii_case("Preferred"),
+                preferred_lifetime_secs: None,
                 temporary: suffix_origin.eq_ignore_ascii_case("Random"),
                 deprecated: state.eq_ignore_ascii_case("Deprecated"),
                 detached: state.eq_ignore_ascii_case("Invalid"),
@@ -516,9 +612,9 @@ mod tests {
         let output = r#"
 en0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500
     inet6 fe80::1234%en0 prefixlen 64 secured scopeid 0xb
-    inet6 2408:8200::10 prefixlen 64 autoconf secured
-    inet6 2408:8200::11 prefixlen 64 autoconf temporary
-    inet6 2408:8200::12 prefixlen 64 deprecated autoconf temporary
+    inet6 2408:8200::10 prefixlen 64 autoconf secured pltime 1200 vltime 2400
+    inet6 2408:8200::11 prefixlen 64 autoconf temporary pltime 1800 vltime 2400
+    inet6 2408:8200::12 prefixlen 64 deprecated autoconf temporary pltime 0 vltime 600
 awdl0: flags=8943<UP,BROADCAST,RUNNING,PROMISC,SIMPLEX,MULTICAST> mtu 1484
     inet6 2408:8200::13 prefixlen 64 autoconf secured
 "#;
@@ -535,6 +631,44 @@ awdl0: flags=8943<UP,BROADCAST,RUNNING,PROMISC,SIMPLEX,MULTICAST> mtu 1484
         assert!(candidates
             .iter()
             .any(|item| item.address == "2408:8200::12" && item.deprecated));
+        assert_eq!(candidates[1].preferred_lifetime_secs, Some(1200));
+    }
+
+    #[test]
+    fn stable_ipv6_selection_prefers_the_freshest_prefix_without_reordering_its_addresses() {
+        let output = r#"
+en0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500
+    inet6 2408:8200:100::699 prefixlen 64 dynamic pltime 300 vltime 300
+    inet6 2408:8200:200::10 prefixlen 64 autoconf secured pltime 7200 vltime 14400
+    inet6 2408:8200:200::11 prefixlen 64 autoconf temporary pltime 8000 vltime 14400
+    inet6 2408:8200:200::699 prefixlen 64 dynamic pltime 9000 vltime 9000
+    inet6 2408:8200:300::10 prefixlen 64 dynamic pltime 0 vltime 300
+"#;
+
+        let candidates = parse_macos_ifconfig_ipv6_candidates(output);
+
+        assert_eq!(
+            select_stable_ipv6_candidate(&candidates, "en0")
+                .map(|candidate| candidate.address.as_str()),
+            Some("2408:8200:200::10")
+        );
+        assert_eq!(
+            stable_candidate_values_by_preference(&candidates),
+            vec![
+                (
+                    "en0".to_string(),
+                    "2408:8200:200::10".parse::<Ipv6Addr>().unwrap()
+                ),
+                (
+                    "en0".to_string(),
+                    "2408:8200:200::699".parse::<Ipv6Addr>().unwrap()
+                ),
+                (
+                    "en0".to_string(),
+                    "2408:8200:100::699".parse::<Ipv6Addr>().unwrap()
+                )
+            ]
+        );
     }
 
     #[test]

@@ -577,7 +577,18 @@ fn device_ddns_selector_matches(
     device_id: &str,
     device_mac: &str,
 ) -> bool {
+    if generated_local_machine_config(config)
+        && config.device_id.trim() == "local-machine"
+        && device_id.trim() == "local-machine"
+    {
+        return true;
+    }
+
     device_selectors_match(&config.device_id, &config.device_mac, device_id, device_mac)
+}
+
+fn generated_local_machine_config(config: &DeviceDdnsConfig) -> bool {
+    config.device_name.trim().starts_with("本机设备")
 }
 
 fn device_selectors_match(left_id: &str, left_mac: &str, right_id: &str, right_mac: &str) -> bool {
@@ -773,13 +784,35 @@ fn device_matches_config(device: &LanDevice, config: &DeviceDdnsConfig) -> bool 
     )
 }
 
+fn matching_device_for_config<'a>(
+    config: &DeviceDdnsConfig,
+    devices: &'a [LanDevice],
+) -> Option<&'a LanDevice> {
+    let config_mac = config.device_mac.trim();
+    if !config_mac.is_empty() {
+        if let Some(device) = devices.iter().find(|device| {
+            !device.mac.trim().is_empty() && device.mac.trim().eq_ignore_ascii_case(config_mac)
+        }) {
+            return Some(device);
+        }
+    }
+
+    if generated_local_machine_config(config) && config.device_id.trim() == "local-machine" {
+        return devices
+            .iter()
+            .find(|device| device.id.trim() == "local-machine");
+    }
+
+    devices
+        .iter()
+        .find(|device| device_matches_config(device, config))
+}
+
 pub(crate) fn device_ddns_device_is_online(
     config: &DeviceDdnsConfig,
     devices: &[LanDevice],
 ) -> bool {
-    devices
-        .iter()
-        .any(|device| device.online && device_matches_config(device, config))
+    matching_device_for_config(config, devices).is_some_and(|device| device.online)
 }
 
 fn global_ipv6_by_candidate_index<'a>(
@@ -820,9 +853,7 @@ pub(crate) fn resolve_device_ipv6(
     config: &DeviceDdnsConfig,
     devices: &[LanDevice],
 ) -> Result<String, String> {
-    let device = devices
-        .iter()
-        .find(|device| device_matches_config(device, config))
+    let device = matching_device_for_config(config, devices)
         .ok_or_else(|| "未找到匹配的局域网设备".to_string())?;
 
     global_ipv6_by_candidate_index(config, device)
@@ -840,9 +871,7 @@ pub(crate) fn resolve_device_ipv4(
     config: &DeviceDdnsConfig,
     devices: &[LanDevice],
 ) -> Result<String, String> {
-    let device = devices
-        .iter()
-        .find(|device| device_matches_config(device, config))
+    let device = matching_device_for_config(config, devices)
         .ok_or_else(|| "未找到匹配的局域网设备".to_string())?;
 
     let selected_ip = config.selected_ip.trim();
@@ -2599,6 +2628,37 @@ mod tests {
         assert_eq!(app_config.device_ddns_configs.len(), 1);
         assert_eq!(app_config.device_ddns_configs[0].device_name, "客厅主机");
         assert_eq!(app_config.device_ddns_configs[0].sub_domain, "game");
+    }
+
+    #[test]
+    fn local_machine_selector_survives_a_corrected_interface_mac() {
+        let generated_local_config = DeviceDdnsConfig {
+            device_id: "local-machine".to_string(),
+            device_mac: "36:d6:8e:98:9f:1f".to_string(),
+            device_name: "本机设备（lo0）".to_string(),
+            ..DeviceDdnsConfig::default()
+        };
+
+        assert!(device_ddns_selector_matches(
+            &generated_local_config,
+            "local-machine",
+            "d0:11:e5:a1:cb:dd"
+        ));
+        let corrected_local_device = lan_device(
+            "local-machine",
+            "d0:11:e5:a1:cb:dd",
+            vec!["240e:358:1f9:4900::699"],
+        );
+        assert_eq!(
+            resolve_device_ipv6(&generated_local_config, &[corrected_local_device]),
+            Ok("240e:358:1f9:4900::699".to_string())
+        );
+        assert!(!device_selectors_match(
+            "device-a",
+            "36:d6:8e:98:9f:1f",
+            "device-b",
+            "d0:11:e5:a1:cb:dd"
+        ));
     }
 
     #[test]
