@@ -223,6 +223,13 @@ export default function ForwardRulesPanel() {
     setMutating(true);
     try {
       await invokeCommand("enable_forward_rule", { ruleId: rule.id, enabled });
+      setRulesState((current) =>
+        current.map((item) =>
+          item.id === rule.id
+            ? { ...item, status: enabled ? "正常" : "已停用" }
+            : item,
+        ),
+      );
       notifyDataChanged();
     } catch (error) {
       setRulesState((current) =>
@@ -243,15 +250,19 @@ export default function ForwardRulesPanel() {
         await invokeCommand("enable_forward_rule", { ruleId: id, enabled });
       }
       setRulesState((current) =>
-        current.map((rule) => (selectedIds.has(rule.id) ? { ...rule, enabled } : rule)),
+        current.map((rule) =>
+          selectedIds.has(rule.id)
+            ? { ...rule, enabled, status: enabled ? "正常" : "已停用" }
+            : rule,
+        ),
       );
       setStatusMessage(enabled ? "已启用选中规则" : "已禁用选中规则");
       setMessageType("success");
       notifyDataChanged();
     } catch (error) {
+      await loadRules();
       setStatusMessage(`批量更新转发规则失败：${String(error)}`);
       setMessageType("error");
-      await loadRules();
     } finally {
       setMutating(false);
       window.setTimeout(() => setStatusMessage(""), 4200);
@@ -269,9 +280,9 @@ export default function ForwardRulesPanel() {
       setMessageType("success");
       notifyDataChanged();
     } catch (error) {
+      await loadRules();
       setStatusMessage(`批量删除转发规则失败：${String(error)}`);
       setMessageType("error");
-      await loadRules();
     } finally {
       setMutating(false);
       window.setTimeout(() => setStatusMessage(""), 4200);

@@ -336,6 +336,13 @@ export default function ReverseProxyPanel() {
     setMutating(true);
     try {
       await invokeCommand("enable_reverse_proxy_rule", { ruleId: rule.id, enabled });
+      setRulesState((current) =>
+        current.map((item) =>
+          item.id === rule.id
+            ? { ...item, status: enabled ? "正常" : "已停用" }
+            : item,
+        ),
+      );
       notifyDataChanged();
     } catch (error) {
       setRulesState((current) =>
@@ -356,15 +363,19 @@ export default function ReverseProxyPanel() {
         await invokeCommand("enable_reverse_proxy_rule", { ruleId: id, enabled });
       }
       setRulesState((current) =>
-        current.map((rule) => (selectedIds.has(rule.id) ? { ...rule, enabled } : rule)),
+        current.map((rule) =>
+          selectedIds.has(rule.id)
+            ? { ...rule, enabled, status: enabled ? "正常" : "已停用" }
+            : rule,
+        ),
       );
       setStatusMessage(enabled ? "已启用选中反代" : "已禁用选中反代");
       setMessageType("success");
       notifyDataChanged();
     } catch (error) {
+      await loadRules();
       setStatusMessage(`批量更新反向代理失败：${String(error)}`);
       setMessageType("error");
-      await loadRules();
     } finally {
       setMutating(false);
       window.setTimeout(() => setStatusMessage(""), 4200);
@@ -382,9 +393,9 @@ export default function ReverseProxyPanel() {
       setMessageType("success");
       notifyDataChanged();
     } catch (error) {
+      await loadRules();
       setStatusMessage(`批量删除反向代理失败：${String(error)}`);
       setMessageType("error");
-      await loadRules();
     } finally {
       setMutating(false);
       window.setTimeout(() => setStatusMessage(""), 4200);
