@@ -1,3 +1,13 @@
+export type AppPage =
+  | "overview"
+  | "devices"
+  | "forward"
+  | "proxy"
+  | "webdav"
+  | "logs"
+  | "settings";
+export type ThemeMode = "system" | "light" | "dark";
+
 export interface AppConfig {
   version: string;
   auto_start: boolean;

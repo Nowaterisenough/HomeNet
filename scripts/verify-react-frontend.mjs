@@ -11,14 +11,26 @@ const checks = [
   ["src/App.tsx", 'invokeCommand<RuntimeStatus>("get_runtime_status")'],
   ["src/App.tsx", 'invokeCommand<AppUpdateResult>("check_app_update")'],
   ["src/App.tsx", 'invokeCommand<AppUpdateResult>("install_app_update",'],
-  ["src/components/ForwardRulesPanel.tsx", 'invokeCommand<ForwardRule[]>("list_forward_rules")'],
-  ["src/components/ForwardRulesPanel.tsx", 'invokeCommand<ForwardRule>("save_forward_rule"'],
-  ["src/components/DeviceDdnsPanel.tsx", 'invokeCommand<LanDevice[]>("list_lan_devices")'],
+  [
+    "src/components/ForwardRulesPanel.tsx",
+    'invokeCommand<ForwardRule[]>("list_forward_rules")',
+  ],
+  [
+    "src/components/ForwardRulesPanel.tsx",
+    'invokeCommand<ForwardRule>("save_forward_rule"',
+  ],
+  [
+    "src/components/DeviceDdnsPanel.tsx",
+    'invokeCommand<LanDevice[]>("list_lan_devices")',
+  ],
   [
     "src/components/DeviceDdnsPanel.tsx",
     'invokeCommand<DeviceDdnsConfig[]>("list_device_ddns_configs")',
   ],
-  ["src/components/DeviceDdnsPanel.tsx", 'invokeCommand("save_device_ddns_config"'],
+  [
+    "src/components/DeviceDdnsPanel.tsx",
+    'invokeCommand("save_device_ddns_config"',
+  ],
   ["src/components/DeviceDdnsPanel.tsx", "prioritizeEnabledDeviceRows"],
   ["src/components/DeviceDdnsPanel.tsx", "device-status-icons"],
   [
@@ -33,14 +45,23 @@ const checks = [
     "src/components/ReverseProxyPanel.tsx",
     'invokeCommand<ReverseProxyRule>("issue_reverse_proxy_certificate"',
   ],
-  ["src/components/WebDavPanel.tsx", 'invokeCommand<WebDavConfigView>("get_webdav_config")'],
-  ["src/components/WebDavPanel.tsx", 'invokeCommand<WebDavConfigView>("save_webdav_config"'],
+  [
+    "src/components/WebDavPanel.tsx",
+    'invokeCommand<WebDavConfigView>("get_webdav_config")',
+  ],
+  [
+    "src/components/WebDavPanel.tsx",
+    'invokeCommand<WebDavConfigView>("save_webdav_config"',
+  ],
   ["src/components/WebDavPanel.tsx", "账号管理"],
-  ["src/components/LogPanel.tsx", 'invokeCommand<LogEntry[]>("get_recent_logs")'],
+  [
+    "src/components/LogPanel.tsx",
+    'invokeCommand<LogEntry[]>("get_recent_logs")',
+  ],
   ["src/components/RuntimeSettingsPanel.tsx", "检查更新"],
   ["src/components/UpdateConfirmDialog.tsx", 'role="dialog"'],
   ["src/components/UpdateConfirmDialog.tsx", "下载并安装"],
-  ["src/hooks/useDraggableModal.ts", "startModalDrag"],
+  ["src/components/EditorDrawer.tsx", 'aria-modal="true"'],
   ["src/lib/tauri.ts", "currentTauriWindow"],
   ["src/styles/global.css", "--titlebar-height"],
   ["src/styles/panels.css", ".modal-backdrop"],
@@ -55,14 +76,17 @@ for (const [file, needle] of checks) {
   }
 
   const content = readFileSync(filePath, "utf8");
-  if (!content.includes(needle)) {
+  // Command wiring checks should survive line wrapping by the formatter.
+  if (!content.replace(/\s+/g, "").replace(/,\)/g, ")").includes(needle.replace(/\s+/g, ""))) {
     missing.push(`${file}: ${needle}`);
   }
 }
 
 const appContent = readFileSync(join(root, "src/App.tsx"), "utf8");
 if (appContent.includes("window.confirm")) {
-  missing.push("src/App.tsx: browser confirm must not gate app update installation");
+  missing.push(
+    "src/App.tsx: browser confirm must not gate app update installation",
+  );
 }
 
 if (missing.length > 0) {

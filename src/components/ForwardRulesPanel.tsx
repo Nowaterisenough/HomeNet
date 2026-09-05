@@ -1,10 +1,21 @@
 import { useEffect, useMemo, useState } from "react";
-import { CirclePlus, Pause, Pencil, Play, Trash2 } from "lucide-react";
-import { useDraggableModal } from "../hooks/useDraggableModal";
+import {
+  CirclePlus,
+  Info,
+  Pause,
+  Pencil,
+  Play,
+  RefreshCw,
+  Trash2,
+} from "lucide-react";
+import EditorDrawer from "./EditorDrawer";
+import PageHeading from "./PageHeading";
+import { formatEndpoint, statusTone } from "../utils/presentation";
 import { invokeCommand } from "../lib/tauri";
 import type { ForwardRule } from "../types";
 
-interface ForwardRuleForm extends Omit<ForwardRule, "listen_port" | "target_port"> {
+interface ForwardRuleForm
+  extends Omit<ForwardRule, "listen_port" | "target_port"> {
   listen_port: string;
   target_port: string;
 }
@@ -60,14 +71,17 @@ function parsePort(value: string): number | null {
 export default function ForwardRulesPanel() {
   const [rules, setRulesState] = useState<ForwardRule[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [editorForm, setEditorForm] = useState<ForwardRuleForm>(createEmptyRule);
+  const [editorForm, setEditorForm] =
+    useState<ForwardRuleForm>(createEmptyRule);
   const [statusMessage, setStatusMessage] = useState("");
-  const [messageType, setMessageType] = useState<"info" | "success" | "error">("info");
+  const [messageType, setMessageType] = useState<"info" | "success" | "error">(
+    "info",
+  );
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [mutating, setMutating] = useState(false);
   const [editorOpen, setEditorOpen] = useState(false);
-  const { modalStyle, resetModalPosition, startModalDrag } = useDraggableModal();
+  const [filter, setFilter] = useState<"all" | "enabled" | "disabled">("all");
 
   const selectedCount = selectedIds.size;
   const selectedRule = useMemo(
@@ -76,8 +90,7 @@ export default function ForwardRulesPanel() {
   );
   const editorTitle = useMemo(() => {
     if (!editorForm.id) return "新增转发规则";
-    const index = rules.findIndex((rule) => rule.id === editorForm.id);
-    return `编辑转发规则（第 ${index >= 0 ? index + 1 : 1} 行）`;
+    return "编辑转发规则";
   }, [editorForm.id, rules]);
 
   function setRules(nextRules: ForwardRule[]) {
@@ -85,7 +98,7 @@ export default function ForwardRulesPanel() {
     const previousSelected = Array.from(selectedIds).find((id) =>
       normalized.some((rule) => rule.id === id),
     );
-    const selected = normalized.find((rule) => rule.id === previousSelected) ?? normalized[0];
+    const selected = normalized.find((rule) => rule.id === previousSelected);
 
     setRulesState(normalized);
     setSelectedIds(selected ? new Set([selected.id]) : new Set());
@@ -160,7 +173,9 @@ export default function ForwardRulesPanel() {
 
     setSaving(true);
     try {
-      const saved = await invokeCommand<ForwardRule>("save_forward_rule", { rule: payload });
+      const saved = await invokeCommand<ForwardRule>("save_forward_rule", {
+        rule: payload,
+      });
       applySavedRule(saved);
       setStatusMessage("转发规则已保存");
       setMessageType("success");
@@ -178,7 +193,6 @@ export default function ForwardRulesPanel() {
   function startEdit(rule?: ForwardRule) {
     setEditorForm(rule ? toForm(rule) : createEmptyRule());
     setSelectedIds(rule?.id ? new Set([rule.id]) : new Set());
-    resetModalPosition();
     setEditorOpen(true);
   }
 
@@ -218,7 +232,9 @@ export default function ForwardRulesPanel() {
   async function setRuleEnabled(rule: ForwardRule, enabled: boolean) {
     const previous = rule.enabled;
     setRulesState((current) =>
-      current.map((item) => (item.id === rule.id ? { ...item, enabled } : item)),
+      current.map((item) =>
+        item.id === rule.id ? { ...item, enabled } : item,
+      ),
     );
     setMutating(true);
     try {
@@ -233,7 +249,9 @@ export default function ForwardRulesPanel() {
       notifyDataChanged();
     } catch (error) {
       setRulesState((current) =>
-        current.map((item) => (item.id === rule.id ? { ...item, enabled: previous } : item)),
+        current.map((item) =>
+          item.id === rule.id ? { ...item, enabled: previous } : item,
+        ),
       );
       setStatusMessage(`切换转发规则失败：${String(error)}`);
       setMessageType("error");
@@ -289,7 +307,10 @@ export default function ForwardRulesPanel() {
     }
   }
 
-  function updateEditor<K extends keyof ForwardRuleForm>(key: K, value: ForwardRuleForm[K]) {
+  function updateEditor<K extends keyof ForwardRuleForm>(
+    key: K,
+    value: ForwardRuleForm[K],
+  ) {
     setEditorForm((current) => ({ ...current, [key]: value }));
   }
 
@@ -297,211 +318,353 @@ export default function ForwardRulesPanel() {
     loadRules();
   }, []);
 
+  const visibleRules = rules.filter(
+    (rule) =>
+      filter === "all" || (filter === "enabled" ? rule.enabled : !rule.enabled),
+  );
   return (
-    <section className="panel rules-panel">
-      <header className="panel-header">
-        <h2>IPv6/IPv4 转发规则</h2>
-        <div className="toolbar">
-          <button className="btn btn-primary" type="button" onClick={() => startEdit()}>
-            <CirclePlus size={13} strokeWidth={2.2} />
-            新增规则
-          </button>
+    <>
+      <PageHeading
+        eyebrow="SERVICES / PORT FORWARDING"
+        title="端口转发"
+        description="让外部连接，准确抵达你的本地服务。"
+        actions={
+          <>
+            <button
+              className="btn btn-secondary"
+              disabled={loading || mutating}
+              onClick={loadRules}
+            >
+              <RefreshCw size={14} className={loading ? "spinning" : ""} />
+              刷新
+            </button>
+            <button
+              className="btn btn-primary"
+              disabled={mutating}
+              onClick={() => startEdit()}
+            >
+              <CirclePlus size={15} />
+              新增规则
+            </button>
+          </>
+        }
+      />
+      <div className="filter-tabs" aria-label="转发规则状态筛选">
+        {(
+          [
+            ["all", "全部规则"],
+            ["enabled", "已启用"],
+            ["disabled", "已停用"],
+          ] as const
+        ).map(([value, label]) => (
           <button
-            className="btn btn-secondary"
             type="button"
-            disabled={selectedCount === 0 || loading || mutating}
-            onClick={() => batchEnable(true)}
+            key={value}
+            aria-pressed={filter === value}
+            onClick={() => setFilter(value)}
           >
-            <Play size={13} strokeWidth={2.2} />
-            启用
+            {label}
+            <small>
+              {value === "all"
+                ? rules.length
+                : rules.filter((rule) =>
+                    value === "enabled" ? rule.enabled : !rule.enabled,
+                  ).length}
+            </small>
           </button>
-          <button
-            className="btn btn-secondary"
-            type="button"
-            disabled={selectedCount === 0 || loading || mutating}
-            onClick={() => batchEnable(false)}
-          >
-            <Pause size={13} strokeWidth={2.2} />
-            禁用
-          </button>
-          <button
-            className="btn btn-secondary"
-            type="button"
-            disabled={selectedCount === 0 || loading || mutating}
-            onClick={batchDelete}
-          >
-            <Trash2 size={13} strokeWidth={2.2} />
-            删除
-          </button>
-        </div>
-      </header>
-
-      {statusMessage ? <p className={`status-message msg-${messageType}`}>{statusMessage}</p> : null}
-
-      <div className="table-wrap">
-        <table className="rules-table">
-          <thead>
-            <tr>
-              <th>启用</th>
-              <th>协议</th>
-              <th>监听地址</th>
-              <th>监听端口</th>
-              <th>目标设备 IP</th>
-              <th>目标端口</th>
-              <th>模式</th>
-              <th>备注</th>
-              <th>状态</th>
-              <th>操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rules.length === 0 ? (
+        ))}
+      </div>
+      <section className="panel rules-panel">
+        <header className="panel-header">
+          <h2>
+            {selectedCount ? `已选择 ${selectedCount} 条规则` : "转发规则"}
+          </h2>
+          <div className="toolbar">
+            <button
+              className="btn btn-secondary"
+              disabled={!selectedCount || loading || mutating}
+              onClick={() => batchEnable(true)}
+            >
+              <Play size={13} />
+              启用
+            </button>
+            <button
+              className="btn btn-secondary"
+              disabled={!selectedCount || loading || mutating}
+              onClick={() => batchEnable(false)}
+            >
+              <Pause size={13} />
+              停用
+            </button>
+            <button
+              className="btn btn-secondary"
+              disabled={!selectedCount || loading || mutating}
+              onClick={batchDelete}
+            >
+              <Trash2 size={13} />
+              删除
+            </button>
+          </div>
+        </header>
+        {statusMessage && !editorOpen ? (
+          <p className={`status-message msg-${messageType}`} role="status">
+            {statusMessage}
+          </p>
+        ) : null}
+        <div className="table-wrap">
+          <table className="rules-table">
+            <thead>
               <tr>
-                <td className="empty-cell" colSpan={10}>
-                  {loading ? "正在读取转发规则" : "暂无转发规则"}
-                </td>
+                <th className="selection-cell">选择</th>
+                <th>规则 / 服务</th>
+                <th>连接路径</th>
+                <th>协议</th>
+                <th>状态</th>
+                <th>启用</th>
+                <th>操作</th>
               </tr>
-            ) : (
-              rules.map((rule) => (
-                <tr key={rule.id} className={selectedIds.has(rule.id) ? "selected" : undefined}>
-                  <td>
-                    <label className="toggle-switch">
-                      <input
-                        type="checkbox"
-                        checked={rule.enabled}
-                        disabled={mutating}
-                        onChange={(event) => setRuleEnabled(rule, event.target.checked)}
-                      />
-                      <span className="toggle-slider" />
-                    </label>
+            </thead>
+            <tbody>
+              {!visibleRules.length ? (
+                <tr>
+                  <td className="empty-cell" colSpan={7}>
+                    {loading ? "正在读取转发规则" : "暂无匹配的转发规则"}
                   </td>
-                  <td>{rule.protocol}</td>
-                  <td>{rule.listen_addr}</td>
-                  <td>{rule.listen_port}</td>
-                  <td>{rule.target_ip}</td>
-                  <td>{rule.target_port}</td>
-                  <td>{rule.mode}</td>
-                  <td>{rule.remark || "-"}</td>
-                  <td>{rule.status || "-"}</td>
-                  <td>
-                    <div className="row-actions">
+                </tr>
+              ) : (
+                visibleRules.map((rule) => (
+                  <tr
+                    key={rule.id}
+                    className={
+                      selectedIds.has(rule.id) ? "selected" : undefined
+                    }
+                  >
+                    <td>
                       <input
                         className="row-check"
                         type="checkbox"
+                        aria-label={`选择 ${rule.remark || rule.listen_port}`}
                         checked={selectedIds.has(rule.id)}
-                        onChange={(event) => toggleSelectRule(rule, event.target.checked)}
+                        disabled={mutating}
+                        onChange={(event) =>
+                          toggleSelectRule(rule, event.target.checked)
+                        }
                       />
-                      <button className="icon-action" type="button" title="编辑" onClick={() => startEdit(rule)}>
-                        <Pencil size={13} strokeWidth={2.1} />
-                      </button>
-                      <button className="icon-action" type="button" title="删除" onClick={() => deleteRule(rule.id)}>
-                        <Trash2 size={13} strokeWidth={2.1} />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
-
+                    </td>
+                    <td>
+                      <strong>
+                        {rule.remark || `端口 ${rule.listen_port}`}
+                      </strong>
+                      <small>
+                        {rule.mode === "relay" ? "普通转发" : rule.mode}
+                      </small>
+                    </td>
+                    <td className="route-cell">
+                      <span className="mono">
+                        {formatEndpoint(rule.listen_addr, rule.listen_port)}
+                      </span>
+                      <small className="mono">
+                        <span className="route-arrow">↳</span>
+                        {formatEndpoint(rule.target_ip, rule.target_port)}
+                      </small>
+                    </td>
+                    <td>
+                      <span className="badge badge-neutral">
+                        {rule.protocol}
+                      </span>
+                    </td>
+                    <td>
+                      <span
+                        className={`state-label tone-${rule.enabled ? statusTone(rule.status) : "neutral"}`}
+                      >
+                        <span className="status-dot" />
+                        {rule.enabled ? rule.status || "已启用" : "已停用"}
+                      </span>
+                    </td>
+                    <td>
+                      <label className="toggle-switch">
+                        <input
+                          type="checkbox"
+                          aria-label={`启用 ${rule.remark || rule.listen_port}`}
+                          checked={rule.enabled}
+                          disabled={mutating}
+                          onChange={(event) =>
+                            setRuleEnabled(rule, event.target.checked)
+                          }
+                        />
+                        <span className="toggle-slider" />
+                      </label>
+                    </td>
+                    <td>
+                      <div className="row-actions">
+                        <button
+                          className="icon-action"
+                          aria-label={`编辑 ${rule.remark || rule.listen_port}`}
+                          disabled={mutating}
+                          onClick={() => startEdit(rule)}
+                        >
+                          <Pencil size={15} />
+                        </button>
+                        <button
+                          className="icon-action danger-text"
+                          aria-label={`删除 ${rule.remark || rule.listen_port}`}
+                          disabled={mutating}
+                          onClick={() => deleteRule(rule.id)}
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+        <footer className="list-footer">
+          <span>共 {visibleRules.length} 条规则</span>
+          <span>IPv4 / IPv6 双栈支持</span>
+        </footer>
+      </section>
+      <p className="form-note">
+        <Info size={16} />
+        公网访问还需确保路由器和防火墙允许对应端口。
+      </p>
       {editorOpen ? (
-        <div className="modal-backdrop" onClick={(event) => event.currentTarget === event.target && cancelEdit()}>
-          <section className="modal-dialog forward-modal" style={modalStyle}>
-            <header className="modal-header draggable-header" onPointerDown={startModalDrag}>
-              <h3>{editorTitle}</h3>
+        <EditorDrawer
+          title={editorTitle}
+          onClose={cancelEdit}
+          busy={saving}
+          footer={
+            <>
               <button
                 className="btn btn-secondary"
-                type="button"
-                onPointerDown={(event) => event.stopPropagation()}
+                disabled={saving}
                 onClick={cancelEdit}
               >
-                关闭
+                取消
               </button>
-            </header>
-            <div className="editor-section">
-              <div className="forward-editor-grid">
-                <label className="field-label">
-                  <span>协议</span>
-                  <div className="field-control">
-                    <select value={editorForm.protocol} onChange={(event) => updateEditor("protocol", event.target.value)}>
-                      {IMPLEMENTED_PROTOCOLS.map((protocol) => (
-                        <option key={protocol} value={protocol}>
-                          {protocol}
-                        </option>
-                      ))}
-                    </select>
-                    <small className="field-hint">选择需要转发的传输协议。</small>
-                  </div>
-                </label>
-                <label className="field-label">
-                  <span>目标设备 IP</span>
-                  <div className="field-control">
-                    <input value={editorForm.target_ip} onChange={(event) => updateEditor("target_ip", event.target.value)} />
-                    <small className="field-hint">填写内网目标设备的 IPv4 或 IPv6 地址。</small>
-                  </div>
-                </label>
-                <label className="field-label">
-                  <span>监听地址</span>
-                  <div className="field-control">
-                    <input value={editorForm.listen_addr} onChange={(event) => updateEditor("listen_addr", event.target.value)} />
-                    <small className="field-hint">默认 ::，表示监听本机全部地址。</small>
-                  </div>
-                </label>
-                <label className="field-label">
-                  <span>目标端口</span>
-                  <div className="field-control">
-                    <input
-                      value={editorForm.target_port}
-                      type="text"
-                      inputMode="numeric"
-                      onChange={(event) => updateEditor("target_port", event.target.value.trim())}
-                    />
-                    <small className="field-hint">目标设备上实际服务端口。</small>
-                  </div>
-                </label>
-                <label className="field-label">
-                  <span>监听端口</span>
-                  <div className="field-control">
-                    <input
-                      value={editorForm.listen_port}
-                      type="text"
-                      inputMode="numeric"
-                      onChange={(event) => updateEditor("listen_port", event.target.value.trim())}
-                    />
-                    <small className="field-hint">外部访问入口端口，范围 1-65535。</small>
-                  </div>
-                </label>
-                <label className="field-label">
-                  <span>转发模式</span>
-                  <div className="field-control">
-                    <select value={editorForm.mode} onChange={(event) => updateEditor("mode", event.target.value)}>
-                      <option value="relay">普通 TCP/UDP 转发</option>
-                    </select>
-                    <small className="field-hint">保持普通转发即可，适合常规服务映射。</small>
-                  </div>
-                </label>
-                <label className="field-label forward-remark">
-                  <span>备注</span>
-                  <div className="field-control">
-                    <input value={editorForm.remark} onChange={(event) => updateEditor("remark", event.target.value)} />
-                    <small className="field-hint">可填写用途、设备名或服务名，便于后续识别。</small>
-                  </div>
-                </label>
-              </div>
-              <div className="editor-actions editor-actions-right">
-                <button className="btn btn-primary" type="button" disabled={saving} onClick={saveRule}>
-                  保存规则
-                </button>
-                <button className="btn btn-secondary" type="button" disabled={saving} onClick={cancelEdit}>
-                  取消
-                </button>
-              </div>
+              <button
+                className="btn btn-primary"
+                disabled={saving}
+                onClick={saveRule}
+              >
+                {saving ? "正在保存" : "保存规则"}
+              </button>
+            </>
+          }
+        >
+          {statusMessage ? (
+            <p className={`status-message msg-${messageType}`} role="status">
+              {statusMessage}
+            </p>
+          ) : null}
+          <div className="forward-editor-grid">
+            <label className="field-label wide-field">
+              <span>规则备注</span>
+              <input
+                value={editorForm.remark}
+                placeholder="例如 NAS 管理"
+                onChange={(event) => updateEditor("remark", event.target.value)}
+              />
+            </label>
+            <h3 className="form-section-title">外部入口</h3>
+            <label className="field-label">
+              <span>传输协议</span>
+              <select
+                value={editorForm.protocol}
+                onChange={(event) =>
+                  updateEditor("protocol", event.target.value)
+                }
+              >
+                {IMPLEMENTED_PROTOCOLS.map((protocol) => (
+                  <option key={protocol}>{protocol}</option>
+                ))}
+              </select>
+            </label>
+            <label className="field-label">
+              <span>转发模式</span>
+              <select
+                value={editorForm.mode}
+                onChange={(event) => updateEditor("mode", event.target.value)}
+              >
+                <option value="relay">普通转发</option>
+              </select>
+            </label>
+            <label className="field-label">
+              <span>监听地址</span>
+              <input
+                value={editorForm.listen_addr}
+                onChange={(event) =>
+                  updateEditor("listen_addr", event.target.value)
+                }
+              />
+              <small className="field-hint">默认 ::，监听本机全部地址</small>
+            </label>
+            <label className="field-label">
+              <span>监听端口</span>
+              <input
+                value={editorForm.listen_port}
+                inputMode="numeric"
+                onChange={(event) =>
+                  updateEditor("listen_port", event.target.value.trim())
+                }
+              />
+              <small className="field-hint">端口范围 1-65535</small>
+            </label>
+            <h3 className="form-section-title">目标服务</h3>
+            <label className="field-label">
+              <span>目标设备 IP</span>
+              <input
+                value={editorForm.target_ip}
+                onChange={(event) =>
+                  updateEditor("target_ip", event.target.value)
+                }
+              />
+            </label>
+            <label className="field-label">
+              <span>目标端口</span>
+              <input
+                value={editorForm.target_port}
+                inputMode="numeric"
+                onChange={(event) =>
+                  updateEditor("target_port", event.target.value.trim())
+                }
+              />
+            </label>
+            <div className="binding-preview wide-field">
+              <span className="text-muted">连接路径预览</span>
+              <p className="mono">
+                {formatEndpoint(
+                  editorForm.listen_addr || "::",
+                  editorForm.listen_port || "--",
+                )}
+              </p>
+              <p className="mono">
+                <span className="route-arrow">↳</span>
+                {formatEndpoint(
+                  editorForm.target_ip || "目标 IP",
+                  editorForm.target_port || "--",
+                )}
+              </p>
             </div>
-          </section>
-        </div>
+            <label className="setting-toggle wide-field">
+              <span>启用此规则</span>
+              <input
+                type="checkbox"
+                checked={editorForm.enabled}
+                onChange={(event) =>
+                  updateEditor("enabled", event.target.checked)
+                }
+              />
+            </label>
+          </div>
+          <p className="form-note">
+            <Info size={15} />
+            保存后，已启用的规则会立即开始监听。
+          </p>
+        </EditorDrawer>
       ) : null}
-    </section>
+    </>
   );
 }

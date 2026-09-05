@@ -1,4 +1,6 @@
 import { RefreshCw } from "lucide-react";
+import type { ThemeMode } from "../types";
+import { formatUptime } from "../utils/presentation";
 
 interface RuntimeSettingsPanelProps {
   uptime: number;
@@ -13,18 +15,8 @@ interface RuntimeSettingsPanelProps {
   onToggleAutostart: (enabled: boolean) => void;
   onToggleAutoUpdateCheck: (enabled: boolean) => void;
   onUpdateAction: () => void;
-}
-
-function formattedUptime(uptime: number): string {
-  const totalSeconds = Math.max(0, Math.floor(Number(uptime) || 0));
-  const minutes = Math.floor(totalSeconds / 60);
-  const hours = Math.floor(minutes / 60);
-  const days = Math.floor(hours / 24);
-
-  if (totalSeconds < 60) return `${totalSeconds} 秒`;
-  if (minutes < 60) return `${minutes} 分钟`;
-  if (hours < 24) return `${hours} 小时 ${minutes % 60} 分钟`;
-  return `${days} 天 ${hours % 24} 小时`;
+  theme: ThemeMode;
+  onThemeChange: (theme: ThemeMode) => void;
 }
 
 export default function RuntimeSettingsPanel({
@@ -40,6 +32,8 @@ export default function RuntimeSettingsPanel({
   onToggleAutostart,
   onToggleAutoUpdateCheck,
   onUpdateAction,
+  theme,
+  onThemeChange,
 }: RuntimeSettingsPanelProps) {
   const updateBusy = updateChecking || updateInstalling;
   const updateButtonLabel = updateInstalling
@@ -51,13 +45,31 @@ export default function RuntimeSettingsPanel({
         : "检查更新";
 
   return (
-    <aside className="runtime-panel">
-      <h2>运行时与设置</h2>
+    <section className="panel runtime-panel">
+      <header className="panel-header">
+        <h2>外观与运行偏好</h2>
+      </header>
+
+      <label className="setting-toggle">
+        <span>
+          <strong>主题外观</strong>
+          <small>科技蓝配色，支持深浅模式</small>
+        </span>
+        <select
+          aria-label="主题外观"
+          value={theme}
+          onChange={(event) => onThemeChange(event.target.value as ThemeMode)}
+        >
+          <option value="system">跟随系统</option>
+          <option value="dark">深空蓝</option>
+          <option value="light">冷白</option>
+        </select>
+      </label>
 
       <dl className="runtime-list">
         <div>
           <dt>运行时长</dt>
-          <dd>{formattedUptime(uptime)}</dd>
+          <dd>{formatUptime(uptime)}</dd>
         </div>
         <div>
           <dt>版本信息</dt>
@@ -66,8 +78,17 @@ export default function RuntimeSettingsPanel({
         <div className="update-row">
           <dt>检查更新</dt>
           <dd>
-            <button className="check-button" type="button" disabled={updateBusy} onClick={onUpdateAction}>
-              <RefreshCw className={updateBusy ? "spinning" : undefined} size={13} strokeWidth={2.2} />
+            <button
+              className="check-button"
+              type="button"
+              disabled={updateBusy}
+              onClick={onUpdateAction}
+            >
+              <RefreshCw
+                className={updateBusy ? "spinning" : undefined}
+                size={13}
+                strokeWidth={2.2}
+              />
               {updateButtonLabel}
             </button>
           </dd>
@@ -75,7 +96,10 @@ export default function RuntimeSettingsPanel({
       </dl>
 
       <label className="setting-toggle">
-        <span>开机自动启动</span>
+        <span>
+          <strong>开机自动启动</strong>
+          <small>登录系统后自动启动 HomeNet</small>
+        </span>
         <input
           type="checkbox"
           checked={autoStartEnabled}
@@ -84,11 +108,10 @@ export default function RuntimeSettingsPanel({
         />
       </label>
       <label className="setting-toggle">
-        <span>最小化到托盘</span>
-        <input type="checkbox" checked readOnly />
-      </label>
-      <label className="setting-toggle">
-        <span>自动检查更新</span>
+        <span>
+          <strong>自动检查更新</strong>
+          <small>每 6 小时检查新版本，安装前由你确认</small>
+        </span>
         <input
           type="checkbox"
           checked={autoUpdateCheckEnabled}
@@ -96,6 +119,6 @@ export default function RuntimeSettingsPanel({
           onChange={(event) => onToggleAutoUpdateCheck(event.target.checked)}
         />
       </label>
-    </aside>
+    </section>
   );
 }

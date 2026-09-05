@@ -2,19 +2,16 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Activity,
   Copy,
-  Eye,
-  Folder,
   FolderOpen,
   KeyRound,
   Pencil,
-  Server,
   Settings2,
   ShieldCheck,
   Trash2,
   UserPlus,
   Users,
 } from "lucide-react";
-import { useDraggableModal } from "../hooks/useDraggableModal";
+import EditorDrawer from "./EditorDrawer";
 import { invokeCommand } from "../lib/tauri";
 import type {
   SaveWebDavConfigRequest,
@@ -106,7 +103,11 @@ function accountLastUsed(account: EditableAccount): string {
   return `最后使用 ${formatSyncTime(account.lastUsed)}`;
 }
 
-export default function WebDavPanel() {
+export default function WebDavPanel({
+  onOpenProxy,
+}: {
+  onOpenProxy: () => void;
+}) {
   const [settings, setSettings] = useState<WebDavSettings>(initialSettings);
   const [draft, setDraft] = useState<WebDavSettings>(initialSettings);
   const [status, setStatus] = useState<WebDavRuntimeStatus>(emptyStatus);
@@ -117,14 +118,18 @@ export default function WebDavPanel() {
   const [selectedAccountId, setSelectedAccountId] = useState("");
   const [accountForm, setAccountForm] = useState<AccountForm>(emptyAccount);
   const [message, setMessage] = useState("");
-  const [messageType, setMessageType] = useState<"success" | "error">("success");
+  const [messageType, setMessageType] = useState<"success" | "error">(
+    "success",
+  );
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [toggling, setToggling] = useState(false);
-  const { modalStyle, resetModalPosition, startModalDrag } = useDraggableModal();
 
-  const activeAccounts = useMemo(() => accounts.filter((account) => account.enabled), [accounts]);
+  const activeAccounts = useMemo(
+    () => accounts.filter((account) => account.enabled),
+    [accounts],
+  );
   const activeDraftAccounts = useMemo(
     () => draftAccounts.filter((account) => account.enabled),
     [draftAccounts],
@@ -133,7 +138,11 @@ export default function WebDavPanel() {
     status.endpoint ||
     `http://${settings.listenAddress.includes(":") ? `[${settings.listenAddress}]` : settings.listenAddress}:${settings.listenPort}/`;
   const serviceStatus =
-    status.state === "running" ? "运行中" : status.state === "error" ? "异常" : "已停用";
+    status.state === "running"
+      ? "运行中"
+      : status.state === "error"
+        ? "异常"
+        : "已停用";
 
   function applyConfig(config: WebDavConfigView) {
     const nextSettings = settingsFromConfig(config);
@@ -171,7 +180,6 @@ export default function WebDavPanel() {
     setSelectedAccountId(first?.id || "");
     setAccountForm(first ? { ...first, password: "" } : emptyAccount());
     setActiveTab(tab);
-    resetModalPosition();
     setSettingsOpen(true);
   }
 
@@ -202,10 +210,17 @@ export default function WebDavPanel() {
 
     setSaving(true);
     try {
-      const saved = await invokeCommand<WebDavConfigView>("save_webdav_config", { request: payload });
+      const saved = await invokeCommand<WebDavConfigView>(
+        "save_webdav_config",
+        { request: payload },
+      );
       applyConfig(saved);
       setSettingsOpen(false);
-      showMessage(saved.status.state === "running" ? "WebDAV 服务配置已保存并生效" : saved.status.message);
+      showMessage(
+        saved.status.state === "running"
+          ? "WebDAV 服务配置已保存并生效"
+          : saved.status.message,
+      );
       notifyDataChanged();
     } catch (error) {
       showMessage(`保存 WebDAV 配置失败：${String(error)}`, "error");
@@ -217,7 +232,10 @@ export default function WebDavPanel() {
   async function toggleService(enabled: boolean) {
     setToggling(true);
     try {
-      const saved = await invokeCommand<WebDavConfigView>("set_webdav_enabled", { enabled });
+      const saved = await invokeCommand<WebDavConfigView>(
+        "set_webdav_enabled",
+        { enabled },
+      );
       applyConfig(saved);
       showMessage(enabled ? "WebDAV 服务已启用" : "WebDAV 服务已停用");
       notifyDataChanged();
@@ -230,7 +248,9 @@ export default function WebDavPanel() {
 
   async function chooseDirectory() {
     try {
-      const selected = await invokeCommand<string | null>("select_webdav_directory");
+      const selected = await invokeCommand<string | null>(
+        "select_webdav_directory",
+      );
       if (selected) setDraft((current) => ({ ...current, rootPath: selected }));
     } catch (error) {
       showMessage(`选择共享目录失败：${String(error)}`, "error");
@@ -281,7 +301,11 @@ export default function WebDavPanel() {
       showMessage("请输入账号名称", "error");
       return;
     }
-    if (!accountForm.passwordConfigured && accountForm.enabled && accountForm.password.length < 8) {
+    if (
+      !accountForm.passwordConfigured &&
+      accountForm.enabled &&
+      accountForm.password.length < 8
+    ) {
       showMessage("新账号密码至少需要 8 位", "error");
       return;
     }
@@ -292,7 +316,8 @@ export default function WebDavPanel() {
     if (
       draftAccounts.some(
         (account) =>
-          account.id !== accountForm.id && account.username.toLowerCase() === username.toLowerCase(),
+          account.id !== accountForm.id &&
+          account.username.toLowerCase() === username.toLowerCase(),
       )
     ) {
       showMessage("账号名称已存在", "error");
@@ -302,17 +327,24 @@ export default function WebDavPanel() {
     const savedAccount: EditableAccount = {
       ...accountForm,
       username,
-      passwordConfigured: accountForm.passwordConfigured || Boolean(accountForm.password),
+      passwordConfigured:
+        accountForm.passwordConfigured || Boolean(accountForm.password),
     };
     setDraftAccounts((current) => {
       const exists = current.some((account) => account.id === savedAccount.id);
       return exists
-        ? current.map((account) => (account.id === savedAccount.id ? savedAccount : account))
+        ? current.map((account) =>
+            account.id === savedAccount.id ? savedAccount : account,
+          )
         : [...current, savedAccount];
     });
     setSelectedAccountId(savedAccount.id);
     setAccountForm(savedAccount);
-    showMessage(accountForm.id.startsWith("new-") ? "账号已加入待保存列表" : "账号修改已加入待保存列表");
+    showMessage(
+      accountForm.id.startsWith("new-")
+        ? "账号已加入待保存列表"
+        : "账号修改已加入待保存列表",
+    );
   }
 
   function deleteAccount(account: EditableAccount) {
@@ -333,136 +365,464 @@ export default function WebDavPanel() {
 
   return (
     <>
-      <section className="panel webdav-panel">
-        <header className="panel-header panel-header-compact">
-          <h2>WebDAV 服务</h2>
-          <div className="webdav-header-controls">
-            <span className={`webdav-running-state is-${status.state}`} title={status.message}>
-              <i />
-              {loading ? "读取中" : serviceStatus}
-            </span>
-            <label className="toggle-switch" title={settings.enabled ? "停用服务" : "启用服务"}>
-              <input type="checkbox" checked={settings.enabled} disabled={loading || toggling} onChange={(event) => void toggleService(event.target.checked)} />
-              <span className="toggle-slider" />
-            </label>
+      {message && !settingsOpen ? (
+        <p className={`status-message msg-${messageType}`} role="status">
+          {message}
+        </p>
+      ) : null}
+      <div className="webdav-page-grid">
+        <section className="panel webdav-panel">
+          <header className="panel-header">
+            <h2>WebDAV 服务</h2>
+            <div className="toolbar">
+              <span
+                className={`state-label ${status.state === "running" ? "tone-success" : status.state === "error" ? "tone-error" : "tone-neutral"}`}
+                title={status.message}
+              >
+                <span className="status-dot" />
+                {serviceStatus}
+              </span>
+              <label className="toggle-switch">
+                <input
+                  type="checkbox"
+                  aria-label="启用 WebDAV 服务"
+                  checked={settings.enabled}
+                  disabled={loading || toggling || saving}
+                  onChange={(event) => toggleService(event.target.checked)}
+                />
+                <span className="toggle-slider" />
+              </label>
+            </div>
+          </header>
+          <div className="webdav-service-summary">
+            <div className="binding-preview">
+              <span className="text-muted">访问地址</span>
+              <p className="mono">{endpoint}</p>
+            </div>
+            <dl className="detail-list">
+              <div>
+                <dt>共享目录</dt>
+                <dd className="mono">
+                  {settings.rootPath || "尚未选择共享目录"}
+                </dd>
+              </div>
+              <div>
+                <dt>监听地址</dt>
+                <dd className="mono">{settings.listenAddress}</dd>
+              </div>
+              <div>
+                <dt>监听端口</dt>
+                <dd className="mono">{settings.listenPort}</dd>
+              </div>
+              <div>
+                <dt>服务模式</dt>
+                <dd>{settings.globalReadOnly ? "全局只读" : "按账号权限"}</dd>
+              </div>
+            </dl>
+            <div className="toolbar">
+              <button className="btn btn-secondary" onClick={copyEndpoint}>
+                <Copy size={14} />
+                复制地址
+              </button>
+              <button
+                className="btn btn-secondary"
+                disabled={status.state !== "running" || testing}
+                onClick={testConnection}
+              >
+                <Activity size={14} />
+                {testing ? "正在测试" : "测试连接"}
+              </button>
+              <button
+                className="btn btn-primary"
+                disabled={loading || toggling}
+                onClick={() => openSettings()}
+              >
+                <Settings2 size={14} />
+                服务设置
+              </button>
+            </div>
           </div>
-        </header>
-
-        {message && !settingsOpen ? <p className={`webdav-inline-message is-${messageType}`}>{message}</p> : null}
-
-        <div className="webdav-summary">
-          <span className={`webdav-server-icon ${status.state === "running" ? "is-active" : ""}`}>
-            <Server size={16} strokeWidth={2.1} />
-          </span>
-          <div className="webdav-summary-text">
-            <strong title={endpoint}>{endpoint}</strong>
-            <span title={settings.rootPath || "尚未选择共享目录"}>
-              <Folder size={11} strokeWidth={2.1} />
-              {settings.rootPath || "尚未选择共享目录"}
-            </span>
-          </div>
-          <div className="webdav-summary-meta">
-            <span title="已启用账号"><Users size={12} strokeWidth={2.1} />{activeAccounts.length}</span>
-            <span title={settings.globalReadOnly ? "全局只读" : "按账号授权"}>
-              {settings.globalReadOnly ? <Eye size={12} /> : <ShieldCheck size={12} />}
-              {settings.globalReadOnly ? "只读" : "授权"}
-            </span>
-          </div>
-          <div className="webdav-summary-actions">
-            <button className="icon-action webdav-icon-action" type="button" title="复制访问地址" onClick={copyEndpoint}><Copy size={13} strokeWidth={2.1} /></button>
-            <button className="icon-action webdav-icon-action" type="button" title="测试连接" disabled={status.state !== "running" || testing} onClick={testConnection}>
-              <Activity className={testing ? "spinning" : undefined} size={13} strokeWidth={2.1} />
-            </button>
-            <button className="btn btn-secondary webdav-settings-button" type="button" onClick={() => openSettings()}><Settings2 size={12} strokeWidth={2.1} />设置</button>
+        </section>
+        <div>
+          <section className="panel">
+            <header className="panel-header">
+              <h2>
+                访问账号 <small>{activeAccounts.length} 已启用</small>
+              </h2>
+              <button
+                className="text-button"
+                disabled={loading || toggling}
+                onClick={() => openSettings("accounts")}
+              >
+                <Users size={14} />
+                账号管理
+              </button>
+            </header>
+            {!accounts.length ? (
+              <div className="empty-state">暂无访问账号，请先添加账号。</div>
+            ) : (
+              accounts.map((account) => (
+                <button
+                  type="button"
+                  className="service-row"
+                  key={account.id}
+                  disabled={loading || toggling}
+                  onClick={() => {
+                    openSettings("accounts");
+                    selectAccount(account);
+                  }}
+                >
+                  <span className="webdav-account-avatar">
+                    {account.username.slice(0, 1).toUpperCase()}
+                  </span>
+                  <span className="service-copy">
+                    <strong>{account.username}</strong>
+                    <small>
+                      {account.access === "read-write"
+                        ? "读写权限"
+                        : "只读权限"}{" "}
+                      · {accountLastUsed(account)}
+                    </small>
+                  </span>
+                  <span
+                    className={`badge ${account.enabled ? "" : "badge-neutral"}`}
+                  >
+                    {account.enabled ? "已启用" : "已停用"}
+                  </span>
+                  <Pencil size={14} />
+                </button>
+              ))
+            )}
+          </section>
+          <div className="webdav-security-note">
+            <ShieldCheck size={20} />
+            <div>
+              <strong>需要从公网访问？</strong>
+              <p>使用 HTTPS 反向代理提供加密入口，并保留本机监听地址。</p>
+              <button className="text-button" onClick={onOpenProxy}>
+                配置反向代理
+              </button>
+            </div>
           </div>
         </div>
-      </section>
+      </div>
 
       {settingsOpen ? (
-        <div className="modal-backdrop" onClick={(event) => event.currentTarget === event.target && setSettingsOpen(false)}>
-          <section className="modal-dialog webdav-modal" style={modalStyle}>
-            <header className="modal-header draggable-header" onPointerDown={startModalDrag}>
-              <div className="webdav-modal-title"><Server size={15} strokeWidth={2.1} /><h3>WebDAV 服务设置</h3></div>
-              <button className="btn btn-secondary" type="button" onPointerDown={(event) => event.stopPropagation()} onClick={() => setSettingsOpen(false)}>关闭</button>
-            </header>
+        <EditorDrawer
+          title="WebDAV 服务设置"
+          onClose={() => setSettingsOpen(false)}
+          busy={saving}
+          wide
+          footer={
+            <>
+              <button
+                className="btn btn-secondary"
+                disabled={saving}
+                onClick={() => setSettingsOpen(false)}
+              >
+                取消
+              </button>
+              <button
+                className="btn btn-primary"
+                disabled={saving}
+                onClick={saveSettings}
+              >
+                {saving ? "正在保存" : "保存服务"}
+              </button>
+            </>
+          }
+        >
+          <nav className="webdav-tabs" aria-label="WebDAV 设置分类">
+            <button
+              className={activeTab === "service" ? "is-active" : ""}
+              type="button"
+              onClick={() => setActiveTab("service")}
+            >
+              <Settings2 size={13} />
+              服务设置
+            </button>
+            <button
+              className={activeTab === "accounts" ? "is-active" : ""}
+              type="button"
+              onClick={() => setActiveTab("accounts")}
+            >
+              <Users size={13} />
+              账号管理<span>{draftAccounts.length}</span>
+            </button>
+          </nav>
 
-            <nav className="webdav-tabs" aria-label="WebDAV 设置分类">
-              <button className={activeTab === "service" ? "is-active" : ""} type="button" onClick={() => setActiveTab("service")}><Settings2 size={13} />服务设置</button>
-              <button className={activeTab === "accounts" ? "is-active" : ""} type="button" onClick={() => setActiveTab("accounts")}><Users size={13} />账号管理<span>{draftAccounts.length}</span></button>
-            </nav>
+          {message ? (
+            <p
+              role="status"
+              className={`webdav-modal-message is-${messageType}`}
+            >
+              {message}
+            </p>
+          ) : null}
 
-            {message ? <p className={`webdav-modal-message is-${messageType}`}>{message}</p> : null}
-
-            {activeTab === "service" ? (
-              <div className="webdav-service-editor">
-                <div className="webdav-editor-grid">
-                  <label className="field-label"><span>共享目录</span><div className="field-control webdav-path-control">
-                    <input value={draft.rootPath} placeholder="选择需要共享的本地目录" onChange={(event) => setDraft((current) => ({ ...current, rootPath: event.target.value }))} />
-                    <button className="btn btn-secondary" type="button" onClick={chooseDirectory}><FolderOpen size={12} />选择</button>
+          {activeTab === "service" ? (
+            <div className="webdav-service-editor">
+              <div className="webdav-editor-grid">
+                <label className="field-label">
+                  <span>共享目录</span>
+                  <div className="field-control webdav-path-control">
+                    <input
+                      value={draft.rootPath}
+                      placeholder="选择需要共享的本地目录"
+                      onChange={(event) =>
+                        setDraft((current) => ({
+                          ...current,
+                          rootPath: event.target.value,
+                        }))
+                      }
+                    />
+                    <button
+                      className="btn btn-secondary"
+                      type="button"
+                      onClick={chooseDirectory}
+                    >
+                      <FolderOpen size={12} />
+                      选择
+                    </button>
                     <small>所有账号访问同一个根目录，符号链接不会暴露。</small>
-                  </div></label>
-                  <label className="field-label"><span>监听范围</span><div className="field-control">
-                    <select value={draft.listenAddress} onChange={(event) => setDraft((current) => ({ ...current, listenAddress: event.target.value }))}>
-                      <option value="127.0.0.1">仅本机（推荐）</option><option value="0.0.0.0">局域网 IPv4</option><option value="::">全部 IPv6 接口</option>
-                    </select><small>公网访问建议保持仅本机，通过 HTTPS 反向代理接入。</small>
-                  </div></label>
-                  <label className="field-label"><span>监听端口</span><div className="field-control">
-                    <input value={draft.listenPort} inputMode="numeric" onChange={(event) => setDraft((current) => ({ ...current, listenPort: event.target.value.trim() }))} /><small>可配置 1-65535，默认使用 19080。</small>
-                  </div></label>
-                  <label className="field-label"><span>服务模式</span><div className="field-control">
-                    <select value={draft.globalReadOnly ? "read-only" : "account"} onChange={(event) => setDraft((current) => ({ ...current, globalReadOnly: event.target.value === "read-only" }))}>
-                      <option value="account">按账号权限</option><option value="read-only">全局只读</option>
-                    </select><small>全局只读开启后，读写账号也不能修改文件。</small>
-                  </div></label>
+                  </div>
+                </label>
+                <label className="field-label">
+                  <span>监听范围</span>
+                  <div className="field-control">
+                    <select
+                      value={draft.listenAddress}
+                      onChange={(event) =>
+                        setDraft((current) => ({
+                          ...current,
+                          listenAddress: event.target.value,
+                        }))
+                      }
+                    >
+                      <option value="127.0.0.1">仅本机（推荐）</option>
+                      <option value="0.0.0.0">局域网 IPv4</option>
+                      <option value="::">全部 IPv6 接口</option>
+                    </select>
+                    <small>
+                      公网访问建议保持仅本机，通过 HTTPS 反向代理接入。
+                    </small>
+                  </div>
+                </label>
+                <label className="field-label">
+                  <span>监听端口</span>
+                  <div className="field-control">
+                    <input
+                      value={draft.listenPort}
+                      inputMode="numeric"
+                      onChange={(event) =>
+                        setDraft((current) => ({
+                          ...current,
+                          listenPort: event.target.value.trim(),
+                        }))
+                      }
+                    />
+                    <small>可配置 1-65535，默认使用 19080。</small>
+                  </div>
+                </label>
+                <label className="field-label">
+                  <span>服务模式</span>
+                  <div className="field-control">
+                    <select
+                      value={draft.globalReadOnly ? "read-only" : "account"}
+                      onChange={(event) =>
+                        setDraft((current) => ({
+                          ...current,
+                          globalReadOnly: event.target.value === "read-only",
+                        }))
+                      }
+                    >
+                      <option value="account">按账号权限</option>
+                      <option value="read-only">全局只读</option>
+                    </select>
+                    <small>全局只读开启后，读写账号也不能修改文件。</small>
+                  </div>
+                </label>
+              </div>
+              <div className="webdav-security-note">
+                <ShieldCheck size={17} strokeWidth={2.1} />
+                <div>
+                  <strong>推荐使用 HTTPS</strong>
+                  <p>
+                    Basic Auth 在 HTTP
+                    下不会加密密码。外网访问请将本服务接入现有 HTTPS 反向代理。
+                  </p>
                 </div>
-                <div className="webdav-security-note"><ShieldCheck size={17} strokeWidth={2.1} /><div><strong>推荐使用 HTTPS</strong><p>Basic Auth 在 HTTP 下不会加密密码。外网访问请将本服务接入现有 HTTPS 反向代理。</p></div></div>
               </div>
-            ) : (
-              <div className="webdav-account-editor">
-                <section className="webdav-account-list">
-                  <header><div><strong>访问账号</strong><span>{activeDraftAccounts.length} 个启用，共 {draftAccounts.length} 个</span></div>
-                    <button className="btn btn-primary" type="button" onClick={startNewAccount}><UserPlus size={12} strokeWidth={2.2} />添加账号</button>
-                  </header>
-                  <div className="webdav-account-rows">
-                    {draftAccounts.length === 0 ? <p className="webdav-empty-accounts">暂无账号，请先添加访问账号。</p> : null}
-                    {draftAccounts.map((account) => (
-                      <button key={account.id} className={`webdav-account-row ${selectedAccountId === account.id ? "is-selected" : ""}`} type="button" onClick={() => selectAccount(account)}>
-                        <span className={`webdav-account-avatar ${account.enabled ? "" : "is-disabled"}`}>{account.username.slice(0, 1).toUpperCase()}</span>
-                        <span className="webdav-account-main"><strong>{account.username}</strong><small>{accountLastUsed(account)}</small></span>
-                        <span className={`webdav-access-label is-${account.access}`}>{account.access === "read-write" ? "读写" : "只读"}</span>
-                        {!account.enabled ? <span className="webdav-disabled-label">已停用</span> : null}
-                      </button>
-                    ))}
+            </div>
+          ) : (
+            <div className="webdav-account-editor">
+              <section className="webdav-account-list">
+                <header>
+                  <div>
+                    <strong>访问账号</strong>
+                    <span>
+                      {activeDraftAccounts.length} 个启用，共{" "}
+                      {draftAccounts.length} 个
+                    </span>
                   </div>
-                </section>
+                  <button
+                    className="btn btn-primary"
+                    type="button"
+                    onClick={startNewAccount}
+                  >
+                    <UserPlus size={12} strokeWidth={2.2} />
+                    添加账号
+                  </button>
+                </header>
+                <div className="webdav-account-rows">
+                  {draftAccounts.length === 0 ? (
+                    <p className="webdav-empty-accounts">
+                      暂无账号，请先添加访问账号。
+                    </p>
+                  ) : null}
+                  {draftAccounts.map((account) => (
+                    <button
+                      key={account.id}
+                      className={`webdav-account-row ${selectedAccountId === account.id ? "is-selected" : ""}`}
+                      type="button"
+                      onClick={() => selectAccount(account)}
+                    >
+                      <span
+                        className={`webdav-account-avatar ${account.enabled ? "" : "is-disabled"}`}
+                      >
+                        {account.username.slice(0, 1).toUpperCase()}
+                      </span>
+                      <span className="webdav-account-main">
+                        <strong>{account.username}</strong>
+                        <small>{accountLastUsed(account)}</small>
+                      </span>
+                      <span
+                        className={`webdav-access-label is-${account.access}`}
+                      >
+                        {account.access === "read-write" ? "读写" : "只读"}
+                      </span>
+                      {!account.enabled ? (
+                        <span className="webdav-disabled-label">已停用</span>
+                      ) : null}
+                    </button>
+                  ))}
+                </div>
+              </section>
 
-                <section className="webdav-account-form">
-                  <header><div>{accountForm.id.startsWith("new-") ? <UserPlus size={14} /> : <Pencil size={14} />}<strong>{accountForm.id.startsWith("new-") ? "添加账号" : "编辑账号"}</strong></div>
-                    {!accountForm.id.startsWith("new-") ? <button className="icon-action webdav-delete-account" type="button" title="删除账号" onClick={() => deleteAccount(accountForm)}><Trash2 size={14} /></button> : null}
-                  </header>
-                  <div className="webdav-account-fields">
-                    <label className="field-label"><span>账号名称</span><input value={accountForm.username} placeholder="例如 backup" onChange={(event) => setAccountForm((current) => ({ ...current, username: event.target.value }))} /></label>
-                    <label className="field-label"><span>{accountForm.passwordConfigured ? "重设密码" : "登录密码"}</span><div className="webdav-password-control">
-                      <KeyRound size={13} /><input value={accountForm.password} type="password" placeholder={accountForm.passwordConfigured ? "留空则保持原密码" : "至少 8 位"} onChange={(event) => setAccountForm((current) => ({ ...current, password: event.target.value }))} />
-                    </div></label>
-                    <label className="field-label"><span>访问权限</span><select value={accountForm.access} onChange={(event) => setAccountForm((current) => ({ ...current, access: event.target.value as AccountAccess }))}>
-                      <option value="read-write">可读写</option><option value="read-only">只读</option>
-                    </select></label>
-                    <label className="webdav-account-enabled"><span><strong>启用此账号</strong><small>停用后会立即拒绝新的认证请求。</small></span><label className="toggle-switch">
-                      <input type="checkbox" checked={accountForm.enabled} onChange={(event) => setAccountForm((current) => ({ ...current, enabled: event.target.checked }))} /><span className="toggle-slider" />
-                    </label></label>
+              <section className="webdav-account-form">
+                <header>
+                  <div>
+                    {accountForm.id.startsWith("new-") ? (
+                      <UserPlus size={14} />
+                    ) : (
+                      <Pencil size={14} />
+                    )}
+                    <strong>
+                      {accountForm.id.startsWith("new-")
+                        ? "添加账号"
+                        : "编辑账号"}
+                    </strong>
                   </div>
-                  <button className="btn btn-primary webdav-save-account" type="button" onClick={saveAccount}>保存账号修改</button>
-                </section>
-              </div>
-            )}
+                  {!accountForm.id.startsWith("new-") ? (
+                    <button
+                      className="icon-action webdav-delete-account"
+                      type="button"
+                      title="删除账号"
+                      onClick={() => deleteAccount(accountForm)}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  ) : null}
+                </header>
+                <div className="webdav-account-fields">
+                  <label className="field-label">
+                    <span>账号名称</span>
+                    <input
+                      value={accountForm.username}
+                      placeholder="例如 backup"
+                      onChange={(event) =>
+                        setAccountForm((current) => ({
+                          ...current,
+                          username: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label className="field-label">
+                    <span>
+                      {accountForm.passwordConfigured ? "重设密码" : "登录密码"}
+                    </span>
+                    <div className="webdav-password-control">
+                      <KeyRound size={13} />
+                      <input
+                        value={accountForm.password}
+                        type="password"
+                        placeholder={
+                          accountForm.passwordConfigured
+                            ? "留空则保持原密码"
+                            : "至少 8 位"
+                        }
+                        onChange={(event) =>
+                          setAccountForm((current) => ({
+                            ...current,
+                            password: event.target.value,
+                          }))
+                        }
+                      />
+                    </div>
+                  </label>
+                  <label className="field-label">
+                    <span>访问权限</span>
+                    <select
+                      value={accountForm.access}
+                      onChange={(event) =>
+                        setAccountForm((current) => ({
+                          ...current,
+                          access: event.target.value as AccountAccess,
+                        }))
+                      }
+                    >
+                      <option value="read-write">可读写</option>
+                      <option value="read-only">只读</option>
+                    </select>
+                  </label>
+                  <div className="webdav-account-enabled">
+                    <span>
+                      <strong>启用此账号</strong>
+                      <small>停用后会立即拒绝新的认证请求。</small>
+                    </span>
+                    <label className="toggle-switch">
+                      <input
+                        type="checkbox"
+                        aria-label="启用此账号"
+                        checked={accountForm.enabled}
+                        onChange={(event) =>
+                          setAccountForm((current) => ({
+                            ...current,
+                            enabled: event.target.checked,
+                          }))
+                        }
+                      />
+                      <span className="toggle-slider" />
+                    </label>
+                  </div>
+                </div>
+                <button
+                  className="btn btn-primary webdav-save-account"
+                  type="button"
+                  onClick={saveAccount}
+                >
+                  保存账号修改
+                </button>
+              </section>
+            </div>
+          )}
 
-            <footer className="webdav-modal-footer"><span><ShieldCheck size={12} />密码仅保存 Argon2id 哈希，界面不会回显。</span><div>
-              <button className="btn btn-secondary" type="button" disabled={saving} onClick={() => setSettingsOpen(false)}>取消</button>
-              <button className="btn btn-primary" type="button" disabled={saving} onClick={saveSettings}>{saving ? "正在保存" : "保存服务"}</button>
-            </div></footer>
-          </section>
-        </div>
+          <p className="form-note">
+            <ShieldCheck size={14} />
+            密码仅保存 Argon2id 哈希，界面不会回显。
+          </p>
+        </EditorDrawer>
       ) : null}
     </>
   );

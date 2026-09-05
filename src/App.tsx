@@ -1,10 +1,27 @@
-import { MouseEvent, useEffect, useMemo, useRef, useState } from "react";
+import { MouseEvent, useEffect, useRef, useState } from "react";
 import DeviceDdnsPanel from "./components/DeviceDdnsPanel";
 import ForwardRulesPanel from "./components/ForwardRulesPanel";
 import LogPanel from "./components/LogPanel";
 import ReverseProxyPanel from "./components/ReverseProxyPanel";
 import RuntimeSettingsPanel from "./components/RuntimeSettingsPanel";
-import StatusCard from "./components/StatusCard";
+import NetworkOverview from "./components/NetworkOverview";
+import PageHeading from "./components/PageHeading";
+import {
+  ArrowLeftRight,
+  ChevronRight,
+  FolderOpen,
+  House,
+  LayoutDashboard,
+  Minus,
+  MonitorSmartphone,
+  ScrollText,
+  Server,
+  SlidersHorizontal,
+  Square,
+  Waypoints,
+  Workflow,
+  X,
+} from "lucide-react";
 import UpdateConfirmDialog from "./components/UpdateConfirmDialog";
 import WebDavPanel from "./components/WebDavPanel";
 import {
@@ -14,8 +31,15 @@ import {
   startCurrentWindowDrag,
   toggleMaximizeCurrentWindow,
 } from "./lib/tauri";
-import type { AppUpdateResult, LanDevice, RuntimeStatus } from "./types";
-import { formatSyncTime } from "./utils/time";
+import type {
+  AppPage,
+  AppUpdateResult,
+  DeviceDdnsConfig,
+  LanDevice,
+  RuntimeStatus,
+  ThemeMode,
+} from "./types";
+import { formatUptime } from "./utils/presentation";
 
 const emptyStatus: RuntimeStatus = {
   version: "",
@@ -32,115 +56,96 @@ const emptyStatus: RuntimeStatus = {
 
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
-function displayValue(value: string): string {
-  return value?.trim() ? value : "--";
-}
+const navigation = [
+  {
+    id: "overview",
+    title: "网络总览",
+    icon: LayoutDashboard,
+    group: "工作空间",
+  },
+  { id: "devices", title: "设备与 DDNS", icon: MonitorSmartphone },
+  { id: "forward", title: "端口转发", icon: ArrowLeftRight, group: "连接服务" },
+  { id: "proxy", title: "反向代理", icon: Workflow },
+  { id: "webdav", title: "文件服务", icon: FolderOpen },
+  { id: "logs", title: "运行日志", icon: ScrollText, group: "系统" },
+  { id: "settings", title: "偏好设置", icon: SlidersHorizontal },
+] as const;
 
-function ipv6PrefixSubtitle(value: string): string {
-  const parts = value.split(":");
-  if (!value.trim() || parts.length < 4) {
-    return "前缀：--";
+function initialTheme(): ThemeMode {
+  try {
+    const saved = localStorage.getItem("homenet:theme");
+    return saved === "light" || saved === "dark" ? saved : "system";
+  } catch {
+    return "system";
   }
-  return `前缀：${parts.slice(0, 4).join(":")}::/64`;
 }
 
 export default function App() {
-  const [statusData, setStatusData] = useState<RuntimeStatus>({ ...emptyStatus });
-  const [deviceSummary, setDeviceSummary] = useState({ online: 0, total: 0 });
+  const [statusData, setStatusData] = useState<RuntimeStatus>({
+    ...emptyStatus,
+  });
+  const [page, setPage] = useState<AppPage>("overview");
+  const [theme, setTheme] = useState<ThemeMode>(initialTheme);
+  const [runtimeAvailable, setRuntimeAvailable] = useState(false);
+  const [lastRefresh, setLastRefresh] = useState("");
+  const [deviceSummary, setDeviceSummary] = useState({
+    online: 0,
+    total: 0,
+    available: false,
+  });
+  const [bindings, setBindings] = useState<DeviceDdnsConfig[] | null>(null);
   const [autoStartEnabled, setAutoStartEnabled] = useState(false);
   const [autoStartSaving, setAutoStartSaving] = useState(false);
   const [autoUpdateCheckEnabled, setAutoUpdateCheckEnabled] = useState(false);
   const [autoUpdateCheckSaving, setAutoUpdateCheckSaving] = useState(false);
   const [updateChecking, setUpdateChecking] = useState(false);
   const [updateInstalling, setUpdateInstalling] = useState(false);
-  const [availableUpdate, setAvailableUpdate] = useState<AppUpdateResult | null>(null);
-  const [updateToConfirm, setUpdateToConfirm] = useState<AppUpdateResult | null>(null);
+  const [availableUpdate, setAvailableUpdate] =
+    useState<AppUpdateResult | null>(null);
+  const [updateToConfirm, setUpdateToConfirm] =
+    useState<AppUpdateResult | null>(null);
   const [updateStatusMessage, setUpdateStatusMessage] = useState("");
-  const [updateStatusType, setUpdateStatusType] = useState<"normal" | "success" | "error">(
-    "normal",
-  );
+  const [updateStatusType, setUpdateStatusType] = useState<
+    "normal" | "success" | "error"
+  >("normal");
   const updateBusyRef = useRef(false);
-
-  const disabledRuleCount = Math.max(0, statusData.rule_count - statusData.enabled_rule_count);
-  const disabledReverseProxyCount = Math.max(
-    0,
-    statusData.reverse_proxy_rule_count - statusData.enabled_reverse_proxy_rule_count,
-  );
-
-  function ddnsStatusType(): "normal" | "warning" | "error" | "success" {
-    if (statusData.ddns_status === "运行中") return "success";
-    if (statusData.ddns_status === "未连接") return "warning";
-    return "normal";
-  }
-
-  const statusCards = useMemo(
-    () => [
-      {
-        title: "公网 IPv4",
-        value: displayValue(statusData.public_ipv4),
-        subtitle: "运营商：中国电信",
-        icon: "globe",
-        status: "normal" as const,
-      },
-      {
-        title: "公网 IPv6",
-        value: statusData.public_ipv6.trim() ? `${displayValue(statusData.public_ipv6)}/64` : "--",
-        subtitle: ipv6PrefixSubtitle(statusData.public_ipv6),
-        icon: "ipv6",
-        status: "normal" as const,
-      },
-      {
-        title: "DDNS 状态",
-        value: statusData.ddns_status || "未连接",
-        subtitle: `最后同步：${formatSyncTime(statusData.last_update_time, "暂无")}`,
-        icon: "shield",
-        status: ddnsStatusType(),
-      },
-      {
-        title: "转发规则数",
-        value: String(statusData.rule_count),
-        subtitle: `启用：${statusData.enabled_rule_count}  禁用：${disabledRuleCount}`,
-        icon: "rules",
-        status: "normal" as const,
-      },
-      {
-        title: "反向代理数",
-        value: String(statusData.reverse_proxy_rule_count),
-        subtitle: `启用：${statusData.enabled_reverse_proxy_rule_count}  禁用：${disabledReverseProxyCount}`,
-        icon: "proxy",
-        status: "normal" as const,
-      },
-      {
-        title: "在线设备 / 发现设备",
-        value: `${deviceSummary.online} / ${deviceSummary.total}`,
-        subtitle: "局域网扫描结果",
-        icon: "devices",
-        status: "normal" as const,
-      },
-    ],
-    [deviceSummary.online, deviceSummary.total, disabledReverseProxyCount, disabledRuleCount, statusData],
-  );
 
   async function loadRuntimeStatus() {
     try {
       const data = await invokeCommand<RuntimeStatus>("get_runtime_status");
       setStatusData({ ...emptyStatus, ...data });
+      setRuntimeAvailable(true);
+      setLastRefresh(new Date().toLocaleTimeString("zh-CN", { hour12: false }));
     } catch {
-      setStatusData({ ...emptyStatus });
+      setRuntimeAvailable(false);
     }
   }
 
   async function loadDeviceSummary() {
-    try {
-      const devices = await invokeCommand<LanDevice[]>("list_lan_devices");
-      setDeviceSummary({
-        online: devices.filter((device) => device.online).length,
-        total: devices.length,
-      });
-    } catch {
-      setDeviceSummary({ online: 0, total: 0 });
-    }
+    const [devices, configs] = await Promise.allSettled([
+      invokeCommand<LanDevice[]>("list_lan_devices"),
+      invokeCommand<DeviceDdnsConfig[]>("list_device_ddns_configs"),
+    ]);
+    setDeviceSummary(
+      devices.status === "fulfilled"
+        ? {
+            online: devices.value.filter((device) => device.online).length,
+            total: devices.value.length,
+            available: true,
+          }
+        : { online: 0, total: 0, available: false },
+    );
+    setBindings(configs.status === "fulfilled" ? configs.value : null);
   }
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    try {
+      localStorage.setItem("homenet:theme", theme);
+    } catch {
+      /* The selected theme still applies when storage is unavailable. */
+    }
+  }, [theme]);
 
   async function loadAutoStart() {
     try {
@@ -152,7 +157,9 @@ export default function App() {
 
   async function loadAutoUpdateCheck() {
     try {
-      setAutoUpdateCheckEnabled(await invokeCommand<boolean>("get_auto_update_check"));
+      setAutoUpdateCheckEnabled(
+        await invokeCommand<boolean>("get_auto_update_check"),
+      );
     } catch {
       setAutoUpdateCheckEnabled(false);
     }
@@ -172,7 +179,8 @@ export default function App() {
       notifyLogsChanged();
     } catch (error) {
       setAutoStartEnabled(previous);
-      console.warn("设置开机自启动失败:", error);
+      setUpdateStatusMessage(`设置开机自启动失败：${String(error)}`);
+      setUpdateStatusType("error");
     } finally {
       setAutoStartSaving(false);
     }
@@ -188,13 +196,16 @@ export default function App() {
       notifyLogsChanged();
     } catch (error) {
       setAutoUpdateCheckEnabled(previous);
-      console.warn("设置自动检查更新失败:", error);
+      setUpdateStatusMessage(`设置自动检查更新失败：${String(error)}`);
+      setUpdateStatusType("error");
     } finally {
       setAutoUpdateCheckSaving(false);
     }
   }
 
-  async function checkAppUpdate(automatic = false): Promise<AppUpdateResult | null> {
+  async function checkAppUpdate(
+    automatic = false,
+  ): Promise<AppUpdateResult | null> {
     if (updateBusyRef.current) return null;
     updateBusyRef.current = true;
     setUpdateChecking(true);
@@ -206,7 +217,9 @@ export default function App() {
       if (result.status === "available") {
         setAvailableUpdate(result);
         setUpdateStatusMessage(
-          automatic ? `发现新版本 ${result.latest_version}，请手动确认安装` : result.message,
+          automatic
+            ? `发现新版本 ${result.latest_version}，请手动确认安装`
+            : result.message,
         );
         setUpdateStatusType("normal");
       } else {
@@ -242,9 +255,12 @@ export default function App() {
         : `正在从 GitHub 下载 ${update.latest_version}`,
     );
     try {
-      const result = await invokeCommand<AppUpdateResult>("install_app_update", {
-        expectedVersion: update.latest_version,
-      });
+      const result = await invokeCommand<AppUpdateResult>(
+        "install_app_update",
+        {
+          expectedVersion: update.latest_version,
+        },
+      );
       setAvailableUpdate(null);
       setUpdateStatusMessage(result.message);
       setUpdateStatusType("success");
@@ -314,80 +330,194 @@ export default function App() {
   useEffect(() => {
     if (!autoUpdateCheckEnabled) return;
     void checkAppUpdate(true);
-    const timer = window.setInterval(() => void checkAppUpdate(true), UPDATE_CHECK_INTERVAL_MS);
+    const timer = window.setInterval(
+      () => void checkAppUpdate(true),
+      UPDATE_CHECK_INTERVAL_MS,
+    );
     return () => window.clearInterval(timer);
   }, [autoUpdateCheckEnabled]);
 
+  const currentPage = navigation.find((item) => item.id === page)!;
+  const pageContent =
+    page === "overview" ? (
+      <NetworkOverview
+        status={statusData}
+        available={runtimeAvailable}
+        devices={deviceSummary}
+        bindings={bindings}
+        onNavigate={setPage}
+        onRefresh={async () => {
+          await Promise.all([loadRuntimeStatus(), loadDeviceSummary()]);
+        }}
+      />
+    ) : page === "devices" ? (
+      <DeviceDdnsPanel />
+    ) : page === "forward" ? (
+      <ForwardRulesPanel />
+    ) : page === "proxy" ? (
+      <ReverseProxyPanel />
+    ) : page === "webdav" ? (
+      <>
+        <PageHeading
+          eyebrow="SERVICES / WEBDAV"
+          title="文件服务"
+          description="将本地目录，分享给受信任的设备。"
+        />
+        <WebDavPanel onOpenProxy={() => setPage("proxy")} />
+      </>
+    ) : page === "logs" ? (
+      <>
+        <PageHeading
+          eyebrow="SYSTEM / ACTIVITY"
+          title="运行日志"
+          description="每一次连接与变化，都有迹可循。"
+        />
+        <LogPanel />
+      </>
+    ) : (
+      <>
+        <PageHeading
+          eyebrow="SYSTEM / PREFERENCES"
+          title="偏好设置"
+          description="按照你的习惯，让 HomeNet 安静运行。"
+        />
+        <RuntimeSettingsPanel
+          uptime={statusData.uptime}
+          version={statusData.version || "--"}
+          autoStartEnabled={autoStartEnabled}
+          autoStartSaving={autoStartSaving}
+          autoUpdateCheckEnabled={autoUpdateCheckEnabled}
+          autoUpdateCheckSaving={autoUpdateCheckSaving}
+          updateChecking={updateChecking}
+          updateInstalling={updateInstalling}
+          availableUpdateVersion={availableUpdate?.latest_version || ""}
+          onToggleAutostart={toggleAutoStart}
+          onToggleAutoUpdateCheck={toggleAutoUpdateCheck}
+          onUpdateAction={handleUpdateAction}
+          theme={theme}
+          onThemeChange={setTheme}
+        />
+      </>
+    );
+
   return (
     <div className="window-frame">
-      <header className="titlebar" onMouseDown={startWindowDrag}>
-        <div className="titlebar-left">
-          <h1>HomeNet</h1>
-          {updateStatusMessage ? (
-            <span className={`update-status update-${updateStatusType}`}>{updateStatusMessage}</span>
-          ) : null}
-        </div>
-
-        <div className="window-controls">
-          <button
-            className="window-control control-minimize"
-            type="button"
-            aria-label="最小化"
-            onClick={minimizeCurrentWindow}
-            onMouseDown={(event) => event.stopPropagation()}
-          />
-          <button
-            className="window-control control-maximize"
-            type="button"
-            aria-label="最大化"
-            onClick={toggleMaximizeCurrentWindow}
-            onMouseDown={(event) => event.stopPropagation()}
-          />
-          <button
-            className="window-control control-close"
-            type="button"
-            aria-label="关闭"
-            onClick={closeCurrentWindow}
-            onMouseDown={(event) => event.stopPropagation()}
-          />
-        </div>
-      </header>
-
-      <main className="main-content">
-        <section className="section-cards" aria-label="运行状态">
-          {statusCards.map((card) => (
-            <StatusCard key={card.title} {...card} />
-          ))}
-        </section>
-
-        <section className="dashboard-grid" aria-label="网络配置">
-          <DeviceDdnsPanel className="device-ddns-column" />
-          <div className="routing-column">
-            <ForwardRulesPanel />
-            <ReverseProxyPanel />
-            <WebDavPanel />
+      <aside className="app-sidebar">
+        <div className="app-brand" onMouseDown={startWindowDrag}>
+          <Waypoints aria-hidden="true" />
+          <div>
+            <strong>
+              HomeNet<span>.</span>
+            </strong>
+            <small>PERSONAL NETWORK</small>
           </div>
-        </section>
-
-        <section className="bottom-grid" aria-label="日志与设置">
-          <LogPanel />
-          <RuntimeSettingsPanel
-            uptime={statusData.uptime}
-            version={statusData.version || "--"}
-            autoStartEnabled={autoStartEnabled}
-            autoStartSaving={autoStartSaving}
-            autoUpdateCheckEnabled={autoUpdateCheckEnabled}
-            autoUpdateCheckSaving={autoUpdateCheckSaving}
-            updateChecking={updateChecking}
-            updateInstalling={updateInstalling}
-            availableUpdateVersion={availableUpdate?.latest_version || ""}
-            onToggleAutostart={toggleAutoStart}
-            onToggleAutoUpdateCheck={toggleAutoUpdateCheck}
-            onUpdateAction={handleUpdateAction}
-          />
-        </section>
-      </main>
-
+        </div>
+        <nav className="app-navigation" aria-label="主导航">
+          {navigation.map((item) => (
+            <div className="nav-item" key={item.id}>
+              {"group" in item ? (
+                <p className="nav-group">{item.group}</p>
+              ) : null}
+              <button
+                type="button"
+                aria-label={item.title}
+                title={item.title}
+                aria-current={page === item.id ? "page" : undefined}
+                onClick={() => setPage(item.id)}
+              >
+                <item.icon size={18} />
+                <span>{item.title}</span>
+                {item.id === "devices" && deviceSummary.available ? (
+                  <small>{deviceSummary.total}</small>
+                ) : item.id === "forward" && runtimeAvailable ? (
+                  <small>{statusData.enabled_rule_count}</small>
+                ) : item.id === "proxy" && runtimeAvailable ? (
+                  <small>{statusData.enabled_reverse_proxy_rule_count}</small>
+                ) : null}
+              </button>
+            </div>
+          ))}
+        </nav>
+        <div className="sidebar-bottom">
+          <div className="local-service">
+            <Server size={28} />
+            <div>
+              <strong>
+                {runtimeAvailable ? "本机服务运行中" : "本机服务未连接"}
+              </strong>
+              <small>
+                {runtimeAvailable
+                  ? `已运行 ${formatUptime(statusData.uptime)}`
+                  : "请检查服务状态"}
+              </small>
+            </div>
+          </div>
+          <div className="sidebar-version">
+            <span>HomeNet</span>
+            <span>{statusData.version ? `v${statusData.version}` : "--"}</span>
+          </div>
+        </div>
+      </aside>
+      <div className="app-workspace">
+        <header className="titlebar" onMouseDown={startWindowDrag}>
+          <div className="titlebar-left">
+            <House size={15} />
+            <span className="breadcrumb-home">个人网络</span>
+            <ChevronRight size={14} />
+            <span className="breadcrumb-current">{currentPage.title}</span>
+          </div>
+          {updateStatusMessage ? (
+            <button
+              type="button"
+              role="status"
+              title={updateStatusMessage}
+              className={`update-status update-${updateStatusType}`}
+              onClick={() => setPage("settings")}
+            >
+              {updateStatusMessage}
+            </button>
+          ) : null}
+          <div className="window-controls">
+            <button
+              className="window-control"
+              type="button"
+              aria-label="最小化"
+              onClick={minimizeCurrentWindow}
+            >
+              <Minus size={15} />
+            </button>
+            <button
+              className="window-control"
+              type="button"
+              aria-label="最大化"
+              onClick={toggleMaximizeCurrentWindow}
+            >
+              <Square size={13} />
+            </button>
+            <button
+              className="window-control control-close"
+              type="button"
+              aria-label="关闭"
+              onClick={closeCurrentWindow}
+            >
+              <X size={16} />
+            </button>
+          </div>
+        </header>
+        <main className="main-content" key={page}>
+          {pageContent}
+        </main>
+        <footer className="app-footer">
+          <span>
+            <span
+              className={`status-dot ${runtimeAvailable ? "" : "is-muted"}`}
+            />
+            {runtimeAvailable ? "服务运行中" : "服务未连接"}
+            {lastRefresh ? ` · 最近刷新 ${lastRefresh}` : ""}
+          </span>
+          <span>所有配置保存在本机</span>
+        </footer>
+      </div>
       {updateToConfirm ? (
         <UpdateConfirmDialog
           update={updateToConfirm}

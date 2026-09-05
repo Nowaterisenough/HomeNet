@@ -16,7 +16,7 @@ const requiredChecks = [
   ["index.html", 'src="/src/main.tsx"'],
   ["src/main.tsx", "ReactDOM.createRoot"],
   ["src/main.tsx", 'from "./App"'],
-  ["src/App.tsx", 'from "./components/StatusCard"'],
+  ["src/App.tsx", 'from "./components/NetworkOverview"'],
   ["src/App.tsx", 'from "./components/ForwardRulesPanel"'],
   ["src/App.tsx", 'from "./components/DeviceDdnsPanel"'],
   ["src/App.tsx", 'from "./components/ReverseProxyPanel"'],
@@ -31,7 +31,7 @@ const requiredChecks = [
   ["src/App.tsx", 'invokeCommand("set_auto_start"'],
   ["src/App.tsx", 'invokeCommand<boolean>("get_auto_update_check")'],
   ["src/App.tsx", 'invokeCommand("set_auto_update_check"'],
-  ["src/App.tsx", "<h1>HomeNet</h1>"],
+  ["src/App.tsx", 'aria-label="主导航"'],
   ["src/App.tsx", "正在检查更新"],
   ["src/App.tsx", "检查更新失败"],
   ["src/types.ts", "export interface AppUpdateResult"],
@@ -40,21 +40,36 @@ const requiredChecks = [
   ["src/components/RuntimeSettingsPanel.tsx", "自动检查更新"],
   ["src/components/UpdateConfirmDialog.tsx", 'role="dialog"'],
   ["src/components/UpdateConfirmDialog.tsx", "下载并安装"],
-  ["src/components/ForwardRulesPanel.tsx", 'invokeCommand<ForwardRule[]>("list_forward_rules")'],
-  ["src/components/ForwardRulesPanel.tsx", 'invokeCommand<ForwardRule>("save_forward_rule"'],
-  ["src/components/DeviceDdnsPanel.tsx", 'invokeCommand<LanDevice[]>("list_lan_devices")'],
+  [
+    "src/components/ForwardRulesPanel.tsx",
+    'invokeCommand<ForwardRule[]>("list_forward_rules")',
+  ],
+  [
+    "src/components/ForwardRulesPanel.tsx",
+    'invokeCommand<ForwardRule>("save_forward_rule"',
+  ],
+  [
+    "src/components/DeviceDdnsPanel.tsx",
+    'invokeCommand<LanDevice[]>("list_lan_devices")',
+  ],
   [
     "src/components/DeviceDdnsPanel.tsx",
     'invokeCommand<DeviceDdnsConfig[]>("list_device_ddns_configs")',
   ],
-  ["src/components/DeviceDdnsPanel.tsx", 'invokeCommand("save_device_ddns_config"'],
-  ["src/components/DeviceDdnsPanel.tsx", 'invokeCommand("delete_device_ddns_config"'],
+  [
+    "src/components/DeviceDdnsPanel.tsx",
+    'invokeCommand("save_device_ddns_config"',
+  ],
+  [
+    "src/components/DeviceDdnsPanel.tsx",
+    'invokeCommand("delete_device_ddns_config"',
+  ],
   ["src/components/DeviceDdnsPanel.tsx", "function updateIpv6CandidateIndex"],
   ["src/components/DeviceDdnsPanel.tsx", "selectedIpv6Candidate"],
   ["src/components/DeviceDdnsPanel.tsx", "prioritizeEnabledDeviceRows"],
   ["src/components/DeviceDdnsPanel.tsx", "device-status-icons"],
   ["src/components/DeviceDdnsPanel.tsx", "formatSyncTime"],
-  ["src/components/DeviceDdnsPanel.tsx", "useDraggableModal"],
+  ["src/components/DeviceDdnsPanel.tsx", "EditorDrawer"],
   [
     "src/components/ReverseProxyPanel.tsx",
     'invokeCommand<ReverseProxyRule[]>("list_reverse_proxy_rules")',
@@ -70,12 +85,28 @@ const requiredChecks = [
   ["src/components/ReverseProxyPanel.tsx", "匹配域名"],
   ["src/components/ReverseProxyPanel.tsx", "DDNS"],
   ["src/components/ReverseProxyPanel.tsx", "证书配置"],
-  ["src/components/WebDavPanel.tsx", 'invokeCommand<WebDavConfigView>("get_webdav_config")'],
-  ["src/components/WebDavPanel.tsx", 'invokeCommand<WebDavConfigView>("save_webdav_config"'],
-  ["src/components/WebDavPanel.tsx", 'invokeCommand<string | null>("select_webdav_directory")'],
+  [
+    "src/components/WebDavPanel.tsx",
+    'invokeCommand<WebDavConfigView>("get_webdav_config")',
+  ],
+  [
+    "src/components/WebDavPanel.tsx",
+    'invokeCommand<WebDavConfigView>("save_webdav_config"',
+  ],
+  [
+    "src/components/WebDavPanel.tsx",
+    'invokeCommand<string | null>("select_webdav_directory")',
+  ],
   ["src/components/WebDavPanel.tsx", "Argon2id"],
-  ["src/components/LogPanel.tsx", 'invokeCommand<LogEntry[]>("get_recent_logs")'],
-  ["src/hooks/useDraggableModal.ts", "startModalDrag"],
+  [
+    "src/components/LogPanel.tsx",
+    'invokeCommand<LogEntry[]>("get_recent_logs")',
+  ],
+  ["src/components/EditorDrawer.tsx", 'aria-modal="true"'],
+  [
+    "src/components/NetworkOverview.tsx",
+    'invokeCommand<WebDavConfigView>("get_webdav_config")',
+  ],
   ["src/lib/tauri.ts", "currentTauriWindow"],
   ["src/styles/global.css", "--titlebar-height"],
   ["src/styles/panels.css", ".modal-backdrop"],
@@ -97,7 +128,7 @@ const requiredChecks = [
   ["src-tauri/src/commands.rs", "install_app_update"],
   ["src-tauri/src/commands.rs", "check_app_update"],
   ["src-tauri/src/commands.rs", "expected_version"],
-  ["src-tauri/src/commands.rs", "option_env!(\"HOMENET_UPDATER_PUBLIC_KEY\")"],
+  ["src-tauri/src/commands.rs", 'option_env!("HOMENET_UPDATER_PUBLIC_KEY")'],
   ["src-tauri/src/commands.rs", "list_reverse_proxy_rules"],
   ["src-tauri/src/commands.rs", "save_reverse_proxy_rule"],
   ["src-tauri/src/commands.rs", "enable_reverse_proxy_rule"],
@@ -134,7 +165,8 @@ for (const [file, needle] of requiredChecks) {
   }
 
   const content = readFileSync(filePath, "utf8");
-  if (!content.includes(needle)) {
+  // Match the implementation independently of source formatting.
+  if (!content.replace(/\s+/g, "").replace(/,\)/g, ")").includes(needle.replace(/\s+/g, ""))) {
     missing.push(`${file}: ${needle}`);
   }
 }
