@@ -1,4 +1,4 @@
-import { ChangeEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   Cloud,
   CloudOff,
@@ -252,6 +252,8 @@ export default function DeviceDdnsPanel({ className = "" }: DeviceDdnsPanelProps
   const [statusMessage, setStatusMessage] = useState("");
   const [messageType, setMessageType] = useState<"info" | "success" | "error">("info");
   const { modalStyle, resetModalPosition, startModalDrag } = useDraggableModal();
+  const selectionRef = useRef({ selectedId, configDialogOpen });
+  selectionRef.current = { selectedId, configDialogOpen };
 
   const rows = useMemo(
     () => prioritizeEnabledDeviceRows(devices.map((device, index) => mapLanDevice(device, index, configs, devices))),
@@ -315,22 +317,32 @@ export default function DeviceDdnsPanel({ className = "" }: DeviceDdnsPanelProps
       const nextConfigs = await loadConfigsData();
       const nextDevices = await invokeCommand<LanDevice[]>("list_lan_devices");
       const nextRows = nextDevices.map((device, index) => mapLanDevice(device, index, nextConfigs, nextDevices));
-      const current = nextRows.find((row) => row.id === selectedId);
+      const selection = selectionRef.current;
+      const current = nextRows.find((row) => row.id === selection.selectedId);
       const next = current ?? nextRows.find((row) => row.configured) ?? nextRows[0] ?? null;
 
       setConfigs(nextConfigs);
       setDevices(nextDevices);
       setSelectedId(next?.id ?? "");
-      if (refreshDraft || !configDialogOpen) {
+      // A scan may finish after the user has selected another device or opened its editor.
+      if (!selection.configDialogOpen && (refreshDraft || next)) {
         setDraft(next ? buildDraft(next, nextConfigs) : null);
       }
-      setStatusMessage("");
+      if (selection.configDialogOpen && !current) {
+        setConfigDialogOpen(false);
+        setDraft(next ? buildDraft(next, nextConfigs) : null);
+        setStatusMessage("所选设备已不在扫描结果中，请重新选择设备。");
+        setMessageType("info");
+      } else if (!selection.configDialogOpen) {
+        setStatusMessage("");
+      }
       window.dispatchEvent(new CustomEvent("homenet:devices-refresh"));
     } catch (error) {
       setDevices([]);
       setConfigs([]);
       setSelectedId("");
       setDraft(null);
+      setConfigDialogOpen(false);
       setStatusMessage(`读取局域网设备失败：${String(error)}`);
       setMessageType("error");
     } finally {
