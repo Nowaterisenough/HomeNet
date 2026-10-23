@@ -32,6 +32,8 @@ const checks = [
     'invokeCommand("save_device_ddns_config"',
   ],
   ["src/components/DeviceDdnsPanel.tsx", "prioritizeEnabledDeviceRows"],
+  ["src/components/DeviceDdnsPanel.tsx", "ddnsDeviceEntries"],
+  ["src/components/DeviceDdnsPanel.tsx", "DDNS 设备 <small>{rows.length}</small>"],
   [
     "src/components/CreateDdnsBindingDialog.tsx",
     'invokeCommand<DeviceDdnsConfig>("create_device_ddns_config"',

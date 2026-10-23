@@ -7,6 +7,8 @@ import {
   prepareNewDdnsBinding,
 } from "../src/utils/ddns.ts";
 import { withBoundDevices } from "../src/utils/devices.ts";
+import { ddnsDeviceEntries } from "../src/utils/ddnsDevices.ts";
+import { devicePickerOptions } from "../src/utils/devicePicker.ts";
 
 const mac = ["02", "aa", "bb", "cc", "dd", "01"].join(":");
 const base = () => ({
@@ -134,4 +136,56 @@ test("discovered online devices need a current candidate but offline devices can
       [],
     ).config,
   );
+});
+
+test("DDNS page lists only bound devices while the creation picker retains all LAN devices", () => {
+  const unbound = { ...device, id: "nas", mac: mac.replace(/01$/, "02") };
+  const offline = {
+    ...base(),
+    enabled: false,
+    device_id: "offline",
+    device_mac: mac.replace(/01$/, "03"),
+    sub_domain: "offline",
+  };
+  const devices = [device, unbound];
+  const configs = [base(), offline];
+  const rows = ddnsDeviceEntries(devices, configs);
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].device.id, device.id);
+  assert.equal(rows[1].device.online, false);
+  assert.equal(rows[1].configs[0].enabled, false);
+  assert.equal(devicePickerOptions(devices, configs).length, 3);
+  assert.equal(devices.length, 2);
+  assert.deepEqual(ddnsDeviceEntries(devices, []), []);
+});
+
+test("DDNS device rows appear after creation and disappear only after the last binding is removed", () => {
+  const first = base();
+  const second = { ...base(), sub_domain: "game" };
+  const rows = ddnsDeviceEntries([device], [first, second]);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].configs.length, 2);
+  assert.equal(ddnsDeviceEntries([device], [second]).length, 1);
+  assert.equal(ddnsDeviceEntries([device], []).length, 0);
+  assert.equal(devicePickerOptions([device], []).length, 1);
+});
+
+test("legacy bindings with a redacted MAC remain visible offline for repair without claiming a local device", () => {
+  const local = {
+    ...device,
+    id: "local-machine",
+    source: "local-interface",
+    mac: "",
+  };
+  const legacy = {
+    ...base(),
+    device_id: "local-machine",
+    device_name: "Remote PC",
+    device_mac: "02:00:00:00:00:00",
+  };
+  const rows = ddnsDeviceEntries([local], [legacy]);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].device.source, "ddns-binding");
+  assert.equal(rows[0].device.online, false);
+  assert.equal(rows[0].configs[0], legacy);
 });

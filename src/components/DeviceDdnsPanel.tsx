@@ -26,6 +26,7 @@ import {
   ddnsRecordKey,
 } from "../utils/ddns";
 import { statusTone } from "../utils/presentation";
+import { ddnsDeviceEntries } from "../utils/ddnsDevices";
 import { invokeCommand } from "../lib/tauri";
 import type { DeviceDdnsConfig, LanDevice } from "../types";
 import { formatSyncTime } from "../utils/time";
@@ -170,16 +171,12 @@ function configuredDomain(config: DeviceDdnsConfig | null): string {
   return config?.domain.trim() ? ddnsRecordKey(config)[1] : "-";
 }
 
-function mapLanDevice(
+function mapDdnsDevice(
   device: LanDevice,
   index: number,
-  configs: DeviceDdnsConfig[],
-  devices: LanDevice[],
+  boundConfigs: DeviceDdnsConfig[],
   preferredBindingKey = "",
 ): DeviceRow {
-  const boundConfigs = configs.filter(
-    (config) => matchingDeviceForConfig(config, devices) === device,
-  );
   const config =
     boundConfigs.find(
       (config) => ddnsBindingKey(config) === preferredBindingKey,
@@ -217,6 +214,18 @@ function prioritizeEnabledDeviceRows(rows: DeviceRow[]): DeviceRow[] {
   }
 
   return [...enabledRows, ...remainingRows];
+}
+
+function buildDdnsRows(
+  devices: LanDevice[],
+  configs: DeviceDdnsConfig[],
+  preferredBindingKey = "",
+) {
+  return prioritizeEnabledDeviceRows(
+    ddnsDeviceEntries(devices, configs).map((entry, index) =>
+      mapDdnsDevice(entry.device, index, entry.configs, preferredBindingKey),
+    ),
+  );
 }
 
 function buildDraft(
@@ -289,12 +298,7 @@ export default function DeviceDdnsPanel({
   selectionRef.current = { selectedId, configDialogOpen };
 
   const rows = useMemo(
-    () =>
-      prioritizeEnabledDeviceRows(
-        devices.map((device, index) =>
-          mapLanDevice(device, index, configs, devices, selectedBindingKey),
-        ),
-      ),
+    () => buildDdnsRows(devices, configs, selectedBindingKey),
     [configs, devices, selectedBindingKey],
   );
   const selectedRow = useMemo(
@@ -410,7 +414,7 @@ export default function DeviceDdnsPanel({
   }
 
   function validateDraft(requireEnabled: boolean): string {
-    if (!selectedRow || !draft) return "请选择要配置的局域网设备";
+    if (!selectedRow || !draft) return "请选择要配置的 DDNS 设备";
     if (!selectedRow.raw.mac.trim()) return "绑定设备必须有 MAC 地址";
     if (requireEnabled && !draft.enabled) return "请先启用同步";
     if (requireEnabled && !selectedRow.online)
@@ -500,9 +504,7 @@ export default function DeviceDdnsPanel({
       const nextConfigs = await loadConfigsData();
       const nextKey = ddnsBindingKey(payload);
       setSelectedBindingKey(nextKey);
-      const nextRows = devices.map((device, index) =>
-        mapLanDevice(device, index, nextConfigs, devices, nextKey),
-      );
+      const nextRows = buildDdnsRows(devices, nextConfigs, nextKey);
       syncDraftWithSelection(nextConfigs, nextRows);
       if (showSuccess) {
         setStatusMessage("设备 DDNS 绑定已保存");
@@ -531,9 +533,7 @@ export default function DeviceDdnsPanel({
         recordKey: row.config ? ddnsRecordKey(row.config) : null,
       });
       const nextConfigs = await loadConfigsData();
-      const nextRows = devices.map((device, index) =>
-        mapLanDevice(device, index, nextConfigs, devices),
-      );
+      const nextRows = buildDdnsRows(devices, nextConfigs, selectedBindingKey);
       syncDraftWithSelection(
         nextConfigs,
         nextRows,
@@ -567,14 +567,10 @@ export default function DeviceDdnsPanel({
         config: payload,
       });
       const nextConfigs = await loadConfigsData();
-      const nextRows = devices.map((device, index) =>
-        mapLanDevice(
-          device,
-          index,
-          nextConfigs,
-          devices,
-          ddnsBindingKey(payload),
-        ),
+      const nextRows = buildDdnsRows(
+        devices,
+        nextConfigs,
+        ddnsBindingKey(payload),
       );
       syncDraftWithSelection(nextConfigs, nextRows);
       setStatusMessage(result || "设备 DDNS 已同步");
@@ -625,11 +621,7 @@ export default function DeviceDdnsPanel({
     const nextDevices = withBoundDevices(devices, nextConfigs);
     const target = matchingDeviceForConfig(binding, nextDevices);
     const key = ddnsBindingKey(binding);
-    const nextRows = prioritizeEnabledDeviceRows(
-      nextDevices.map((device, index) =>
-        mapLanDevice(device, index, nextConfigs, nextDevices, key),
-      ),
-    );
+    const nextRows = buildDdnsRows(nextDevices, nextConfigs, key);
     setSelectedBindingKey(key);
     if (target) {
       const id = deviceRowId(target);
@@ -690,7 +682,7 @@ export default function DeviceDdnsPanel({
               onClick={() => loadDevices()}
             >
               <RefreshCw size={15} className={loading ? "spinning" : ""} />
-              刷新设备
+              刷新状态
             </button>
           </>
         }
@@ -698,16 +690,6 @@ export default function DeviceDdnsPanel({
       {(inventory.deviceError || inventory.configError) && !configDialogOpen ? (
         <p className="status-message msg-error" role="status">
           {inventory.deviceError || inventory.configError}
-        </p>
-      ) : null}
-      {inventory.devicesLoaded &&
-      /Mac/.test(navigator.platform) &&
-      !devices.some(
-        (device) => device.online && device.source !== "local-interface",
-      ) ? (
-        <p className="status-message msg-info" role="status">
-          本次仅发现本机设备。若同网设备未显示，请检查 macOS「系统设置 →
-          隐私与安全性 → 本地网络」中的 HomeNet 权限。已绑定的离线设备仍会保留。
         </p>
       ) : null}
       {statusMessage && !configDialogOpen ? (
@@ -720,9 +702,9 @@ export default function DeviceDdnsPanel({
           <label className="search-box">
             <Search size={16} />
             <input
-              aria-label="搜索设备"
+              aria-label="搜索 DDNS 设备"
               type="search"
-              placeholder="搜索设备名称、IP、域名或 MAC"
+              placeholder="搜索 DDNS 设备、IP、域名或 MAC"
               value={searchQuery}
               onChange={(event) => {
                 setSearchQuery(event.target.value);
@@ -733,21 +715,23 @@ export default function DeviceDdnsPanel({
           <section className="panel devices-list-panel">
             <header className="panel-header">
               <h2>
-                局域网设备 <small>{rows.length}</small>
+                DDNS 设备 <small>{rows.length}</small>
               </h2>
               <span className="text-muted">
                 {rows.filter((row) => row.online).length} 在线 ·{" "}
-                {rows.filter((row) => row.configured).length} 已绑定
+                {rows.filter((row) => !row.online).length} 离线
               </span>
             </header>
             <div className="device-list">
               {!visibleDevices.length ? (
                 <div className="empty-state">
-                  {loading
-                    ? "正在扫描局域网设备"
-                    : searchQuery
-                      ? "没有匹配的设备"
-                      : "暂无局域网设备，请尝试刷新"}
+                  {loading && !inventory.configsLoaded
+                    ? "正在读取 DDNS 绑定"
+                    : inventory.configError && !inventory.configsLoaded
+                      ? "暂时无法读取 DDNS 设备，请重试"
+                      : searchQuery
+                        ? "没有匹配的 DDNS 设备"
+                        : "暂无 DDNS 设备，点击「新增绑定」添加"}
                 </div>
               ) : (
                 visibleDevices.map((device) => (
@@ -807,10 +791,10 @@ export default function DeviceDdnsPanel({
                 {loading
                   ? lastScan
                     ? "后台刷新中，显示上次结果"
-                    : "正在扫描局域网设备"
+                    : "正在更新设备状态"
                   : lastScan
-                    ? `最近扫描 ${lastScan} · 每 60 秒刷新`
-                    : "等待扫描"}
+                    ? `状态更新于 ${lastScan} · 每 60 秒刷新`
+                    : "等待状态更新"}
               </span>
               <div className="toolbar">
                 <span>
@@ -1030,7 +1014,9 @@ export default function DeviceDdnsPanel({
             </>
           ) : (
             <div className="empty-state">
-              选择设备以查看网络信息和 DDNS 绑定
+              {rows.length
+                ? "选择 DDNS 设备以查看网络信息和绑定"
+                : "添加 DDNS 绑定后，在这里查看设备详情"}
             </div>
           )}
         </section>
