@@ -113,6 +113,7 @@ const requiredChecks = [
   ["src/styles/panels.css", ".ipv6-candidate-value"],
   ["src/styles/panels.css", ".webdav-panel"],
   ["src-tauri/tauri.conf.json", '"productName": "HomeNet"'],
+  ["src-tauri/Info.plist", "NSLocalNetworkUsageDescription"],
   ["src-tauri/tauri.conf.json", '"title": "HomeNet"'],
   ["src-tauri/tauri.conf.json", '"width": 1080'],
   ["src-tauri/tauri.conf.json", '"height": 740'],

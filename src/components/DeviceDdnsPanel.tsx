@@ -638,6 +638,16 @@ export default function DeviceDdnsPanel({
           {inventory.deviceError || inventory.configError}
         </p>
       ) : null}
+      {inventory.devicesLoaded &&
+      /Mac/.test(navigator.platform) &&
+      !devices.some(
+        (device) => device.online && device.source !== "local-interface",
+      ) ? (
+        <p className="status-message msg-info" role="status">
+          本次仅发现本机设备。若同网设备未显示，请检查 macOS「系统设置 →
+          隐私与安全性 → 本地网络」中的 HomeNet 权限。已绑定的离线设备仍会保留。
+        </p>
+      ) : null}
       {statusMessage && !configDialogOpen ? (
         <p className={`status-message msg-${messageType}`} role="status">
           {statusMessage}

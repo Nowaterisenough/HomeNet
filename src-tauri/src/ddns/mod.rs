@@ -364,7 +364,7 @@ fn powershell_output(script: &str) -> std::io::Result<std::process::Output> {
 
 #[cfg(target_os = "macos")]
 fn macos_ipv6_candidates() -> Vec<Ipv6AddressCandidate> {
-    std::process::Command::new("ifconfig")
+    std::process::Command::new("/sbin/ifconfig")
         .args(["-L", "-a"])
         .output()
         .ok()

@@ -146,6 +146,7 @@ fn powershell_output(script: &str) -> std::io::Result<std::process::Output> {
 
 #[cfg(target_os = "macos")]
 fn discover_neighbor_devices(hints: &[DeviceDiscoveryHint]) -> Vec<LanDevice> {
+    probe_macos_lan();
     refresh_macos_ipv6_neighbors();
 
     let mut rows = read_macos_neighbor_rows();
@@ -156,6 +157,44 @@ fn discover_neighbor_devices(hints: &[DeviceDiscoveryHint]) -> Vec<LanDevice> {
     let mut devices = merge_neighbor_rows_with_source(rows, "macos-neighbor");
     enrich_neighbor_devices_with_active_discovery(&mut devices, hints);
     devices
+}
+
+#[cfg(target_os = "macos")]
+fn probe_macos_lan() {
+    // Seed the neighbor cache even when it is empty. A local UDP operation also
+    // lets macOS request consent; reading a filtered ARP table alone may not.
+    let probe = || -> std::io::Result<()> {
+        let socket = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0))?;
+        socket.set_broadcast(true)?;
+        socket.set_ttl(1)?;
+        socket.set_write_timeout(Some(NETBIOS_QUERY_TIMEOUT))?;
+        let mut packet =
+            build_netbios_node_status_query(netbios_transaction_id(Ipv4Addr::BROADCAST));
+        packet[3] |= 0x10; // NetBIOS broadcast query flag.
+        socket.send_to(&packet, SocketAddrV4::new(Ipv4Addr::BROADCAST, 137))?;
+        let deadline = Instant::now() + NETBIOS_QUERY_TIMEOUT;
+        let mut buffer = [0_u8; 1024];
+        while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
+            socket.set_read_timeout(Some(remaining))?;
+            match socket.recv_from(&mut buffer) {
+                Ok(_) => {}
+                Err(error)
+                    if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+                {
+                    break
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    };
+    if let Err(error) = probe() {
+        crate::config::add_log(
+            "warn",
+            "设备发现",
+            &format!("局域网探测失败，请检查本地网络权限：{error}"),
+        );
+    }
 }
 
 #[cfg(windows)]
@@ -176,20 +215,43 @@ fn read_windows_neighbor_rows() -> Vec<NeighborRow> {
 fn read_macos_neighbor_rows() -> Vec<NeighborRow> {
     use std::process::Command;
 
-    let arp_output = Command::new("arp").arg("-an").output();
-    let ndp_output = Command::new("ndp").arg("-an").output();
-    let arp_stdout = arp_output
-        .ok()
-        .filter(|output| output.status.success())
-        .map(|output| String::from_utf8_lossy(&output.stdout).to_string())
-        .unwrap_or_default();
-    let ndp_stdout = ndp_output
-        .ok()
-        .filter(|output| output.status.success())
-        .map(|output| String::from_utf8_lossy(&output.stdout).to_string())
-        .unwrap_or_default();
+    let arp_stdout = discovery_command_stdout(
+        "/usr/sbin/arp",
+        Command::new("/usr/sbin/arp").arg("-an").output(),
+    );
+    let ndp_stdout = discovery_command_stdout(
+        "/usr/sbin/ndp",
+        Command::new("/usr/sbin/ndp").arg("-an").output(),
+    );
 
     parse_macos_neighbor_tables(&arp_stdout, &ndp_stdout)
+}
+
+#[cfg(target_os = "macos")]
+fn discovery_command_stdout(
+    command: &str,
+    result: std::io::Result<std::process::Output>,
+) -> String {
+    match result {
+        Ok(output) if output.status.success() => {
+            String::from_utf8_lossy(&output.stdout).into_owned()
+        }
+        Ok(output) => {
+            crate::config::add_log(
+                "warn",
+                "设备发现",
+                &format!(
+                    "{command} 执行失败：{}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ),
+            );
+            String::new()
+        }
+        Err(error) => {
+            crate::config::add_log("warn", "设备发现", &format!("无法执行 {command}：{error}"));
+            String::new()
+        }
+    }
 }
 
 #[cfg(all(not(windows), not(target_os = "macos")))]
@@ -500,7 +562,7 @@ fn resolve_hostname_addresses(hostname: &str) -> (Vec<Ipv4Addr>, Vec<Ipv6Addr>) 
 
 #[cfg(target_os = "macos")]
 fn resolve_macos_dscacheutil_addresses(hostname: &str) -> (Vec<Ipv4Addr>, Vec<Ipv6Addr>) {
-    std::process::Command::new("dscacheutil")
+    std::process::Command::new("/usr/bin/dscacheutil")
         .args(["-q", "host", "-a", "name", hostname])
         .output()
         .ok()
@@ -1121,9 +1183,33 @@ fn ping_ipv6_once(address: Ipv6Addr) {
 #[cfg(target_os = "macos")]
 fn ping_ipv6_once(address: Ipv6Addr) {
     let value = address.to_string();
-    let _ = std::process::Command::new("ping6")
-        .args(["-c", "1", "-W", "700", &value])
-        .output();
+    probe_macos_ipv6(&["-c", "1", &value]);
+}
+
+#[cfg(target_os = "macos")]
+fn probe_macos_ipv6(args: &[&str]) {
+    use std::process::{Command, Stdio};
+    let Ok(mut child) = Command::new("/sbin/ping6")
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return;
+    };
+    // Darwin ping6's -W is a query mode, not a timeout; bound the child ourselves.
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(25)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return;
+            }
+        }
+    }
 }
 
 #[cfg(all(not(windows), not(target_os = "macos")))]
@@ -1131,8 +1217,6 @@ fn ping_ipv6_once(_address: Ipv6Addr) {}
 
 #[cfg(target_os = "macos")]
 fn refresh_macos_ipv6_neighbors() {
-    use std::process::Command;
-
     let interfaces = list_afinet_netifas()
         .ok()
         .unwrap_or_default()
@@ -1151,9 +1235,7 @@ fn refresh_macos_ipv6_neighbors() {
             break;
         }
 
-        let _ = Command::new("ping6")
-            .args(["-c", "1", "-I", &interface, "ff02::1"])
-            .output();
+        probe_macos_ipv6(&["-c", "1", "-I", &interface, "ff02::1"]);
     }
 }
 
@@ -1517,7 +1599,7 @@ fn local_interface_mac_map() -> HashMap<String, String> {
 fn local_interface_mac_map() -> HashMap<String, String> {
     use std::process::Command;
 
-    let stdout = Command::new("ifconfig")
+    let stdout = Command::new("/sbin/ifconfig")
         .arg("-a")
         .output()
         .ok()
