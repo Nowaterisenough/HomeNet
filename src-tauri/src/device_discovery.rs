@@ -17,6 +17,10 @@ const LLMNR_MULTICAST_ADDR: &str = "224.0.0.252:5355";
 #[path = "lan_probe.rs"]
 mod lan_probe;
 
+#[cfg(target_os = "macos")]
+#[path = "macos_neighbors.rs"]
+mod macos_neighbors;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LanDevice {
     pub id: String,
@@ -249,6 +253,13 @@ fn read_windows_neighbor_rows() -> Vec<NeighborRow> {
 fn read_macos_neighbor_rows() -> Vec<NeighborRow> {
     use std::process::Command;
 
+    let mut native_rows = match macos_neighbors::read() {
+        Ok(rows) => rows,
+        Err(error) => {
+            crate::config::add_log("warn", "设备发现", &format!("原生邻居表读取失败：{error}"));
+            Vec::new()
+        }
+    };
     let arp_stdout = discovery_command_stdout(
         "/usr/sbin/arp",
         Command::new("/usr/sbin/arp").arg("-an").output(),
@@ -258,7 +269,18 @@ fn read_macos_neighbor_rows() -> Vec<NeighborRow> {
         Command::new("/usr/sbin/ndp").arg("-an").output(),
     );
 
-    parse_macos_neighbor_tables(&arp_stdout, &ndp_stdout)
+    let command_rows = parse_macos_neighbor_tables(&arp_stdout, &ndp_stdout);
+    crate::config::add_log(
+        "info",
+        "设备发现",
+        &format!(
+            "邻居表有效记录：原生 {}，命令 {}（ARP {} 行，NDP {} 行）",
+            native_rows.len(), command_rows.len(),
+            arp_stdout.lines().count(), ndp_stdout.lines().count(),
+        ),
+    );
+    native_rows.extend(command_rows);
+    native_rows
 }
 
 #[cfg(target_os = "macos")]
@@ -1641,7 +1663,12 @@ fn local_interface_mac_map() -> HashMap<String, String> {
         .map(|output| String::from_utf8_lossy(&output.stdout).to_string())
         .unwrap_or_default();
 
-    parse_macos_ifconfig_mac_map(&stdout)
+    let mut addresses = parse_macos_ifconfig_mac_map(&stdout);
+    match macos_neighbors::local_macs() {
+        Ok(native) => addresses.extend(native),
+        Err(error) => crate::config::add_log("warn", "设备发现", &format!("本机网卡 MAC 读取失败：{error}")),
+    }
+    addresses
 }
 
 #[cfg(all(not(windows), not(target_os = "macos")))]
