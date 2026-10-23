@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { devicePickerOptions } from "../src/utils/devicePicker.ts";
 import { defaultDeviceDdnsConfig } from "../src/utils/ddns.ts";
+import { isOutsidePopoverInteraction } from "../src/utils/popover.ts";
 
 const mac = (suffix) => ["02", "aa", "bb", "cc", "dd", suffix].join(":");
 const device = (suffix, name, extra = {}) => ({
@@ -88,5 +89,71 @@ test("picker is not limited to the six rows shown on a device page", () => {
   assert.equal(
     devicePickerOptions(devices, [], "Device 40")[0].device.id,
     devices[39].id,
+  );
+});
+
+test("WebKit document focus during refresh does not dismiss the popup, but an outside click does", () => {
+  const document = { body: {}, documentElement: {} };
+  const trigger = {
+    ownerDocument: document,
+    contains: (target) => target === trigger,
+  };
+  const refreshButton = {};
+  const popup = {
+    ownerDocument: document,
+    contains: (target) => target === refreshButton || target === popup,
+  };
+  const event = (type, target, path = [target]) => ({
+    type,
+    target,
+    composedPath: () => path,
+  });
+  assert.equal(
+    isOutsidePopoverInteraction(
+      event("focusin", document.body),
+      trigger,
+      popup,
+    ),
+    false,
+  );
+  assert.equal(
+    isOutsidePopoverInteraction(
+      event("focusin", document.documentElement),
+      trigger,
+      popup,
+    ),
+    false,
+  );
+  assert.equal(
+    isOutsidePopoverInteraction(
+      event("pointerdown", refreshButton),
+      trigger,
+      popup,
+    ),
+    false,
+  );
+  assert.equal(
+    isOutsidePopoverInteraction(event("focusin", trigger), trigger, popup),
+    false,
+  );
+  assert.equal(
+    isOutsidePopoverInteraction(
+      event("pointerdown", document.body),
+      trigger,
+      popup,
+    ),
+    true,
+  );
+  assert.equal(
+    isOutsidePopoverInteraction(event("focusin", {}), trigger, popup),
+    true,
+  );
+  assert.equal(
+    isOutsidePopoverInteraction(
+      event("pointerdown", {}, [refreshButton, popup]),
+      trigger,
+      popup,
+    ),
+    false,
   );
 });

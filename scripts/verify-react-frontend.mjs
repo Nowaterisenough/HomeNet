@@ -42,6 +42,8 @@ const checks = [
   ["src/components/DeviceDdnsPanel.tsx", "recordKey"],
   ["src/components/CreateDdnsBindingDialog.tsx", "<DevicePicker"],
   ["src/components/DevicePicker.tsx", 'role="listbox"'],
+  ["src/components/DevicePicker.tsx", "isOutsidePopoverInteraction"],
+  ["src/components/DevicePicker.tsx", "aria-disabled={refreshing}"],
   ["src/components/DeviceDdnsPanel.tsx", "onRefreshDevices={inventory.refresh}"],
   ["src-tauri/src/commands.rs", "scan_lan_devices_with_hints"],
   ["src/App.tsx", '<Waypoints size={21} aria-hidden="true" />'],

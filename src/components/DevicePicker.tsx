@@ -11,6 +11,8 @@ import { Check, ChevronDown, Monitor, RefreshCw, Search } from "lucide-react";
 import type { DeviceDdnsConfig, LanDevice } from "../types";
 import { deviceRowId } from "../utils/devices";
 import { devicePickerOptions } from "../utils/devicePicker";
+import { isOutsidePopoverInteraction } from "../utils/popover";
+import { operationError } from "../utils/errors";
 
 interface Props {
   devices: LanDevice[];
@@ -40,6 +42,11 @@ export default function DevicePicker({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [activeId, setActiveId] = useState("");
+  const refreshInFlight = useRef(false);
+  const [refreshPending, setRefreshPending] = useState(false);
+  const [refreshError, setRefreshError] = useState("");
+  const refreshing = loading || refreshPending;
+  const visibleError = error || refreshError;
   const [position, setPosition] = useState({
     top: 0,
     left: 0,
@@ -74,6 +81,22 @@ export default function DevicePicker({
     close(true);
   }
 
+  async function refreshDevices() {
+    if (loading || refreshInFlight.current) return;
+    refreshInFlight.current = true;
+    setRefreshPending(true);
+    setRefreshError("");
+    search.current?.focus({ preventScroll: true });
+    try {
+      await onRefresh();
+    } catch (error) {
+      setRefreshError(operationError("刷新设备失败", error));
+    } finally {
+      refreshInFlight.current = false;
+      setRefreshPending(false);
+    }
+  }
+
   useLayoutEffect(() => {
     if (!open) return;
     function place() {
@@ -92,23 +115,25 @@ export default function DevicePicker({
       });
     }
     place();
+    const observer =
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(place);
+    const container = trigger.current?.parentElement;
+    if (container) observer?.observe(container);
+    if (host) observer?.observe(host);
     window.addEventListener("resize", place);
     window.addEventListener("scroll", place, true);
     return () => {
       window.removeEventListener("resize", place);
       window.removeEventListener("scroll", place, true);
+      observer?.disconnect();
     };
-  }, [open]);
+  }, [open, host]);
 
   useEffect(() => {
     if (!open) return;
     search.current?.focus({ preventScroll: true });
     function outside(event: Event) {
-      const target = event.target as Node;
-      if (
-        !popup.current?.contains(target) &&
-        !trigger.current?.contains(target)
-      )
+      if (isOutsidePopoverInteraction(event, trigger.current, popup.current))
         setOpen(false);
     }
     document.addEventListener("pointerdown", outside);
@@ -165,13 +190,13 @@ export default function DevicePicker({
         <ChevronDown size={14} />
       </button>
       <p className="device-picker-summary" role="status">
-        {loading
+        {refreshing
           ? "正在探测局域网，保留已有结果…"
           : `检测到 ${all.filter((option) => option.device.online).length} 台在线设备 · ${all.filter((option) => !option.device.online).length} 台离线设备`}
       </p>
-      {error ? (
+      {visibleError ? (
         <p className="device-picker-error" role="status">
-          {error}
+          {visibleError}
         </p>
       ) : null}
       {open && host
@@ -237,20 +262,21 @@ export default function DevicePicker({
                   className="icon-action"
                   aria-label="刷新局域网设备"
                   title="刷新局域网设备"
-                  disabled={loading}
-                  onClick={() => {
-                    search.current?.focus();
-                    void onRefresh();
-                  }}
+                  aria-disabled={refreshing}
+                  onPointerDown={(event) => event.preventDefault()}
+                  onClick={() => void refreshDevices()}
                 >
-                  <RefreshCw size={14} className={loading ? "spinning" : ""} />
+                  <RefreshCw
+                    size={14}
+                    className={refreshing ? "spinning" : ""}
+                  />
                 </button>
               </div>
-              {error ? (
+              {visibleError ? (
                 <p
                   className="device-picker-scan-error"
                   role="status"
-                  title={error}
+                  title={visibleError}
                 >
                   扫描失败，保留已有设备。请查看具体错误后重试。
                 </p>
@@ -260,7 +286,7 @@ export default function DevicePicker({
                 id={`${id}-list`}
                 role="listbox"
                 aria-label="可检测到的局域网设备"
-                aria-busy={loading}
+                aria-busy={refreshing}
               >
                 {options.map((option, index) => (
                   <div
@@ -306,7 +332,7 @@ export default function DevicePicker({
                   <div className="device-picker-empty">
                     {query
                       ? "没有匹配的设备"
-                      : loading
+                      : refreshing
                         ? "正在发现局域网设备…"
                         : "尚未检测到设备"}
                     <small>
@@ -319,7 +345,7 @@ export default function DevicePicker({
               </div>
               <div className="device-picker-footer">
                 <span>
-                  {loading
+                  {refreshing
                     ? "正在扫描局域网…"
                     : query
                       ? `${options.length} 个匹配结果`

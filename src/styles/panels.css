@@ -732,6 +732,10 @@ input:disabled {
 .device-picker-search input:focus-visible {
   outline-offset: 1px;
 }
+.device-picker-search button[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: progress;
+}
 .device-picker-options {
   flex: 1;
   min-height: 0;
