@@ -151,11 +151,35 @@ pub(super) fn refresh_ipv4_neighbors() -> Result<Vec<Ipv4Addr>, String> {
         match bound_macos_socket(subnet, socket2::Protocol::ICMPV4)
             .and_then(|socket| lan_echo::discover(socket, &targets))
         {
-            Ok(addresses) => {
+            Ok(result) => {
                 echo_completed = true;
-                reachable.extend(addresses);
+                crate::config::add_log(
+                    "info",
+                    "设备发现",
+                    &format!(
+                        "网卡索引 {}：{}",
+                        subnet
+                            .interface_index
+                            .map(NonZeroU32::get)
+                            .unwrap_or_default(),
+                        result.summary
+                    ),
+                );
+                reachable.extend(result.addresses);
             }
             Err(error) => {
+                crate::config::add_log(
+                    "info",
+                    "设备发现",
+                    &format!(
+                        "网卡索引 {}：{}",
+                        subnet
+                            .interface_index
+                            .map(NonZeroU32::get)
+                            .unwrap_or_default(),
+                        probe_error_message("回包探测", &error)
+                    ),
+                );
                 echo_error = Some(error);
             }
         }

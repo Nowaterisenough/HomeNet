@@ -5,6 +5,36 @@ use std::time::{Duration, Instant};
 
 const REPLY_WINDOW: Duration = Duration::from_millis(800);
 
+#[derive(Default)]
+struct EchoStats {
+    targets: usize,
+    sent: usize,
+    send_errors: usize,
+    received: usize,
+    rejected: usize,
+    receive_errors: usize,
+}
+
+impl EchoStats {
+    fn summary(&self, matches: usize) -> String {
+        format!(
+            "ICMP 目标 {}，发出 {}，回包 {}，有效设备 {}，非匹配 {}，发送失败 {}，接收失败 {}",
+            self.targets,
+            self.sent,
+            self.received,
+            matches,
+            self.rejected,
+            self.send_errors,
+            self.receive_errors
+        )
+    }
+}
+
+pub(super) struct EchoResult {
+    pub addresses: Vec<Ipv4Addr>,
+    pub summary: String,
+}
+
 fn checksum(bytes: &[u8]) -> u16 {
     let mut sum: u32 = bytes
         .chunks(2)
@@ -61,13 +91,17 @@ fn drain(
     nonce: &[u8; 16],
     sent: &BTreeSet<Ipv4Addr>,
     replies: &mut BTreeSet<Ipv4Addr>,
+    stats: &mut EchoStats,
 ) -> io::Result<()> {
     let mut buffer = [0_u8; 2048];
     for _ in 0..128 {
         match socket.recv_from(&mut buffer) {
             Ok((length, std::net::SocketAddr::V4(sender))) => {
+                stats.received += 1;
                 if valid_reply(&buffer[..length], *sender.ip(), nonce, sent) {
                     replies.insert(*sender.ip());
+                } else {
+                    stats.rejected += 1;
                 }
             }
             Ok(_) => {}
@@ -75,54 +109,102 @@ fn drain(
             Err(error)
                 if matches!(
                     error.kind(),
-                    ErrorKind::Interrupted
-                        | ErrorKind::ConnectionRefused
-                        | ErrorKind::HostUnreachable
+                    ErrorKind::ConnectionRefused | ErrorKind::HostUnreachable
                 ) =>
             {
-                continue
+                stats.receive_errors += 1;
+                continue;
             }
-            Err(error) => return Err(error),
+            Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+            Err(error) => {
+                stats.receive_errors += 1;
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!("{error}；{}", stats.summary(replies.len())),
+                ));
+            }
         }
     }
     Ok(())
 }
 
-pub(super) fn discover(socket: UdpSocket, targets: &[Ipv4Addr]) -> io::Result<Vec<Ipv4Addr>> {
+pub(super) fn discover(socket: UdpSocket, targets: &[Ipv4Addr]) -> io::Result<EchoResult> {
     socket.set_nonblocking(true)?;
     let nonce = *uuid::Uuid::new_v4().as_bytes();
     let mut sent = BTreeSet::new();
     let mut replies = BTreeSet::new();
     let mut last_error = None;
+    let mut stats = EchoStats {
+        targets: targets.len(),
+        ..EchoStats::default()
+    };
     for target in targets {
         match socket.send_to(&request(*target, &nonce), SocketAddrV4::new(*target, 0)) {
             Ok(_) => {
                 sent.insert(*target);
+                stats.sent += 1;
             }
             Err(error) => {
+                stats.send_errors += 1;
                 last_error = Some(error);
             }
         }
-        drain(&socket, &nonce, &sent, &mut replies)?;
+        drain(&socket, &nonce, &sent, &mut replies, &mut stats)?;
         std::thread::sleep(Duration::from_millis(1));
     }
     if sent.is_empty() {
-        return last_error.map_or_else(|| Ok(Vec::new()), Err);
+        return last_error.map_or_else(
+            || {
+                Ok(EchoResult {
+                    addresses: Vec::new(),
+                    summary: stats.summary(0),
+                })
+            },
+            |error| {
+                Err(io::Error::new(
+                    error.kind(),
+                    format!("{error}；{}", stats.summary(0)),
+                ))
+            },
+        );
     }
     let deadline = Instant::now() + REPLY_WINDOW;
     while Instant::now() < deadline {
-        drain(&socket, &nonce, &sent, &mut replies)?;
+        drain(&socket, &nonce, &sent, &mut replies, &mut stats)?;
         if replies.len() == sent.len() {
             break;
         }
         std::thread::sleep(Duration::from_millis(5));
     }
-    Ok(replies.into_iter().collect())
+    let mut summary = stats.summary(replies.len());
+    if let Some(error) = last_error {
+        summary.push_str(&format!("；最后发送错误：{error}"));
+    }
+    Ok(EchoResult {
+        addresses: replies.into_iter().collect(),
+        summary,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn probe_summary_distinguishes_sending_from_verified_replies() {
+        let stats = EchoStats {
+            targets: 253,
+            sent: 252,
+            send_errors: 1,
+            received: 5,
+            rejected: 4,
+            receive_errors: 0,
+        };
+        let summary = stats.summary(1);
+        assert!(summary.contains("发出 252"));
+        assert!(summary.contains("有效设备 1"));
+        assert!(summary.contains("非匹配 4"));
+        assert!(summary.contains("发送失败 1"));
+    }
     #[test]
     fn only_correlated_echo_replies_count_as_live_devices() {
         let ip = Ipv4Addr::new(192, 0, 2, 8);

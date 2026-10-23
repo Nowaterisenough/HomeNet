@@ -117,6 +117,7 @@ pub fn discover_lan_devices_with_hints(hints: &[DeviceDiscoveryHint]) -> Vec<Lan
 pub fn scan_lan_devices_with_hints(
     hints: &[DeviceDiscoveryHint],
 ) -> Result<Vec<LanDevice>, String> {
+    let started = Instant::now();
     // Only inventory scans probe the subnet; DDNS sync keeps its lightweight lookup.
     #[cfg(any(windows, target_os = "macos"))]
     let probe = lan_probe::refresh_ipv4_neighbors();
@@ -136,6 +137,16 @@ pub fn scan_lan_devices_with_hints(
             }
         }
     }
+    crate::config::add_log(
+        "info",
+        "设备发现",
+        &format!(
+            "本轮扫描完成：{} 台设备，{} 台来自有效回包，耗时 {} 毫秒",
+            devices.len(),
+            devices.iter().filter(|device| device.source == "icmp-reply").count(),
+            started.elapsed().as_millis(),
+        ),
+    );
     Ok(devices)
 }
 
