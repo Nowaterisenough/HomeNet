@@ -38,6 +38,7 @@ const checks = [
   ],
   ["src/components/DeviceDdnsPanel.tsx", "originalRecordKey"],
   ["src/components/DeviceDdnsPanel.tsx", "recordKey"],
+  ["src-tauri/src/commands.rs", "scan_lan_devices_with_hints"],
   ["src/App.tsx", '<Waypoints size={21} aria-hidden="true" />'],
   ["src/components/TrayStatus.tsx", '<Waypoints size={22} />'],
   ["src/components/NetworkOverview.tsx", "<Waypoints />"],

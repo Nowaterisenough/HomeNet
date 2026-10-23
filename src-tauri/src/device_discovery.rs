@@ -13,6 +13,10 @@ const NETBIOS_QUERY_TIMEOUT: Duration = Duration::from_millis(450);
 const LLMNR_DISCOVERY_WINDOW: Duration = Duration::from_millis(800);
 const LLMNR_MULTICAST_ADDR: &str = "224.0.0.252:5355";
 
+#[cfg(any(windows, target_os = "macos", test))]
+#[path = "lan_probe.rs"]
+mod lan_probe;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LanDevice {
     pub id: String,
@@ -108,6 +112,21 @@ pub fn discover_lan_devices_with_hints(hints: &[DeviceDiscoveryHint]) -> Vec<Lan
     let local_devices = discover_local_interface_devices();
     let neighbor_devices = discover_neighbor_devices(hints);
     merge_local_and_neighbor_devices(local_devices, neighbor_devices)
+}
+
+pub fn scan_lan_devices_with_hints(hints: &[DeviceDiscoveryHint]) -> Result<Vec<LanDevice>, String> {
+    // Only inventory scans probe the subnet; DDNS sync keeps its lightweight lookup.
+    #[cfg(any(windows, target_os = "macos"))]
+    let probe = lan_probe::refresh_ipv4_neighbors();
+    let devices = discover_lan_devices_with_hints(hints);
+    #[cfg(any(windows, target_os = "macos"))]
+    if let Err(error) = probe {
+        crate::config::add_log("warn", "设备发现", &error);
+        if devices.iter().all(|device| device.source == "local-interface") {
+            return Err(error);
+        }
+    }
+    Ok(devices)
 }
 
 pub fn is_global_ipv6(value: &str) -> bool {
