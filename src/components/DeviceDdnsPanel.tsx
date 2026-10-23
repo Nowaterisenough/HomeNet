@@ -8,6 +8,7 @@ import {
   Monitor,
   Info,
   Pencil,
+  Plus,
   RefreshCw,
   Save,
   Search,
@@ -18,6 +19,12 @@ import {
 } from "lucide-react";
 import EditorDrawer from "./EditorDrawer";
 import PageHeading from "./PageHeading";
+import CreateDdnsBindingDialog from "./CreateDdnsBindingDialog";
+import {
+  defaultDeviceDdnsConfig as defaultConfig,
+  ddnsBindingKey,
+  ddnsRecordKey,
+} from "../utils/ddns";
 import { statusTone } from "../utils/presentation";
 import { invokeCommand } from "../lib/tauri";
 import type { DeviceDdnsConfig, LanDevice } from "../types";
@@ -27,6 +34,7 @@ import {
   deviceRowId,
   isGeneratedLocalMachineConfig,
   matchingDeviceForConfig,
+  withBoundDevices,
 } from "../utils/devices";
 
 interface DeviceDdnsPanelProps {
@@ -47,28 +55,8 @@ interface DeviceRow {
   boundIp: string;
   raw: LanDevice;
   config: DeviceDdnsConfig | null;
+  configs: DeviceDdnsConfig[];
 }
-
-const defaultConfig: DeviceDdnsConfig = {
-  enabled: false,
-  provider: "aliyun",
-  access_key_id: "",
-  access_key_secret: "",
-  domain: "",
-  sub_domain: "",
-  record_type: "AAAA",
-  ttl: 600,
-  interval_minutes: 10,
-  ip_candidate_index: 1,
-  device_id: "",
-  device_mac: "",
-  device_name: "",
-  selected_ipv6: "",
-  selected_ip: "",
-  last_update_time: "",
-  last_result: "",
-  last_online: false,
-};
 
 function uniqueStrings(values: string[]): string[] {
   return values.reduce<string[]>((result, value) => {
@@ -157,18 +145,6 @@ function normalizeConfig(
   };
 }
 
-function configForDevice(
-  device: LanDevice,
-  configs: DeviceDdnsConfig[],
-  devices: LanDevice[],
-): DeviceDdnsConfig | null {
-  return (
-    configs.find(
-      (config) => matchingDeviceForConfig(config, devices) === device,
-    ) ?? null
-  );
-}
-
 function selectedIpForDraft(
   config: DeviceDdnsConfig | null,
   device: LanDevice,
@@ -191,10 +167,7 @@ function boundIpForConfig(
 }
 
 function configuredDomain(config: DeviceDdnsConfig | null): string {
-  const domain = config?.domain.trim() ?? "";
-  const sub = config?.sub_domain.trim() ?? "";
-  if (!domain) return "-";
-  return sub ? `${sub}.${domain}` : domain;
+  return config?.domain.trim() ? ddnsRecordKey(config)[1] : "-";
 }
 
 function mapLanDevice(
@@ -202,8 +175,17 @@ function mapLanDevice(
   index: number,
   configs: DeviceDdnsConfig[],
   devices: LanDevice[],
+  preferredBindingKey = "",
 ): DeviceRow {
-  const config = configForDevice(device, configs, devices);
+  const boundConfigs = configs.filter(
+    (config) => matchingDeviceForConfig(config, devices) === device,
+  );
+  const config =
+    boundConfigs.find(
+      (config) => ddnsBindingKey(config) === preferredBindingKey,
+    ) ??
+    boundConfigs[0] ??
+    null;
   const nativeName = displayName(device, index);
   const configuredName =
     config && !isGeneratedLocalMachineConfig(config)
@@ -216,12 +198,13 @@ function mapLanDevice(
     mac: device.mac || "-",
     online: device.online,
     configured: Boolean(config),
-    enabled: Boolean(config?.enabled),
+    enabled: boundConfigs.some((config) => config.enabled),
     domain: configuredDomain(config),
     lastSync: formatSyncTime(config?.last_update_time || ""),
     boundIp: boundIpForConfig(config, device),
     raw: device,
     config,
+    configs: boundConfigs,
   };
 }
 
@@ -280,6 +263,11 @@ export default function DeviceDdnsPanel({
     [inventory.configs],
   );
   const [selectedId, setSelectedId] = useState("");
+  const [selectedBindingKey, setSelectedBindingKey] = useState("");
+  const [editingRecordKey, setEditingRecordKey] = useState<ReturnType<
+    typeof ddnsRecordKey
+  > | null>(null);
+  const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [draft, setDraft] = useState<DeviceDdnsConfig | null>(null);
   const [configDialogOpen, setConfigDialogOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -304,10 +292,10 @@ export default function DeviceDdnsPanel({
     () =>
       prioritizeEnabledDeviceRows(
         devices.map((device, index) =>
-          mapLanDevice(device, index, configs, devices),
+          mapLanDevice(device, index, configs, devices, selectedBindingKey),
         ),
       ),
-    [configs, devices],
+    [configs, devices, selectedBindingKey],
   );
   const selectedRow = useMemo(
     () => rows.find((row) => row.id === selectedId) ?? null,
@@ -322,6 +310,7 @@ export default function DeviceDdnsPanel({
         device.nativeName,
         device.mac,
         device.domain,
+        ...device.configs.map(configuredDomain),
         device.boundIp,
         ...device.raw.ipv4,
         ...device.raw.ipv6,
@@ -346,9 +335,8 @@ export default function DeviceDdnsPanel({
   }, [availableIpOptions, draft]);
   const previewRows = useMemo(() => {
     const domain = draft?.domain.trim() ?? "";
-    const sub = draft?.sub_domain.trim() ?? "";
     if (!selectedRow || !domain) return [];
-    return [[deviceDisplayNameForDraft(), sub ? `${sub}.${domain}` : domain]];
+    return [[deviceDisplayNameForDraft(), configuredDomain(draft)]];
   }, [draft, selectedRow]);
 
   function deviceDisplayNameForDraft(): string {
@@ -380,28 +368,39 @@ export default function DeviceDdnsPanel({
       current ?? rows.find((row) => row.configured) ?? rows[0] ?? null;
     setSelectedId(next?.id ?? "");
     if (!selection.configDialogOpen) {
+      setSelectedBindingKey(next?.config ? ddnsBindingKey(next.config) : "");
       setDraft(next ? buildDraft(next, configs) : null);
     } else if (!current) {
       setConfigDialogOpen(false);
+      setEditingRecordKey(null);
       setDraft(next ? buildDraft(next, configs) : null);
     }
   }, [rows, configs]);
 
   function selectRow(row: DeviceRow) {
     setSelectedId(row.id);
+    setSelectedBindingKey(row.config ? ddnsBindingKey(row.config) : "");
     if (!configDialogOpen) {
       setDraft(buildDraft(row, configs));
     }
   }
 
   function openConfigDialog(row: DeviceRow) {
+    setStatusMessage("");
     setSelectedId(row.id);
+    setSelectedBindingKey(row.config ? ddnsBindingKey(row.config) : "");
+    if (!row.config) {
+      setCreateDialogOpen(true);
+      return;
+    }
+    setEditingRecordKey(ddnsRecordKey(row.config));
     setDraft(buildDraft(row, configs));
     setConfigDialogOpen(true);
   }
 
   function closeConfigDialog() {
     setConfigDialogOpen(false);
+    setEditingRecordKey(null);
     syncDraftWithSelection();
   }
 
@@ -438,7 +437,7 @@ export default function DeviceDdnsPanel({
       }
     }
     if (draft.sub_domain.trim().includes(","))
-      return "每台设备请填写一个独立子域名";
+      return "每条绑定请填写一个子域名";
     return "";
   }
 
@@ -489,16 +488,27 @@ export default function DeviceDdnsPanel({
 
     setMutating(true);
     try {
-      await invokeCommand("save_device_ddns_config", { config: payload });
+      await invokeCommand("save_device_ddns_config", {
+        config: payload,
+        originalRecordKey: configDialogOpen
+          ? editingRecordKey
+          : selectedRow?.config
+            ? ddnsRecordKey(selectedRow.config)
+            : null,
+      });
+      if (configDialogOpen) setEditingRecordKey(ddnsRecordKey(payload));
       const nextConfigs = await loadConfigsData();
+      const nextKey = ddnsBindingKey(payload);
+      setSelectedBindingKey(nextKey);
       const nextRows = devices.map((device, index) =>
-        mapLanDevice(device, index, nextConfigs, devices),
+        mapLanDevice(device, index, nextConfigs, devices, nextKey),
       );
       syncDraftWithSelection(nextConfigs, nextRows);
       if (showSuccess) {
         setStatusMessage("设备 DDNS 绑定已保存");
         setMessageType("success");
         setConfigDialogOpen(false);
+        setEditingRecordKey(null);
       }
       notifyDataChanged();
       return payload;
@@ -518,6 +528,7 @@ export default function DeviceDdnsPanel({
       await invokeCommand("delete_device_ddns_config", {
         deviceId: row.raw.id,
         deviceMac: row.raw.mac,
+        recordKey: row.config ? ddnsRecordKey(row.config) : null,
       });
       const nextConfigs = await loadConfigsData();
       const nextRows = devices.map((device, index) =>
@@ -557,7 +568,13 @@ export default function DeviceDdnsPanel({
       });
       const nextConfigs = await loadConfigsData();
       const nextRows = devices.map((device, index) =>
-        mapLanDevice(device, index, nextConfigs, devices),
+        mapLanDevice(
+          device,
+          index,
+          nextConfigs,
+          devices,
+          ddnsBindingKey(payload),
+        ),
       );
       syncDraftWithSelection(nextConfigs, nextRows);
       setStatusMessage(result || "设备 DDNS 已同步");
@@ -603,6 +620,37 @@ export default function DeviceDdnsPanel({
     updateDraft(key, event.target.checked as never);
   }
 
+  async function createdBinding(binding: DeviceDdnsConfig) {
+    const nextConfigs = (await inventory.refreshConfigs()).map(normalizeConfig);
+    const nextDevices = withBoundDevices(devices, nextConfigs);
+    const target = matchingDeviceForConfig(binding, nextDevices);
+    const key = ddnsBindingKey(binding);
+    const nextRows = prioritizeEnabledDeviceRows(
+      nextDevices.map((device, index) =>
+        mapLanDevice(device, index, nextConfigs, nextDevices, key),
+      ),
+    );
+    setSelectedBindingKey(key);
+    if (target) {
+      const id = deviceRowId(target);
+      setSelectedId(id);
+      setPage(
+        Math.floor(
+          Math.max(
+            0,
+            nextRows.findIndex((row) => row.id === id),
+          ) / 6,
+        ),
+      );
+    }
+    setSearchQuery("");
+    setCreateDialogOpen(false);
+    setStatusMessage(`已新增 DDNS 绑定：${configuredDomain(binding)}`);
+    setMessageType("success");
+    notifyDataChanged();
+    window.setTimeout(() => setStatusMessage(""), 4200);
+  }
+
   const pageCount = Math.max(1, Math.ceil(filteredDevices.length / 6));
   const currentPage = Math.min(page, pageCount - 1);
   const visibleDevices = filteredDevices.slice(
@@ -611,7 +659,7 @@ export default function DeviceDdnsPanel({
   );
   const selectedStatus = !selectedRow?.configured
     ? "未绑定"
-    : !selectedRow.enabled
+    : !selectedRow.config?.enabled
       ? "已停用"
       : selectedRow.config?.last_result || "等待首次同步";
 
@@ -622,15 +670,29 @@ export default function DeviceDdnsPanel({
         title="设备与 DDNS"
         description="为每一台设备，找到回家的地址。"
         actions={
-          <button
-            className="btn btn-primary"
-            type="button"
-            disabled={loading || mutating || syncing}
-            onClick={() => loadDevices()}
-          >
-            <RefreshCw size={15} className={loading ? "spinning" : ""} />
-            刷新设备
-          </button>
+          <>
+            <button
+              className="btn btn-primary"
+              type="button"
+              disabled={mutating || syncing}
+              onClick={() => {
+                setStatusMessage("");
+                setCreateDialogOpen(true);
+              }}
+            >
+              <Plus size={15} />
+              新增绑定
+            </button>
+            <button
+              className="btn btn-secondary"
+              type="button"
+              disabled={loading || mutating || syncing}
+              onClick={() => loadDevices()}
+            >
+              <RefreshCw size={15} className={loading ? "spinning" : ""} />
+              刷新设备
+            </button>
+          </>
         }
       />
       {(inventory.deviceError || inventory.configError) && !configDialogOpen ? (
@@ -694,6 +756,7 @@ export default function DeviceDdnsPanel({
                     key={device.id}
                     className={`device-list-row ${selectedId === device.id ? "is-selected" : ""}`}
                     aria-pressed={selectedId === device.id}
+                    disabled={mutating || syncing}
                     onClick={() => selectRow(device)}
                   >
                     <span className="device-avatar">
@@ -726,11 +789,13 @@ export default function DeviceDdnsPanel({
                         ) : (
                           <CloudOff size={12} />
                         )}
-                        {device.enabled
-                          ? "DDNS 已启用"
-                          : device.configured
-                            ? "DDNS 已停用"
-                            : "未绑定"}
+                        {device.configs.length > 1
+                          ? `DDNS ${device.configs.length} 条`
+                          : device.enabled
+                            ? "DDNS 已启用"
+                            : device.configured
+                              ? "DDNS 已停用"
+                              : "未绑定"}
                       </span>
                     </span>
                   </button>
@@ -833,10 +898,34 @@ export default function DeviceDdnsPanel({
                 <div className="detail-separator" />
                 <div className="detail-section-heading">
                   <h3>DDNS 绑定</h3>
+                  {selectedRow.configs.length > 1 ? (
+                    <select
+                      className="ddns-binding-select"
+                      aria-label="选择 DDNS 绑定"
+                      disabled={mutating || syncing}
+                      value={
+                        selectedRow.config
+                          ? ddnsBindingKey(selectedRow.config)
+                          : ""
+                      }
+                      onChange={(event) =>
+                        setSelectedBindingKey(event.target.value)
+                      }
+                    >
+                      {selectedRow.configs.map((config) => (
+                        <option
+                          key={ddnsBindingKey(config)}
+                          value={ddnsBindingKey(config)}
+                        >
+                          {configuredDomain(config)} · {config.record_type}
+                        </option>
+                      ))}
+                    </select>
+                  ) : null}
                   <span
-                    className={`badge ${selectedRow.enabled ? "" : "badge-neutral"}`}
+                    className={`badge ${selectedRow.config?.enabled ? "" : "badge-neutral"}`}
                   >
-                    {selectedRow.enabled
+                    {selectedRow.config?.enabled
                       ? "已启用"
                       : selectedRow.configured
                         ? "已停用"
@@ -897,7 +986,7 @@ export default function DeviceDdnsPanel({
                   解除绑定
                 </button>
                 <div className="toolbar">
-                  {selectedRow.enabled ? (
+                  {selectedRow.config?.enabled ? (
                     <button
                       className="btn btn-secondary"
                       disabled={mutating || syncing || !selectedRow.online}
@@ -934,6 +1023,16 @@ export default function DeviceDdnsPanel({
         </section>
       </div>
 
+      {createDialogOpen ? (
+        <CreateDdnsBindingDialog
+          devices={devices}
+          configs={configs}
+          initialDevice={selectedRow?.raw ?? null}
+          template={selectedRow?.config ?? configs[0] ?? null}
+          onClose={() => setCreateDialogOpen(false)}
+          onCreated={createdBinding}
+        />
+      ) : null}
       {configDialogOpen && selectedRow && draft ? (
         <EditorDrawer
           title="设备 DDNS 解析配置"

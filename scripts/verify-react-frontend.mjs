@@ -32,6 +32,12 @@ const checks = [
     'invokeCommand("save_device_ddns_config"',
   ],
   ["src/components/DeviceDdnsPanel.tsx", "prioritizeEnabledDeviceRows"],
+  [
+    "src/components/CreateDdnsBindingDialog.tsx",
+    'invokeCommand<DeviceDdnsConfig>("create_device_ddns_config"',
+  ],
+  ["src/components/DeviceDdnsPanel.tsx", "originalRecordKey"],
+  ["src/components/DeviceDdnsPanel.tsx", "recordKey"],
   ["src/components/HomeNetIcon.tsx", "tray-icon.svg"],
   ["src/components/DeviceDdnsPanel.tsx", "device-status-icons"],
   [
@@ -78,7 +84,12 @@ for (const [file, needle] of checks) {
 
   const content = readFileSync(filePath, "utf8");
   // Command wiring checks should survive line wrapping by the formatter.
-  if (!content.replace(/\s+/g, "").replace(/,\)/g, ")").includes(needle.replace(/\s+/g, ""))) {
+  if (
+    !content
+      .replace(/\s+/g, "")
+      .replace(/,\)/g, ")")
+      .includes(needle.replace(/\s+/g, ""))
+  ) {
     missing.push(`${file}: ${needle}`);
   }
 }

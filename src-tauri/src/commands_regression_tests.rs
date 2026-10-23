@@ -155,3 +155,96 @@ fn fallback_rejects_non_release_or_foreign_redirects() {
     )
     .is_err());
 }
+
+fn binding(sub: &str, record_type: &str) -> DeviceDdnsConfig {
+    DeviceDdnsConfig {
+        enabled: true,
+        access_key_id: "test-key".into(),
+        access_key_secret: "test-secret".into(),
+        domain: "example.test".into(),
+        sub_domain: sub.into(),
+        record_type: record_type.into(),
+        device_id: "test-device".into(),
+        device_mac: "02:aa:bb:cc:dd:01".into(),
+        ..DeviceDdnsConfig::default()
+    }
+}
+
+#[test]
+fn creating_multiple_records_on_one_device_does_not_replace_existing_bindings() {
+    let mut config = AppConfig::default();
+    create_device_binding(&mut config, binding("", "AAAA")).unwrap();
+    create_device_binding(&mut config, binding("game", "AAAA")).unwrap();
+    create_device_binding(&mut config, binding("game", "A")).unwrap();
+    assert_eq!(active_device_ddns_configs(&config).len(), 3);
+    let original = config.device_ddns_configs.clone();
+    assert!(create_device_binding(&mut config, binding("GAME", "AAAA")).is_err());
+    assert_eq!(config.device_ddns_configs, original);
+}
+
+#[test]
+fn editing_and_deleting_select_only_the_requested_record() {
+    let mut config = AppConfig::default();
+    let root = create_device_binding(&mut config, binding("", "AAAA")).unwrap();
+    let game = create_device_binding(&mut config, binding("game", "AAAA")).unwrap();
+    let game_key = crate::config::device_ddns_record_key(&game).unwrap();
+    assert!(save_device_binding(&mut config, binding("", "AAAA"), Some(&game_key)).is_err());
+    save_device_binding(&mut config, binding("cloud", "AAAA"), Some(&game_key)).unwrap();
+    assert_eq!(active_device_ddns_configs(&config).len(), 2);
+    let cloud_key = crate::config::device_ddns_record_key(&binding("cloud", "AAAA")).unwrap();
+    assert!(delete_device_ddns_config_from_config(
+        &mut config,
+        &game.device_id,
+        &game.device_mac,
+        Some(&cloud_key)
+    ));
+    assert_eq!(active_device_ddns_configs(&config), vec![root]);
+}
+
+#[test]
+fn manual_creation_normalizes_mac_and_drops_stale_runtime_fields() {
+    let mut draft = binding("manual", "AAAA");
+    draft.device_id.clear();
+    draft.device_mac = "02-AA-BB-CC-DD-02".into();
+    draft.last_online = true;
+    draft.last_result = "old result".into();
+    draft.last_update_time = "old time".into();
+    let saved = create_device_binding(&mut AppConfig::default(), draft).unwrap();
+    assert_eq!(saved.device_id, "mac-02-aa-bb-cc-dd-02");
+    assert_eq!(saved.device_mac, "02:aa:bb:cc:dd:02");
+    assert!(!saved.last_online);
+    assert!(saved.last_result.is_empty() && saved.last_update_time.is_empty());
+}
+
+#[test]
+fn stale_edits_cannot_take_over_a_record_reassigned_to_another_device() {
+    let old = binding("game", "AAAA");
+    let mut current = old.clone();
+    current.device_id = "other-device".into();
+    current.device_mac = "02:aa:bb:cc:dd:02".into();
+    let original_key = crate::config::device_ddns_record_key(&old).unwrap();
+    let mut config = AppConfig {
+        device_ddns_configs: vec![current.clone()],
+        ..AppConfig::default()
+    };
+    assert!(save_device_binding(&mut config, old, Some(&original_key)).is_err());
+    assert_eq!(config.device_ddns_configs, vec![current]);
+}
+
+#[test]
+fn creation_validates_device_identity_and_record_type_before_saving() {
+    for mac in [
+        "",
+        "not-a-mac",
+        "00:00:00:00:00:00",
+        "ff:ff:ff:ff:ff:ff",
+        "01:00:5e:00:00:01",
+    ] {
+        let mut draft = binding("manual", "AAAA");
+        draft.device_mac = mac.into();
+        let mut config = AppConfig::default();
+        assert!(create_device_binding(&mut config, draft).is_err());
+        assert!(config.device_ddns_configs.is_empty());
+    }
+    assert!(create_device_binding(&mut AppConfig::default(), binding("manual", "MX")).is_err());
+}

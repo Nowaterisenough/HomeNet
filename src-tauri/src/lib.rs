@@ -74,6 +74,7 @@ pub fn run() {
             commands::list_lan_devices,
             commands::get_device_ddns_config,
             commands::list_device_ddns_configs,
+            commands::create_device_ddns_config,
             commands::save_device_ddns_config,
             commands::delete_device_ddns_config,
             commands::get_device_ddns_current_record,

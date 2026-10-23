@@ -126,6 +126,7 @@ const requiredChecks = [
   ["src-tauri/Cargo.toml", "tauri-plugin-updater"],
   ["src-tauri/Cargo.toml", "dav-server"],
   ["src-tauri/Cargo.toml", "argon2"],
+  ["src-tauri/src/lib.rs", "commands::create_device_ddns_config"],
   ["src-tauri/src/commands.rs", "release_from_official_page"],
   ["src-tauri/src/commands.rs", "verify_inferred_update_asset"],
   ["src-tauri/src/commands.rs", "install_app_update"],

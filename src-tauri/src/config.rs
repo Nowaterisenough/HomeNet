@@ -634,9 +634,10 @@ pub(crate) fn device_ddns_bindings_conflict(
     left: &DeviceDdnsConfig,
     right: &DeviceDdnsConfig,
 ) -> bool {
-    device_ddns_targets_same_device(left, right)
-        || device_ddns_record_key(left)
-            .is_some_and(|key| Some(key) == device_ddns_record_key(right))
+    match (device_ddns_record_key(left), device_ddns_record_key(right)) {
+        (Some(left), Some(right)) => left == right,
+        _ => device_ddns_targets_same_device(left, right),
+    }
 }
 
 fn migrate_legacy_device_ddns_config(config: &mut AppConfig) -> bool {

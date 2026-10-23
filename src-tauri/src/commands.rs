@@ -609,7 +609,7 @@ fn ddns_domain(config: &DdnsConfig) -> String {
     let sub_domain = config.sub_domain.trim();
     if domain.is_empty() {
         "未配置域名".to_string()
-    } else if sub_domain.is_empty() {
+    } else if sub_domain.is_empty() || sub_domain == "@" {
         domain.to_string()
     } else {
         format!("{}.{}", sub_domain, domain)
@@ -631,7 +631,7 @@ pub(crate) fn device_ddns_domain(config: &DeviceDdnsConfig) -> String {
     let sub_domain = config.sub_domain.trim();
     if domain.is_empty() {
         "未配置域名".to_string()
-    } else if sub_domain.is_empty() {
+    } else if sub_domain.is_empty() || sub_domain == "@" {
         domain.to_string()
     } else {
         format!("{}.{}", sub_domain, domain)
@@ -649,10 +649,33 @@ pub(crate) fn validate_device_ddns_config(config: &DeviceDdnsConfig) -> Result<(
     if record_type != "A" && record_type != "AAAA" {
         return Err("记录类型仅支持 A 或 AAAA".to_string());
     }
-    if config.device_mac.trim().is_empty() {
-        return Err("请选择带有 MAC 地址的设备".to_string());
+    if !valid_binding_mac(&config.device_mac) {
+        return Err("请填写有效的设备 MAC 地址，不能使用全零、广播或组播地址".to_string());
+    }
+    if config.domain.contains([',', '/', '\\', ':', '?', '#'])
+        || config.domain.trim().chars().any(char::is_whitespace)
+        || config.sub_domain.contains([',', '/', '\\', ':', '?', '#'])
+        || config.sub_domain.trim().chars().any(char::is_whitespace)
+    {
+        return Err("请填写有效的主域名和单个子域名，不要包含协议或路径".into());
+    }
+    if !config.provider.trim().eq_ignore_ascii_case("aliyun") {
+        return Err("目前仅支持阿里云 DNS".into());
+    }
+    if !(60..=86400).contains(&config.ttl)
+        || !(1..=1440).contains(&config.interval_minutes)
+        || config.ip_candidate_index == 0
+    {
+        return Err("请检查 TTL、同步间隔和候选顺位的取值范围".into());
     }
     Ok(())
+}
+
+fn valid_binding_mac(value: &str) -> bool {
+    crate::device_discovery::normalize_mac(value).is_some_and(|mac| {
+        mac != "00:00:00:00:00:00"
+            && u8::from_str_radix(&mac[..2], 16).is_ok_and(|first| first & 1 == 0)
+    })
 }
 
 pub(crate) fn to_device_ddns_aliyun_config(config: &DeviceDdnsConfig) -> DdnsConfig {
@@ -791,6 +814,28 @@ pub(crate) fn device_discovery_hints(
 }
 
 fn normalize_device_ddns_payload(mut config: DeviceDdnsConfig) -> DeviceDdnsConfig {
+    config.provider = config.provider.trim().to_ascii_lowercase();
+    config.access_key_id = config.access_key_id.trim().to_string();
+    config.access_key_secret = config.access_key_secret.trim().to_string();
+    if let Some(mac) = crate::device_discovery::normalize_mac(&config.device_mac) {
+        config.device_mac = mac;
+    }
+    if config.device_id.trim().is_empty() && !config.device_mac.is_empty() {
+        config.device_id = format!("mac-{}", config.device_mac.replace(':', "-"));
+    }
+    config.domain = config
+        .domain
+        .trim()
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    config.sub_domain = config
+        .sub_domain
+        .trim()
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    if config.sub_domain == "@" {
+        config.sub_domain.clear();
+    }
     config.record_type = config.record_type.trim().to_uppercase();
     if config.record_type != "A" && config.record_type != "AAAA" {
         config.record_type = "AAAA".to_string();
@@ -825,13 +870,19 @@ fn delete_device_ddns_config_from_config(
     config: &mut AppConfig,
     device_id: &str,
     device_mac: &str,
+    record_key: Option<&(String, String, String)>,
 ) -> bool {
+    let selected = |item: &DeviceDdnsConfig| {
+        device_ddns_selector_matches(item, device_id, device_mac)
+            && record_key
+                .is_none_or(|key| crate::config::device_ddns_record_key(item).as_ref() == Some(key))
+    };
     let removed: Vec<_> = active_device_ddns_configs(config)
         .into_iter()
-        .filter(|item| device_ddns_selector_matches(item, device_id, device_mac))
+        .filter(&selected)
         .collect();
     let matches_removed = |item: &DeviceDdnsConfig| {
-        device_ddns_selector_matches(item, device_id, device_mac)
+        selected(item)
             || removed
                 .iter()
                 .any(|removed| crate::config::device_ddns_bindings_conflict(item, removed))
@@ -847,6 +898,60 @@ fn delete_device_ddns_config_from_config(
         changed = true;
     }
     changed
+}
+
+fn create_device_binding(
+    config: &mut AppConfig,
+    binding: DeviceDdnsConfig,
+) -> Result<DeviceDdnsConfig, String> {
+    validate_device_ddns_config(&binding)?;
+    let mut binding = normalize_device_ddns_payload(binding);
+    let key = crate::config::device_ddns_record_key(&binding);
+    let existing = active_device_ddns_configs(config);
+    if existing
+        .iter()
+        .any(|item| crate::config::device_ddns_record_key(item) == key)
+    {
+        return Err("此域名和记录类型已存在，请编辑原绑定；新增不会覆盖已有配置".into());
+    }
+    binding.last_update_time.clear();
+    binding.last_result.clear();
+    binding.last_online = false;
+    config.device_ddns_configs = existing;
+    upsert_device_ddns_config(config, binding.clone());
+    Ok(binding)
+}
+
+fn save_device_binding(
+    config: &mut AppConfig,
+    binding: DeviceDdnsConfig,
+    original_record_key: Option<&(String, String, String)>,
+) -> Result<(), String> {
+    validate_device_ddns_config(&binding)?;
+    let binding = normalize_device_ddns_payload(binding);
+    let mut existing = active_device_ddns_configs(config);
+    if let Some(original) = original_record_key {
+        let index = existing
+            .iter()
+            .position(|item| crate::config::device_ddns_record_key(item).as_ref() == Some(original))
+            .ok_or_else(|| "原绑定已变更或被删除，请刷新后重试".to_string())?;
+        let next_key = crate::config::device_ddns_record_key(&binding);
+        if !device_ddns_selector_matches(&existing[index], &binding.device_id, &binding.device_mac)
+        {
+            return Err("绑定的目标设备已变化，请刷新后重试".into());
+        }
+        if existing
+            .iter()
+            .enumerate()
+            .any(|(i, item)| i != index && crate::config::device_ddns_record_key(item) == next_key)
+        {
+            return Err("此域名和记录类型已被另一条绑定使用".into());
+        }
+        existing.remove(index);
+    }
+    config.device_ddns_configs = existing;
+    upsert_device_ddns_config(config, binding);
+    Ok(())
 }
 
 pub(crate) fn apply_device_ddns_status_if_current(
@@ -1667,15 +1772,37 @@ pub async fn list_device_ddns_configs(
 }
 
 #[tauri::command]
+pub async fn create_device_ddns_config(
+    state: State<'_, AppState>,
+    config: DeviceDdnsConfig,
+) -> Result<DeviceDdnsConfig, String> {
+    // Check uniqueness and persist under one lock so simultaneous creates cannot overwrite each other.
+    let mut guard = state.config.lock().map_err(|error| error.to_string())?;
+    let mut next = guard.clone();
+    let binding = create_device_binding(&mut next, config)?;
+    save_config(&next)?;
+    *guard = next;
+    add_log(
+        "info",
+        "设备DDNS",
+        &format!("已新增设备 DDNS 绑定：{}", device_ddns_domain(&binding)),
+    );
+    Ok(binding)
+}
+
+#[tauri::command]
 pub async fn save_device_ddns_config(
     state: State<'_, AppState>,
     config: DeviceDdnsConfig,
+    original_record_key: Option<(String, String, String)>,
 ) -> Result<(), String> {
-    let mut cfg = read_config(&state)?;
+    let mut guard = state.config.lock().map_err(|error| error.to_string())?;
+    let mut cfg = guard.clone();
     let domain = device_ddns_domain(&config);
     let device_name = config.device_name.trim().to_string();
-    upsert_device_ddns_config(&mut cfg, config);
-    write_config(&state, &cfg)?;
+    save_device_binding(&mut cfg, config, original_record_key.as_ref())?;
+    save_config(&cfg)?;
+    *guard = cfg;
     add_log(
         "info",
         "设备DDNS",
@@ -1701,12 +1828,22 @@ pub async fn delete_device_ddns_config(
     state: State<'_, AppState>,
     device_id: String,
     device_mac: String,
+    record_key: Option<(String, String, String)>,
 ) -> Result<(), String> {
-    let mut cfg = read_config(&state)?;
-    let changed = delete_device_ddns_config_from_config(&mut cfg, &device_id, &device_mac);
+    let mut guard = state.config.lock().map_err(|error| error.to_string())?;
+    let mut cfg = guard.clone();
+    let changed = delete_device_ddns_config_from_config(
+        &mut cfg,
+        &device_id,
+        &device_mac,
+        record_key.as_ref(),
+    );
     if changed {
-        write_config(&state, &cfg)?;
+        save_config(&cfg)?;
+        *guard = cfg;
         add_log("info", "设备DDNS", "设备 DDNS 绑定已解除");
+    } else if record_key.is_some() {
+        return Err("原绑定已变更或被删除，请刷新后重试".into());
     }
     Ok(())
 }
@@ -2808,7 +2945,8 @@ mod tests {
         assert!(delete_device_ddns_config_from_config(
             &mut config,
             &current.device_id,
-            &current.device_mac
+            &current.device_mac,
+            None
         ));
         assert!(active_device_ddns_configs(&config).is_empty());
     }
@@ -2884,7 +3022,8 @@ mod tests {
         assert!(delete_device_ddns_config_from_config(
             &mut app_config,
             "local-machine",
-            ""
+            "",
+            None
         ));
         assert_eq!(app_config.device_ddns_configs.len(), 1);
         assert_eq!(app_config.device_ddns_configs[0].device_id, "router");

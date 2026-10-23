@@ -653,6 +653,23 @@ input:disabled {
   flex-direction: column;
   gap: 20px;
 }
+.ddns-create-form {
+  min-width: 0;
+  border: 0;
+  padding: 0;
+}
+.ddns-create-target {
+  margin-bottom: 18px;
+}
+.ddns-binding-select {
+  max-width: 70%;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: var(--color-input-bg);
+  font-size: 12px;
+}
 .binding-layout .toggle-row {
   justify-content: space-between;
 }
