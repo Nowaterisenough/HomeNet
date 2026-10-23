@@ -1029,6 +1029,9 @@ export default function DeviceDdnsPanel({
           configs={configs}
           initialDevice={selectedRow?.raw ?? null}
           template={selectedRow?.config ?? configs[0] ?? null}
+          loading={inventory.loading}
+          discoveryError={inventory.deviceError}
+          onRefreshDevices={inventory.refresh}
           onClose={() => setCreateDialogOpen(false)}
           onCreated={createdBinding}
         />

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Info, Plus } from "lucide-react";
 import EditorDrawer from "./EditorDrawer";
+import DevicePicker from "./DevicePicker";
 import { invokeCommand } from "../lib/tauri";
 import type { DeviceDdnsConfig, LanDevice } from "../types";
 import { deviceRowId, normalizeDeviceMac } from "../utils/devices";
@@ -12,6 +13,9 @@ interface Props {
   configs: DeviceDdnsConfig[];
   initialDevice: LanDevice | null;
   template: DeviceDdnsConfig | null;
+  loading: boolean;
+  discoveryError: string;
+  onRefreshDevices: () => Promise<void>;
   onClose: () => void;
   onCreated: (binding: DeviceDdnsConfig) => Promise<void>;
 }
@@ -21,11 +25,14 @@ export default function CreateDdnsBindingDialog({
   configs,
   initialDevice,
   template,
+  loading,
+  discoveryError,
+  onRefreshDevices,
   onClose,
   onCreated,
 }: Props) {
   const initial = initialDevice ?? devices[0] ?? null;
-  const [manual, setManual] = useState(!initial);
+  const [manual, setManual] = useState(false);
   const [deviceId, setDeviceId] = useState(initial ? deviceRowId(initial) : "");
   const [deviceMac, setDeviceMac] = useState(
     normalizeDeviceMac(initial?.mac || ""),
@@ -118,7 +125,7 @@ export default function CreateDdnsBindingDialog({
             aria-pressed={!manual}
             onClick={() => setManual(false)}
           >
-            选择已有设备
+            局域网设备
           </button>
           <button
             type="button"
@@ -129,32 +136,30 @@ export default function CreateDdnsBindingDialog({
           </button>
         </div>
         {!manual ? (
-          <label className="field-label ddns-create-target">
+          <div className="field-label ddns-create-target">
             <span>绑定设备</span>
-            <select
-              value={device ? deviceRowId(device) : deviceId}
-              onChange={(event) => {
-                setDeviceId(event.target.value);
-                const target = devices.find(
-                  (item) => deviceRowId(item) === event.target.value,
-                );
-                setDeviceMac(normalizeDeviceMac(target?.mac || ""));
+            <DevicePicker
+              devices={devices}
+              configs={configs}
+              value={device}
+              loading={loading}
+              error={discoveryError}
+              disabled={saving || Boolean(created)}
+              onRefresh={onRefreshDevices}
+              onChange={(target) => {
+                setDeviceId(deviceRowId(target));
+                setDeviceMac(normalizeDeviceMac(target.mac));
                 update(
                   "device_name",
-                  target?.hostname || target?.display_name || "",
+                  target.hostname || target.display_name || "",
                 );
               }}
-            >
-              <option value="">请选择设备</option>
-              {devices.map((item) => (
-                <option key={deviceRowId(item)} value={deviceRowId(item)}>
-                  {item.hostname || item.display_name || item.mac} ·{" "}
-                  {item.online ? "在线" : "离线"}
-                </option>
-              ))}
-            </select>
-            <small>同一设备可以新增不同域名或不同类型的记录。</small>
-          </label>
+            />
+            <small>
+              每 60
+              秒自动扫描，也可手动刷新。未发现其他设备时，请检查本地网络权限和路由器的设备隔离设置。
+            </small>
+          </div>
         ) : null}
         <div className="form-grid">
           <label className="field-label">

@@ -35,6 +35,7 @@ export default function EditorDrawer({
     if (app) app.inert = true;
     dialogRef.current?.focus();
     function onKeyDown(event: KeyboardEvent) {
+      if (event.defaultPrevented) return;
       if (event.key === "Escape" && !busyRef.current) {
         event.preventDefault();
         closeRef.current();
