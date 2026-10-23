@@ -9,7 +9,34 @@ import {
   matchingDeviceForConfig,
   mergeDiscoveredDevices,
   withBoundDevices,
+  normalizeDeviceMac,
 } from "../src/utils/devices.ts";
+
+test("redacted MAC values do not merge remote devices with the local machine", () => {
+  for (const value of ["02:00:00:00:00:00", "2:0:0:0:0:0", "020000000000"])
+    assert.equal(normalizeDeviceMac(value), "");
+  const local = device({
+    id: "local-machine",
+    source: "local-interface",
+    mac: "",
+  });
+  const remote = binding({
+    device_id: "local-machine",
+    device_name: "Remote PC",
+    device_mac: "02:00:00:00:00:00",
+  });
+  assert.equal(matchingDeviceForConfig(remote, [local]), null);
+});
+
+test("IP-only discovery is replaced by a current MAC-backed device without an offline alias", () => {
+  const unknown = device({
+    id: "ip-192-0-2-10",
+    mac: "",
+    source: "icmp-reply",
+  });
+  const known = device();
+  assert.deepEqual(mergeDiscoveredDevices([unknown], [known]), [known]);
+});
 
 const device = (overrides = {}) => ({
   id: "mac-02-aa-bb-cc-dd-01",

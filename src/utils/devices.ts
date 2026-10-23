@@ -6,10 +6,13 @@ export function normalizeDeviceMac(value: string): string {
     parts.length === 6 &&
     parts.every((part) => /^[0-9a-f]{1,2}$/.test(part))
   ) {
-    return parts.map((part) => part.padStart(2, "0")).join(":");
+    const normalized = parts.map((part) => part.padStart(2, "0")).join(":");
+    return normalized === "02:00:00:00:00:00" ? "" : normalized;
   }
   const compact = value.trim().replace(/[.:-]/g, "").toLowerCase();
-  return /^[0-9a-f]{12}$/.test(compact) ? compact.match(/../g)!.join(":") : "";
+  return compact !== "020000000000" && /^[0-9a-f]{12}$/.test(compact)
+    ? compact.match(/../g)!.join(":")
+    : "";
 }
 
 export function deviceRowId(device: LanDevice): string {
@@ -47,6 +50,7 @@ export function matchingDeviceForConfig(
       ) ?? null
     );
   }
+  if (config.device_mac.trim() && !mac) return null;
   const id = config.device_id.trim();
   return (
     devices.find(
@@ -66,6 +70,15 @@ export function mergeDiscoveredDevices(
     current.map((device) => [deviceRowId(device), device]),
   );
   for (const device of previous) {
+    if (
+      device.source === "icmp-reply" &&
+      current.some(
+        (next) =>
+          normalizeDeviceMac(next.mac) &&
+          next.ipv4.some((ip) => device.ipv4.includes(ip)),
+      )
+    )
+      continue;
     if (!devices.has(deviceRowId(device))) {
       // Remember devices for this session without presenting stale addresses as sync candidates.
       devices.set(deviceRowId(device), {

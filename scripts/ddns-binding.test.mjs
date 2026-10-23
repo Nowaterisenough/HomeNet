@@ -97,6 +97,7 @@ test("manual invalid MACs, missing credentials and invalid ranges fail validatio
     "",
     "not-a-mac",
     "00:00:00:00:00:00",
+    "02:00:00:00:00:00",
     "ff:ff:ff:ff:ff:ff",
   ])
     assert.ok(

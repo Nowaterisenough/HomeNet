@@ -7,6 +7,10 @@ use std::time::Duration;
 
 const PROBE_BUDGET: usize = 1024;
 
+#[cfg(any(target_os = "macos", test))]
+#[path = "lan_echo.rs"]
+mod lan_echo;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct Subnet {
     address: Ipv4Addr,
@@ -46,16 +50,28 @@ impl Subnet {
 }
 
 fn bound_probe_socket(subnet: Subnet) -> io::Result<UdpSocket> {
-    let socket = UdpSocket::bind(SocketAddrV4::new(subnet.address, 0))?;
     #[cfg(target_os = "macos")]
     {
-        let index = subnet
-            .interface_index
-            .ok_or_else(|| io::Error::new(ErrorKind::AddrNotAvailable, "未取得局域网网卡索引"))?;
-        // Binding the source address alone does not prevent a VPN route from
-        // capturing local traffic. IP_BOUND_IF pins both probes to this interface.
-        socket2::SockRef::from(&socket).bind_device_by_index_v4(Some(index))?;
+        bound_macos_socket(subnet, socket2::Protocol::UDP)
     }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let socket = UdpSocket::bind(SocketAddrV4::new(subnet.address, 0))?;
+        socket.set_ttl(1)?;
+        Ok(socket)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn bound_macos_socket(subnet: Subnet, protocol: socket2::Protocol) -> io::Result<UdpSocket> {
+    let index = subnet
+        .interface_index
+        .ok_or_else(|| io::Error::new(ErrorKind::AddrNotAvailable, "未取得局域网网卡索引"))?;
+    let socket = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, Some(protocol))?;
+    // IP_BOUND_IF prevents the VPN default route from capturing local probes.
+    socket.bind_device_by_index_v4(Some(index))?;
+    socket.bind(&SocketAddrV4::new(subnet.address, 0).into())?;
+    let socket: UdpSocket = socket.into();
     socket.set_ttl(1)?;
     Ok(socket)
 }
@@ -86,16 +102,19 @@ fn probe_targets(subnet: Subnet, cursor: &mut u32, budget: usize) -> Vec<Ipv4Add
     targets
 }
 
-pub(super) fn refresh_ipv4_neighbors() -> Result<(), String> {
+pub(super) fn refresh_ipv4_neighbors() -> Result<Vec<Ipv4Addr>, String> {
     static CURSORS: OnceLock<Mutex<HashMap<Subnet, u32>>> = OnceLock::new();
     let Ok(mut cursors) = CURSORS.get_or_init(Mutex::default).try_lock() else {
-        return Ok(());
+        return Ok(Vec::new());
     };
     let subnets = local_subnets();
     cursors.retain(|subnet, _| subnets.contains(subnet));
     let budget = PROBE_BUDGET / subnets.len().max(1);
     let mut sent = false;
     let mut last_error = None;
+    let mut reachable = std::collections::BTreeSet::new();
+    #[cfg(target_os = "macos")]
+    let (mut echo_completed, mut echo_error) = (false, None);
     for subnet in subnets {
         let probe = || -> io::Result<UdpSocket> {
             let socket = bound_probe_socket(subnet)?;
@@ -115,8 +134,9 @@ pub(super) fn refresh_ipv4_neighbors() -> Result<(), String> {
         // A unicast datagram resolves ARP even when the device ignores ICMP/NetBIOS.
         // Respect real interface masks, never probe routed/public networks, and
         // rotate larger subnets over subsequent scheduled or manual scans.
-        for address in probe_targets(subnet, cursor, budget) {
-            if let Err(error) = socket.send_to(&[], SocketAddrV4::new(address, 9)) {
+        let targets = probe_targets(subnet, cursor, budget);
+        for address in &targets {
+            if let Err(error) = socket.send_to(&[], SocketAddrV4::new(*address, 9)) {
                 let denied = error.kind() == std::io::ErrorKind::PermissionDenied;
                 last_error = Some(error);
                 if denied {
@@ -127,13 +147,31 @@ pub(super) fn refresh_ipv4_neighbors() -> Result<(), String> {
             }
             std::thread::sleep(Duration::from_millis(2));
         }
+        #[cfg(target_os = "macos")]
+        match bound_macos_socket(subnet, socket2::Protocol::ICMPV4)
+            .and_then(|socket| lan_echo::discover(socket, &targets))
+        {
+            Ok(addresses) => {
+                echo_completed = true;
+                reachable.extend(addresses);
+            }
+            Err(error) => {
+                echo_error = Some(error);
+            }
+        }
     }
-    if sent {
+    #[cfg(target_os = "macos")]
+    if !echo_completed {
+        if let Some(error) = echo_error {
+            return Err(probe_error_message("局域网回包探测", &error));
+        }
+    }
+    if sent || !reachable.is_empty() {
         std::thread::sleep(Duration::from_millis(500));
     } else if let Some(error) = last_error {
         return Err(probe_error_message("局域网主动探测", &error));
     }
-    Ok(())
+    Ok(reachable.into_iter().collect())
 }
 
 #[cfg(any(target_os = "macos", test))]

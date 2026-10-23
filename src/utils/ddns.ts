@@ -68,7 +68,7 @@ export function prepareNewDdnsBinding(
     mac === "00:00:00:00:00:00" ||
     parseInt(mac.slice(0, 2), 16) & 1
   ) {
-    return { error: "请填写有效的设备 MAC 地址，不能使用全零、广播或组播地址" };
+    return { error: "请填写真实设备 MAC 地址，不能使用系统占位值、全零、广播或组播地址" };
   }
   const config: DeviceDdnsConfig = {
     ...draft,

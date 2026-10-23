@@ -157,7 +157,7 @@ export default function CreateDdnsBindingDialog({
             />
             <small>
               每 60
-              秒自动扫描，也可手动刷新。未发现其他设备时，请检查本地网络权限和路由器的设备隔离设置。
+              秒自动扫描，也可手动刷新。MAC 不可读取的设备仍会显示，但不能凭 IP 自动绑定 DDNS；可使用真实 MAC 手动添加。
             </small>
           </div>
         ) : null}

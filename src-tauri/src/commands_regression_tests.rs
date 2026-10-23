@@ -237,6 +237,7 @@ fn creation_validates_device_identity_and_record_type_before_saving() {
         "",
         "not-a-mac",
         "00:00:00:00:00:00",
+        "02:00:00:00:00:00",
         "ff:ff:ff:ff:ff:ff",
         "01:00:5e:00:00:01",
     ] {
@@ -247,4 +248,32 @@ fn creation_validates_device_identity_and_record_type_before_saving() {
         assert!(config.device_ddns_configs.is_empty());
     }
     assert!(create_device_binding(&mut AppConfig::default(), binding("manual", "MX")).is_err());
+}
+
+#[test]
+fn ip_only_replies_and_redacted_macs_cannot_claim_an_existing_binding() {
+    let mut config = binding("game", "A");
+    config.selected_ip = "192.0.2.10".into();
+    let device = LanDevice {
+        id: "ip-192-0-2-10".into(),
+        display_name: "192.0.2.10".into(),
+        hostname: String::new(),
+        mac: String::new(),
+        ipv4: vec!["192.0.2.10".into()],
+        ipv6: Vec::new(),
+        global_ipv6: Vec::new(),
+        online: true,
+        source: "icmp-reply".into(),
+        last_seen: String::new(),
+    };
+    assert!(!device_ddns_device_is_online(&config, &[device.clone()]));
+    config.device_id = "local-machine".into();
+    config.device_name = "Remote PC".into();
+    config.device_mac = "02:00:00:00:00:00".into();
+    let local = LanDevice {
+        id: "local-machine".into(),
+        source: "local-interface".into(),
+        ..device
+    };
+    assert!(!device_ddns_device_is_online(&config, &[local]));
 }

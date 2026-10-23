@@ -281,7 +281,7 @@ export default function DevicePicker({
                       <strong>{option.label}</strong>
                       <small>
                         {option.address} ·{" "}
-                        {option.device.mac || "缺少 MAC，暂不可绑定"}
+                        {option.device.mac || "MAC 不可读取，暂不可绑定"}
                       </small>
                     </span>
                     <span className="device-picker-tags">

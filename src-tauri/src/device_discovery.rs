@@ -114,19 +114,61 @@ pub fn discover_lan_devices_with_hints(hints: &[DeviceDiscoveryHint]) -> Vec<Lan
     merge_local_and_neighbor_devices(local_devices, neighbor_devices)
 }
 
-pub fn scan_lan_devices_with_hints(hints: &[DeviceDiscoveryHint]) -> Result<Vec<LanDevice>, String> {
+pub fn scan_lan_devices_with_hints(
+    hints: &[DeviceDiscoveryHint],
+) -> Result<Vec<LanDevice>, String> {
     // Only inventory scans probe the subnet; DDNS sync keeps its lightweight lookup.
     #[cfg(any(windows, target_os = "macos"))]
     let probe = lan_probe::refresh_ipv4_neighbors();
-    let devices = discover_lan_devices_with_hints(hints);
+    let mut devices = discover_lan_devices_with_hints(hints);
     #[cfg(any(windows, target_os = "macos"))]
-    if let Err(error) = probe {
-        crate::config::add_log("warn", "设备发现", &error);
-        if devices.iter().all(|device| device.source == "local-interface") {
-            return Err(error);
+    match probe {
+        Ok(addresses) => {
+            append_echo_devices(&mut devices, addresses, &local_interface_ip_set());
+        }
+        Err(error) => {
+            crate::config::add_log("warn", "设备发现", &error);
+            if devices
+                .iter()
+                .all(|device| device.source == "local-interface")
+            {
+                return Err(error);
+            }
         }
     }
     Ok(devices)
+}
+
+fn append_echo_devices(
+    devices: &mut Vec<LanDevice>,
+    addresses: Vec<Ipv4Addr>,
+    local: &BTreeSet<IpAddr>,
+) {
+    let mut known: BTreeSet<_> = devices
+        .iter()
+        .flat_map(|device| device.ipv4.iter().cloned())
+        .collect();
+    let now = Utc::now().to_rfc3339();
+    for address in addresses {
+        let value = address.to_string();
+        if local.contains(&IpAddr::V4(address)) || !known.insert(value.clone()) {
+            continue;
+        }
+        // A verified IP response proves reachability, not hardware identity. Never
+        // invent a MAC or attach a binding just because a historical IP matches.
+        devices.push(LanDevice {
+            id: format!("ip-{}", sanitize_id_part(&value)),
+            display_name: value.clone(),
+            hostname: String::new(),
+            mac: String::new(),
+            ipv4: vec![value],
+            ipv6: Vec::new(),
+            global_ipv6: Vec::new(),
+            online: true,
+            source: "icmp-reply".into(),
+            last_seen: now.clone(),
+        });
+    }
 }
 
 pub fn is_global_ipv6(value: &str) -> bool {
@@ -1719,7 +1761,8 @@ pub(crate) fn normalize_mac(value: &str) -> Option<String> {
                 .collect();
 
             if let Some(octets) = octets {
-                return Some(octets.join(":"));
+                let normalized = octets.join(":");
+                return (normalized != "02:00:00:00:00:00").then_some(normalized);
             }
         }
     }
@@ -1734,13 +1777,13 @@ pub(crate) fn normalize_mac(value: &str) -> Option<String> {
         return None;
     }
 
-    Some(
-        hex.as_bytes()
-            .chunks(2)
-            .map(|chunk| std::str::from_utf8(chunk).unwrap_or_default())
-            .collect::<Vec<_>>()
-            .join(":"),
-    )
+    let normalized = hex
+        .as_bytes()
+        .chunks(2)
+        .map(|chunk| std::str::from_utf8(chunk).unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join(":");
+    (normalized != "02:00:00:00:00:00").then_some(normalized)
 }
 
 fn is_usable_ip(ip: IpAddr) -> bool {
@@ -1809,6 +1852,48 @@ fn value_to_string(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redacted_mac_values_are_not_hardware_identities() {
+        for value in [
+            "02:00:00:00:00:00",
+            "2:0:0:0:0:0",
+            "02-00-00-00-00-00",
+            "020000000000",
+        ] {
+            assert!(normalize_mac(value).is_none(), "{value}");
+        }
+        assert!(normalize_mac(&["02", "aa", "bb", "cc", "dd", "01"].join(":")).is_some());
+    }
+
+    #[test]
+    fn echo_inventory_keeps_remote_ips_without_inventing_mac_or_duplicating_local_addresses() {
+        let known = test_device(
+            "router",
+            "Router",
+            "macos-neighbor",
+            vec!["192.0.2.1"],
+            vec![],
+        );
+        let mut devices = vec![known.clone()];
+        let addresses = [
+            "192.0.2.1",
+            "192.0.2.2",
+            "192.0.2.3",
+            "192.0.2.3",
+            "192.0.2.4",
+        ]
+        .into_iter()
+        .map(|value| value.parse().unwrap())
+        .collect();
+        let local = BTreeSet::from(["192.0.2.2".parse().unwrap(), "192.0.2.4".parse().unwrap()]);
+        append_echo_devices(&mut devices, addresses, &local);
+        assert_eq!(devices.len(), 2);
+        assert_eq!(devices[0], known);
+        assert_eq!(devices[1].ipv4, vec!["192.0.2.3"]);
+        assert_eq!(devices[1].source, "icmp-reply");
+        assert!(devices[1].online && devices[1].mac.is_empty() && devices[1].global_ipv6.is_empty());
+    }
 
     fn test_device(
         id: &str,

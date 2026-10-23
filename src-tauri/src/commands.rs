@@ -650,7 +650,7 @@ pub(crate) fn validate_device_ddns_config(config: &DeviceDdnsConfig) -> Result<(
         return Err("记录类型仅支持 A 或 AAAA".to_string());
     }
     if !valid_binding_mac(&config.device_mac) {
-        return Err("请填写有效的设备 MAC 地址，不能使用全零、广播或组播地址".to_string());
+        return Err("请填写真实设备 MAC 地址，不能使用系统占位值、全零、广播或组播地址".to_string());
     }
     if config.domain.contains([',', '/', '\\', ':', '?', '#'])
         || config.domain.trim().chars().any(char::is_whitespace)
@@ -1040,6 +1040,12 @@ fn matching_device_for_config<'a>(
     devices: &'a [LanDevice],
 ) -> Option<&'a LanDevice> {
     let config_mac = config.device_mac.trim();
+    if !config_mac.is_empty()
+        && crate::device_discovery::normalize_mac(config_mac).is_none()
+        && !generated_local_machine_config(config)
+    {
+        return None;
+    }
     if !config_mac.is_empty() {
         if let Some(device) = devices.iter().find(|device| {
             !device.mac.trim().is_empty() && device.mac.trim().eq_ignore_ascii_case(config_mac)

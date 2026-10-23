@@ -895,6 +895,19 @@ export default function DeviceDdnsPanel({
                     <dd className="mono">{selectedRow.mac}</dd>
                   </div>
                 </dl>
+                {selectedRow.raw.source === "icmp-reply" &&
+                !selectedRow.raw.mac ? (
+                  <p className="form-note">
+                    <Info size={15} />
+                    <span>
+                      {selectedRow.online
+                        ? "已通过网络回包确认在线。"
+                        : "此前通过网络回包发现，当前未收到响应。"}
+                      系统未提供 MAC，暂按 IP
+                      显示；为避免地址变化后误绑，不能仅凭此 IP 自动绑定 DDNS。
+                    </span>
+                  </p>
+                ) : null}
                 <div className="detail-separator" />
                 <div className="detail-section-heading">
                   <h3>DDNS 绑定</h3>
