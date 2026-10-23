@@ -1495,9 +1495,11 @@ pub async fn list_lan_devices(state: State<'_, AppState>) -> Result<Vec<LanDevic
     let cfg = read_config(&state)?;
     let configs = active_device_ddns_configs(&cfg);
     let hints = device_discovery_hints(&configs);
-    Ok(crate::device_discovery::discover_lan_devices_with_hints(
-        &hints,
-    ))
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::device_discovery::discover_lan_devices_with_hints(&hints)
+    })
+    .await
+    .map_err(|error| format!("扫描局域网设备失败：{error}"))
 }
 
 #[tauri::command]

@@ -22,8 +22,15 @@ import { statusTone } from "../utils/presentation";
 import { invokeCommand } from "../lib/tauri";
 import type { DeviceDdnsConfig, LanDevice } from "../types";
 import { formatSyncTime } from "../utils/time";
+import type { DeviceInventory } from "../hooks/useDeviceInventory";
+import {
+  deviceRowId,
+  isGeneratedLocalMachineConfig,
+  matchingDeviceForConfig,
+} from "../utils/devices";
 
 interface DeviceDdnsPanelProps {
+  inventory: DeviceInventory;
   className?: string;
 }
 
@@ -94,6 +101,7 @@ function availableIpsForRecordType(
   device: LanDevice,
   recordType: "A" | "AAAA",
 ): string[] {
+  if (!device.online) return [];
   if (recordType === "A") {
     return uniqueStrings(device.ipv4);
   }
@@ -149,43 +157,6 @@ function normalizeConfig(
   };
 }
 
-function isGeneratedLocalMachineConfig(config: DeviceDdnsConfig): boolean {
-  return (
-    config.device_id.trim() === "local-machine" &&
-    config.device_name.trim().startsWith("本机设备")
-  );
-}
-
-function matchingDeviceForConfig(
-  config: DeviceDdnsConfig,
-  devices: LanDevice[],
-): LanDevice | null {
-  const configId = config.device_id.trim();
-  const configMac = config.device_mac.trim();
-  if (configMac) {
-    const macMatch = devices.find(
-      (device) =>
-        device.mac.trim() &&
-        device.mac.trim().toLowerCase() === configMac.toLowerCase(),
-    );
-    if (macMatch) return macMatch;
-  }
-
-  if (isGeneratedLocalMachineConfig(config)) {
-    return (
-      devices.find((device) => device.id.trim() === "local-machine") ?? null
-    );
-  }
-
-  if (!configId) return null;
-  return (
-    devices.find((device) => {
-      const deviceMac = device.mac.trim();
-      return (!configMac || !deviceMac) && device.id.trim() === configId;
-    }) ?? null
-  );
-}
-
 function configForDevice(
   device: LanDevice,
   configs: DeviceDdnsConfig[],
@@ -212,7 +183,11 @@ function boundIpForConfig(
   device: LanDevice,
 ): string {
   if (!config) return "-";
-  return currentIpForConfig(config, device) || "-";
+  return (
+    (device.online
+      ? currentIpForConfig(config, device)
+      : configuredIpForConfig(config)) || "-"
+  );
 }
 
 function configuredDomain(config: DeviceDdnsConfig | null): string {
@@ -235,7 +210,7 @@ function mapLanDevice(
       ? config.device_name.trim()
       : "";
   return {
-    id: device.id || device.mac || nativeName,
+    id: deviceRowId(device),
     name: configuredName || nativeName,
     nativeName,
     mac: device.mac || "-",
@@ -296,15 +271,19 @@ function buildDraft(
 }
 
 export default function DeviceDdnsPanel({
+  inventory,
   className = "",
 }: DeviceDdnsPanelProps) {
-  const [devices, setDevices] = useState<LanDevice[]>([]);
-  const [configs, setConfigs] = useState<DeviceDdnsConfig[]>([]);
+  const devices = inventory.devices;
+  const configs = useMemo(
+    () => inventory.configs.map(normalizeConfig),
+    [inventory.configs],
+  );
   const [selectedId, setSelectedId] = useState("");
   const [draft, setDraft] = useState<DeviceDdnsConfig | null>(null);
   const [configDialogOpen, setConfigDialogOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
-  const [loading, setLoading] = useState(false);
+  const loading = inventory.loading;
   const [mutating, setMutating] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [statusMessage, setStatusMessage] = useState("");
@@ -312,7 +291,12 @@ export default function DeviceDdnsPanel({
     "info",
   );
   const [page, setPage] = useState(0);
-  const [lastScan, setLastScan] = useState("");
+  const lastScan =
+    inventory.lastScan === null
+      ? ""
+      : new Date(inventory.lastScan).toLocaleTimeString("zh-CN", {
+          hour12: false,
+        });
   const selectionRef = useRef({ selectedId, configDialogOpen });
   selectionRef.current = { selectedId, configDialogOpen };
 
@@ -382,60 +366,26 @@ export default function DeviceDdnsPanel({
   }
 
   async function loadConfigsData(): Promise<DeviceDdnsConfig[]> {
-    return (
-      await invokeCommand<DeviceDdnsConfig[]>("list_device_ddns_configs")
-    ).map(normalizeConfig);
+    return (await inventory.refreshConfigs()).map(normalizeConfig);
   }
 
-  async function loadDevices(
-    options: { refreshDraft?: boolean; showLoading?: boolean } = {},
-  ) {
-    const refreshDraft = options.refreshDraft ?? true;
-    const showLoading = options.showLoading ?? true;
-    if (showLoading) setLoading(true);
-    try {
-      const nextConfigs = await loadConfigsData();
-      const nextDevices = await invokeCommand<LanDevice[]>("list_lan_devices");
-      const nextRows = nextDevices.map((device, index) =>
-        mapLanDevice(device, index, nextConfigs, nextDevices),
-      );
-      const selection = selectionRef.current;
-      const current = nextRows.find((row) => row.id === selection.selectedId);
-      const next =
-        current ??
-        nextRows.find((row) => row.configured) ??
-        nextRows[0] ??
-        null;
+  async function loadDevices() {
+    await inventory.refresh();
+  }
 
-      setConfigs(nextConfigs);
-      setDevices(nextDevices);
-      setSelectedId(next?.id ?? "");
-      // A scan may finish after the user has selected another device or opened its editor.
-      if (!selection.configDialogOpen && (refreshDraft || next)) {
-        setDraft(next ? buildDraft(next, nextConfigs) : null);
-      }
-      if (selection.configDialogOpen && !current) {
-        setConfigDialogOpen(false);
-        setDraft(next ? buildDraft(next, nextConfigs) : null);
-        setStatusMessage("所选设备已不在扫描结果中，请重新选择设备。");
-        setMessageType("info");
-      } else if (!selection.configDialogOpen) {
-        setStatusMessage("");
-      }
-      setLastScan(new Date().toLocaleTimeString("zh-CN", { hour12: false }));
-      window.dispatchEvent(new CustomEvent("homenet:devices-refresh"));
-    } catch (error) {
-      setDevices([]);
-      setConfigs([]);
-      setSelectedId("");
-      setDraft(null);
+  useEffect(() => {
+    const selection = selectionRef.current;
+    const current = rows.find((row) => row.id === selection.selectedId);
+    const next =
+      current ?? rows.find((row) => row.configured) ?? rows[0] ?? null;
+    setSelectedId(next?.id ?? "");
+    if (!selection.configDialogOpen) {
+      setDraft(next ? buildDraft(next, configs) : null);
+    } else if (!current) {
       setConfigDialogOpen(false);
-      setStatusMessage(`读取局域网设备失败：${String(error)}`);
-      setMessageType("error");
-    } finally {
-      if (showLoading) setLoading(false);
+      setDraft(next ? buildDraft(next, configs) : null);
     }
-  }
+  }, [rows, configs]);
 
   function selectRow(row: DeviceRow) {
     setSelectedId(row.id);
@@ -458,13 +408,14 @@ export default function DeviceDdnsPanel({
   function notifyDataChanged() {
     window.dispatchEvent(new CustomEvent("homenet:logs-refresh"));
     window.dispatchEvent(new CustomEvent("homenet:refresh-status"));
-    window.dispatchEvent(new CustomEvent("homenet:devices-refresh"));
   }
 
   function validateDraft(requireEnabled: boolean): string {
     if (!selectedRow || !draft) return "请选择要配置的局域网设备";
     if (!selectedRow.raw.mac.trim()) return "绑定设备必须有 MAC 地址";
     if (requireEnabled && !draft.enabled) return "请先启用同步";
+    if (requireEnabled && !selectedRow.online)
+      return "设备离线，等待上线后再同步";
     if (!draft.access_key_id.trim() || !draft.access_key_secret.trim()) {
       return "请填写完整的 AccessKey ID 和 Secret";
     }
@@ -472,7 +423,10 @@ export default function DeviceDdnsPanel({
     if (!["A", "AAAA"].includes(draft.record_type.trim().toUpperCase())) {
       return "记录类型仅支持 A 或 AAAA";
     }
-    if (draft.record_type.trim().toUpperCase() === "AAAA") {
+    if (
+      selectedRow.online &&
+      draft.record_type.trim().toUpperCase() === "AAAA"
+    ) {
       if (availableIpOptions.length === 0)
         return "当前设备没有可用于 DDNS 的稳定公网 IPv6";
       const candidateIndex = Math.max(
@@ -496,12 +450,13 @@ export default function DeviceDdnsPanel({
       1,
       Math.floor(Number(draft.ip_candidate_index) || 1),
     );
-    const selectedIp =
-      (recordType === "A"
-        ? draft.selected_ip || selectedRow.raw.ipv4[0]
-        : availableIpsForRecordType(selectedRow.raw, "AAAA")[
-            candidateIndex - 1
-          ] || firstGlobalIpv6(selectedRow.raw)) || "";
+    const selectedIp = !selectedRow.online
+      ? configuredIpForConfig(draft)
+      : (recordType === "A"
+          ? draft.selected_ip || selectedRow.raw.ipv4[0]
+          : availableIpsForRecordType(selectedRow.raw, "AAAA")[
+              candidateIndex - 1
+            ] || firstGlobalIpv6(selectedRow.raw)) || "";
     return {
       ...draft,
       provider: draft.provider || defaultConfig.provider,
@@ -539,7 +494,6 @@ export default function DeviceDdnsPanel({
       const nextRows = devices.map((device, index) =>
         mapLanDevice(device, index, nextConfigs, devices),
       );
-      setConfigs(nextConfigs);
       syncDraftWithSelection(nextConfigs, nextRows);
       if (showSuccess) {
         setStatusMessage("设备 DDNS 绑定已保存");
@@ -569,7 +523,6 @@ export default function DeviceDdnsPanel({
       const nextRows = devices.map((device, index) =>
         mapLanDevice(device, index, nextConfigs, devices),
       );
-      setConfigs(nextConfigs);
       syncDraftWithSelection(
         nextConfigs,
         nextRows,
@@ -606,7 +559,6 @@ export default function DeviceDdnsPanel({
       const nextRows = devices.map((device, index) =>
         mapLanDevice(device, index, nextConfigs, devices),
       );
-      setConfigs(nextConfigs);
       syncDraftWithSelection(nextConfigs, nextRows);
       setStatusMessage(result || "设备 DDNS 已同步");
       setMessageType("success");
@@ -629,7 +581,9 @@ export default function DeviceDdnsPanel({
 
   function updateIpv6CandidateIndex(value: number) {
     const candidateIndex = Math.max(1, Math.floor(Number(value) || 1));
-    const selectedIp = availableIpOptions[candidateIndex - 1] || "";
+    const selectedIp =
+      availableIpOptions[candidateIndex - 1] ||
+      (!selectedRow?.online ? configuredIpForConfig(draft) : "");
     setDraft((current) =>
       current
         ? {
@@ -648,16 +602,6 @@ export default function DeviceDdnsPanel({
   ) {
     updateDraft(key, event.target.checked as never);
   }
-
-  const loadDevicesRef = useRef(loadDevices);
-  loadDevicesRef.current = loadDevices;
-  useEffect(() => {
-    void loadDevicesRef.current();
-    const timer = window.setInterval(() => {
-      void loadDevicesRef.current({ refreshDraft: false, showLoading: false });
-    }, 60000);
-    return () => window.clearInterval(timer);
-  }, []);
 
   const pageCount = Math.max(1, Math.ceil(filteredDevices.length / 6));
   const currentPage = Math.min(page, pageCount - 1);
@@ -689,6 +633,11 @@ export default function DeviceDdnsPanel({
           </button>
         }
       />
+      {(inventory.deviceError || inventory.configError) && !configDialogOpen ? (
+        <p className="status-message msg-error" role="status">
+          {inventory.deviceError || inventory.configError}
+        </p>
+      ) : null}
       {statusMessage && !configDialogOpen ? (
         <p className={`status-message msg-${messageType}`} role="status">
           {statusMessage}
@@ -779,7 +728,15 @@ export default function DeviceDdnsPanel({
               )}
             </div>
             <footer className="list-footer">
-              <span>{lastScan ? `最近扫描 ${lastScan}` : "等待扫描"}</span>
+              <span>
+                {loading
+                  ? lastScan
+                    ? "后台刷新中，显示上次结果"
+                    : "正在扫描局域网设备"
+                  : lastScan
+                    ? `最近扫描 ${lastScan} · 每 60 秒刷新`
+                    : "等待扫描"}
+              </span>
               <div className="toolbar">
                 <span>
                   {currentPage + 1} / {pageCount}
@@ -833,7 +790,9 @@ export default function DeviceDdnsPanel({
                   {selectedRow.raw.global_ipv6.length ? (
                     <span className="badge">公网 IPv6</span>
                   ) : (
-                    <span className="badge badge-neutral">无公网 IPv6</span>
+                    <span className="badge badge-neutral">
+                      {selectedRow.online ? "无公网 IPv6" : "离线 · 上次地址"}
+                    </span>
                   )}
                 </div>
                 <dl className="detail-list">
@@ -884,6 +843,7 @@ export default function DeviceDdnsPanel({
                       <p className="mono">
                         {recordTypeForConfig(selectedRow.config)} ·{" "}
                         {selectedRow.boundIp}
+                        {!selectedRow.online ? "（上次地址）" : ""}
                       </p>
                     </div>
                     <dl className="detail-list">
@@ -930,7 +890,12 @@ export default function DeviceDdnsPanel({
                   {selectedRow.enabled ? (
                     <button
                       className="btn btn-secondary"
-                      disabled={mutating || syncing}
+                      disabled={mutating || syncing || !selectedRow.online}
+                      title={
+                        !selectedRow.online
+                          ? "设备离线，等待上线后再同步"
+                          : undefined
+                      }
                       onClick={syncNow}
                     >
                       <RefreshCw
@@ -970,7 +935,10 @@ export default function DeviceDdnsPanel({
               <button
                 className="btn btn-secondary"
                 type="button"
-                disabled={mutating || syncing}
+                disabled={mutating || syncing || !selectedRow.online}
+                title={
+                  !selectedRow.online ? "设备离线，等待上线后再同步" : undefined
+                }
                 onClick={syncNow}
               >
                 <Zap size={14} />

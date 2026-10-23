@@ -30,15 +30,10 @@ import {
   startCurrentWindowDrag,
   toggleMaximizeCurrentWindow,
 } from "./lib/tauri";
-import type {
-  AppPage,
-  AppUpdateResult,
-  DeviceDdnsConfig,
-  LanDevice,
-  RuntimeStatus,
-} from "./types";
+import type { AppPage, AppUpdateResult, RuntimeStatus } from "./types";
 import { formatUptime } from "./utils/presentation";
 import { useTheme } from "./hooks/useTheme";
+import { useDeviceInventory } from "./hooks/useDeviceInventory";
 
 const emptyStatus: RuntimeStatus = {
   version: "",
@@ -77,12 +72,13 @@ export default function App() {
   const [refreshing, setRefreshing] = useState(false);
   const [runtimeAvailable, setRuntimeAvailable] = useState(false);
   const [lastRefresh, setLastRefresh] = useState("");
-  const [deviceSummary, setDeviceSummary] = useState({
-    online: 0,
-    total: 0,
-    available: false,
-  });
-  const [bindings, setBindings] = useState<DeviceDdnsConfig[] | null>(null);
+  const inventory = useDeviceInventory();
+  const deviceSummary = {
+    online: inventory.devices.filter((device) => device.online).length,
+    total: inventory.devices.length,
+    available: inventory.devicesLoaded || inventory.configsLoaded,
+  };
+  const bindings = inventory.configsLoaded ? inventory.configs : null;
   const [autoStartEnabled, setAutoStartEnabled] = useState(false);
   const [autoStartSaving, setAutoStartSaving] = useState(false);
   const [autoUpdateCheckEnabled, setAutoUpdateCheckEnabled] = useState(false);
@@ -108,23 +104,6 @@ export default function App() {
     } catch {
       setRuntimeAvailable(false);
     }
-  }
-
-  async function loadDeviceSummary() {
-    const [devices, configs] = await Promise.allSettled([
-      invokeCommand<LanDevice[]>("list_lan_devices"),
-      invokeCommand<DeviceDdnsConfig[]>("list_device_ddns_configs"),
-    ]);
-    setDeviceSummary(
-      devices.status === "fulfilled"
-        ? {
-            online: devices.value.filter((device) => device.online).length,
-            total: devices.value.length,
-            available: true,
-          }
-        : { online: 0, total: 0, available: false },
-    );
-    setBindings(configs.status === "fulfilled" ? configs.value : null);
   }
 
   useEffect(() => {
@@ -317,20 +296,15 @@ export default function App() {
 
   useEffect(() => {
     loadRuntimeStatus();
-    loadDeviceSummary();
     loadAutoStart();
     loadAutoUpdateCheck();
     window.addEventListener("homenet:refresh-status", loadRuntimeStatus);
-    window.addEventListener("homenet:devices-refresh", loadDeviceSummary);
 
     const runtimeTimer = window.setInterval(loadRuntimeStatus, 10000);
-    const deviceTimer = window.setInterval(loadDeviceSummary, 30000);
 
     return () => {
       window.removeEventListener("homenet:refresh-status", loadRuntimeStatus);
-      window.removeEventListener("homenet:devices-refresh", loadDeviceSummary);
       window.clearInterval(runtimeTimer);
-      window.clearInterval(deviceTimer);
     };
   }, []);
 
@@ -348,7 +322,7 @@ export default function App() {
     if (refreshing) return;
     setRefreshing(true);
     try {
-      await Promise.all([loadRuntimeStatus(), loadDeviceSummary()]);
+      await Promise.all([loadRuntimeStatus(), inventory.refresh()]);
       notifyLogsChanged();
     } finally {
       setRefreshing(false);
@@ -394,11 +368,11 @@ export default function App() {
         bindings={bindings}
         onNavigate={setPage}
         onRefresh={async () => {
-          await Promise.all([loadRuntimeStatus(), loadDeviceSummary()]);
+          await Promise.all([loadRuntimeStatus(), inventory.refresh()]);
         }}
       />
     ) : page === "devices" ? (
-      <DeviceDdnsPanel />
+      <DeviceDdnsPanel inventory={inventory} />
     ) : page === "forward" ? (
       <ForwardRulesPanel />
     ) : page === "proxy" ? (

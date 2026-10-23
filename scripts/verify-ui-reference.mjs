@@ -49,11 +49,11 @@ const requiredChecks = [
     'invokeCommand<ForwardRule>("save_forward_rule"',
   ],
   [
-    "src/components/DeviceDdnsPanel.tsx",
+    "src/hooks/useDeviceInventory.ts",
     'invokeCommand<LanDevice[]>("list_lan_devices")',
   ],
   [
-    "src/components/DeviceDdnsPanel.tsx",
+    "src/hooks/useDeviceInventory.ts",
     'invokeCommand<DeviceDdnsConfig[]>("list_device_ddns_configs")',
   ],
   [
