@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "tray-status",
+  "description": "Read status and dismiss the tray popover without main-window controls",
+  "windows": ["tray-status"],
+  "permissions": [
+    "core:event:default",
+    "core:window:allow-is-visible",
+    "core:window:allow-hide"
+  ]
+}

@@ -7,6 +7,7 @@ pub(crate) mod device_discovery;
 mod forward;
 mod logging;
 mod reverse_proxy;
+mod status_snapshot;
 mod tray;
 mod webdav;
 
@@ -99,6 +100,10 @@ pub fn run() {
             commands::set_auto_update_check,
             commands::check_app_update,
             commands::install_app_update,
+            status_snapshot::get_tray_snapshot,
+            tray::open_main_window,
+            tray::take_main_page,
+            tray::quit_app,
         ])
         .setup(|app| {
             // -- close-to-tray: hide window instead of closing ----------

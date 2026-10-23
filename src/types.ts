@@ -60,6 +60,23 @@ export interface RuntimeStatus {
   uptime: number;
 }
 
+export interface ServiceSummary {
+  id: string;
+  page: AppPage;
+  name: string;
+  detail: string;
+  status: string;
+  enabled: boolean;
+}
+
+export interface TraySnapshot {
+  runtime: RuntimeStatus;
+  binding_count: number;
+  enabled_binding_count: number;
+  services: ServiceSummary[];
+  logs: LogEntry[];
+}
+
 export interface ReverseProxyRule {
   id: string;
   enabled: boolean;

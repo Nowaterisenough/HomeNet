@@ -53,7 +53,7 @@ export default function RuntimeSettingsPanel({
       <label className="setting-toggle">
         <span>
           <strong>主题外观</strong>
-          <small>石墨灰配色，支持深浅模式</small>
+          <small>主窗口与菜单栏小窗保持一致</small>
         </span>
         <select
           aria-label="主题外观"

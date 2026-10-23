@@ -24,6 +24,7 @@ import UpdateConfirmDialog from "./components/UpdateConfirmDialog";
 import WebDavPanel from "./components/WebDavPanel";
 import {
   closeCurrentWindow,
+  currentTauriWindow,
   invokeCommand,
   minimizeCurrentWindow,
   startCurrentWindowDrag,
@@ -125,6 +126,33 @@ export default function App() {
     );
     setBindings(configs.status === "fulfilled" ? configs.value : null);
   }
+
+  useEffect(() => {
+    const appWindow = currentTauriWindow();
+    if (!appWindow) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    async function navigateFromTray() {
+      const target = await invokeCommand<AppPage | null>("take_main_page");
+      if (!disposed && target) setPage(target);
+    }
+    void appWindow
+      .listen("homenet:navigate", () => {
+        void navigateFromTray().catch(console.warn);
+      })
+      .then((stop) => {
+        if (disposed) stop();
+        else {
+          unlisten = stop;
+          void navigateFromTray().catch(console.warn);
+        }
+      })
+      .catch(console.warn);
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   async function loadAutoStart() {
     try {
