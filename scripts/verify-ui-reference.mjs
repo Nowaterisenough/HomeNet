@@ -126,6 +126,8 @@ const requiredChecks = [
   ["src-tauri/Cargo.toml", "tauri-plugin-updater"],
   ["src-tauri/Cargo.toml", "dav-server"],
   ["src-tauri/Cargo.toml", "argon2"],
+  ["src-tauri/src/commands.rs", "release_from_official_page"],
+  ["src-tauri/src/commands.rs", "verify_inferred_update_asset"],
   ["src-tauri/src/commands.rs", "install_app_update"],
   ["src-tauri/src/commands.rs", "check_app_update"],
   ["src-tauri/src/commands.rs", "expected_version"],
@@ -150,14 +152,23 @@ const requiredChecks = [
   ["src-tauri/src/tray.rs", "TrayIconAction::RestoreMainWindow"],
   ["src-tauri/src/tray.rs", "TrayIconAction::TogglePopover"],
   ["src-tauri/src/tray.rs", "TrayIconAction::ShowContextMenu"],
-  ["src-tauri/src/tray.rs", '#[cfg(not(target_os = "macos"))] let builder = builder.menu(&menu);'],
+  [
+    "src-tauri/src/tray.rs",
+    '#[cfg(not(target_os = "macos"))] let builder = builder.menu(&menu);',
+  ],
   ["src-tauri/src/tray.rs", 'tauri::include_image!("icons/tray-icon.png")'],
   ["src-tauri/src/tray.rs", "window.popup_menu(&menu)"],
   ["src-tauri/src/tray.rs", "tauri::WindowEvent::Focused(false)"],
   ["src-tauri/src/tray.rs", 'WebviewUrl::App("index.html?view=tray".into())'],
   ["src/main.tsx", "isTray ? <TrayStatus /> : <App />"],
-  ["src/components/TrayStatus.tsx", 'invokeCommand<TraySnapshot>("get_tray_snapshot")'],
-  ["src/components/TrayStatus.tsx", 'invokeCommand("open_main_window", { page })'],
+  [
+    "src/components/TrayStatus.tsx",
+    'invokeCommand<TraySnapshot>("get_tray_snapshot")',
+  ],
+  [
+    "src/components/TrayStatus.tsx",
+    'invokeCommand("open_main_window", { page })',
+  ],
   ["src/components/TrayStatus.tsx", 'invokeCommand("quit_app")'],
   ["src/components/TrayStatus.tsx", "if (!active) return"],
   ["src/components/TrayStatus.tsx", 'event.key === "Escape"'],
@@ -182,7 +193,12 @@ for (const [file, needle] of requiredChecks) {
 
   const content = readFileSync(filePath, "utf8");
   // Match the implementation independently of source formatting.
-  if (!content.replace(/\s+/g, "").replace(/,\)/g, ")").includes(needle.replace(/\s+/g, ""))) {
+  if (
+    !content
+      .replace(/\s+/g, "")
+      .replace(/,\)/g, ")")
+      .includes(needle.replace(/\s+/g, ""))
+  ) {
     missing.push(`${file}: ${needle}`);
   }
 }

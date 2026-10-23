@@ -8,7 +8,7 @@
     "build": "tsc --noEmit -p tsconfig.json && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "verify": "node scripts/verify-react-frontend.mjs && node --test scripts/device-inventory.test.mjs"
+    "verify": "node scripts/verify-react-frontend.mjs && node --test scripts/device-inventory.test.mjs scripts/update-errors.test.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

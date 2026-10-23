@@ -44,6 +44,7 @@ const UPDATE_MANIFEST_URL: &str =
     "https://github.com/Nowaterisenough/HomeNet/releases/latest/download/latest.json";
 const GITHUB_LATEST_RELEASE_API: &str =
     "https://api.github.com/repos/Nowaterisenough/HomeNet/releases/latest";
+const GITHUB_REPOSITORY_URL: &str = "https://github.com/Nowaterisenough/HomeNet/";
 const UPDATE_USER_AGENT: &str = concat!("HomeNet/", env!("CARGO_PKG_VERSION"));
 #[cfg(any(target_os = "macos", test))]
 const MACOS_APPLICATION_PATH: &str = "/Applications/HomeNet.app";
@@ -110,6 +111,8 @@ struct GithubRelease {
     body: String,
     #[serde(default)]
     assets: Vec<GithubReleaseAsset>,
+    #[serde(skip)]
+    asset_urls_inferred: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -163,7 +166,8 @@ fn write_config(state: &AppState, new_cfg: &AppConfig) -> Result<(), String> {
 }
 
 fn parse_release_version(value: &str) -> Option<Version> {
-    Version::parse(value.trim().trim_start_matches('v')).ok()
+    let value = value.trim();
+    Version::parse(value.strip_prefix('v').unwrap_or(value)).ok()
 }
 
 pub(crate) fn is_release_version_newer(current_version: &str, latest_version: &str) -> bool {
@@ -177,7 +181,7 @@ pub(crate) fn is_release_version_newer(current_version: &str, latest_version: &s
 }
 
 fn update_error_message(error: impl std::fmt::Display) -> String {
-    format!("检查或安装更新失败：{}", error)
+    error.to_string()
 }
 
 fn ensure_update_platform_supported() -> Result<(), String> {
@@ -244,27 +248,168 @@ fn select_github_update_asset(
 }
 
 async fn fetch_latest_github_release(client: &reqwest::Client) -> Result<GithubRelease, String> {
+    let repository = Url::parse(GITHUB_REPOSITORY_URL).map_err(update_error_message)?;
+    fetch_github_release_from(client, GITHUB_LATEST_RELEASE_API, &repository).await
+}
+
+async fn fetch_github_release_from(
+    client: &reqwest::Client,
+    api_url: &str,
+    repository: &Url,
+) -> Result<GithubRelease, String> {
+    match fetch_github_release_api(client, api_url).await {
+        Ok(release) => return Ok(release),
+        Err(api_error) => {
+            add_log("warn", "更新", &format!("{api_error}，尝试官方发布页"));
+            let result = async {
+                let response = client
+                    .head(
+                        repository
+                            .join("releases/latest")
+                            .map_err(update_error_message)?,
+                    )
+                    .header(reqwest::header::USER_AGENT, UPDATE_USER_AGENT)
+                    .timeout(Duration::from_secs(15))
+                    .send()
+                    .await
+                    .map_err(update_error_message)?;
+                if !response.status().is_success() {
+                    return Err(format!("官方发布页返回 HTTP {}", response.status()));
+                }
+                release_from_official_page(response.url(), repository)
+            }
+            .await;
+            result.map_err(|error| {
+                format!("{api_error}；官方发布页回退失败：{error}。请检查网络或代理后重试")
+            })
+        }
+    }
+}
+
+async fn fetch_github_release_api(
+    client: &reqwest::Client,
+    api_url: &str,
+) -> Result<GithubRelease, String> {
     let response = client
-        .get(GITHUB_LATEST_RELEASE_API)
+        .get(api_url)
         .header(reqwest::header::USER_AGENT, UPDATE_USER_AGENT)
         .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+        .timeout(Duration::from_secs(15))
         .send()
         .await
         .map_err(update_error_message)?;
     let status = response.status();
     if !status.is_success() {
-        return Err(format!("检查更新失败：GitHub 返回 HTTP {}", status));
+        let limited = status.as_u16() == 429
+            || response
+                .headers()
+                .get("x-ratelimit-remaining")
+                .is_some_and(|value| value == "0");
+        return Err(if limited {
+            format!("GitHub 版本接口请求额度已用尽（HTTP {status}）")
+        } else {
+            format!("GitHub 版本接口返回 HTTP {status}")
+        });
     }
-    response.json().await.map_err(update_error_message)
+    let release: GithubRelease = response.json().await.map_err(update_error_message)?;
+    if parse_release_version(&release.tag_name).is_none() {
+        return Err("GitHub 版本接口返回了无效版本号".into());
+    }
+    Ok(release)
+}
+
+fn release_from_official_page(url: &Url, repository: &Url) -> Result<GithubRelease, String> {
+    let prefix = format!("{}releases/tag/", repository.path());
+    let tag = url.path().strip_prefix(&prefix).unwrap_or_default();
+    if url.origin() != repository.origin()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || parse_release_version(tag).is_none()
+        || tag.contains('/')
+    {
+        return Err("官方发布页未返回有效的本仓库版本地址".into());
+    }
+    // These names are defined by our release workflow. Verify the selected asset
+    // before offering installation; a tag alone does not prove an upload exists.
+    let assets = [
+        UpdateAssetKind::WindowsX64Setup,
+        UpdateAssetKind::MacosArm64AppZip,
+    ]
+    .into_iter()
+    .map(|kind| {
+        let name = format!("HomeNet_{tag}{}", kind.asset_suffix());
+        let url = repository
+            .join(&format!("releases/download/{tag}/{name}"))
+            .map_err(update_error_message)?;
+        Ok(GithubReleaseAsset {
+            name,
+            browser_download_url: url.into(),
+        })
+    })
+    .collect::<Result<Vec<_>, String>>()?;
+    Ok(GithubRelease {
+        tag_name: tag.into(),
+        body: String::new(),
+        assets,
+        asset_urls_inferred: true,
+    })
+}
+
+async fn verify_inferred_update_asset(
+    client: &reqwest::Client,
+    release: &GithubRelease,
+    asset: &GithubReleaseAsset,
+) -> Result<(), String> {
+    if !release.asset_urls_inferred {
+        return Ok(());
+    }
+    let response = client
+        .head(&asset.browser_download_url)
+        .header(reqwest::header::USER_AGENT, UPDATE_USER_AGENT)
+        .timeout(Duration::from_secs(15))
+        .send()
+        .await
+        .map_err(update_error_message)?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "版本 {} 的安装包 {} 暂不可用（HTTP {}），请稍后重试",
+            release.tag_name,
+            asset.name,
+            response.status()
+        ));
+    }
+    Ok(())
+}
+
+fn validate_github_asset_url(value: &str) -> Result<(), String> {
+    let url = Url::parse(value).map_err(update_error_message)?;
+    if url.scheme() != "https"
+        || url.host_str() != Some("github.com")
+        || url.port_or_known_default() != Some(443)
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || !url
+            .path()
+            .starts_with("/Nowaterisenough/HomeNet/releases/download/")
+    {
+        return Err("更新包地址不属于 HomeNet 官方 HTTPS 发布源".into());
+    }
+    Ok(())
 }
 
 async fn download_github_update_asset(
     client: &reqwest::Client,
     asset: &GithubReleaseAsset,
 ) -> Result<PathBuf, String> {
+    validate_github_asset_url(&asset.browser_download_url)?;
     let response = client
         .get(&asset.browser_download_url)
         .header(reqwest::header::USER_AGENT, UPDATE_USER_AGENT)
+        .timeout(Duration::from_secs(300))
         .send()
         .await
         .map_err(update_error_message)?;
@@ -2106,7 +2251,8 @@ pub async fn check_app_update(app: AppHandle) -> Result<AppUpdateResult, String>
     }
 
     let asset_kind = current_update_asset_kind()?;
-    let release = fetch_latest_github_release(&reqwest::Client::new()).await?;
+    let client = reqwest::Client::new();
+    let release = fetch_latest_github_release(&client).await?;
     let latest_version = release.tag_name.trim().to_string();
     if parse_release_version(&latest_version).is_none() {
         return Err(format!("GitHub 最新版本号无效：{}", latest_version));
@@ -2121,7 +2267,7 @@ pub async fn check_app_update(app: AppHandle) -> Result<AppUpdateResult, String>
             verification: "github_https".to_string(),
         });
     }
-    select_github_update_asset(&release, asset_kind).ok_or_else(|| {
+    let asset = select_github_update_asset(&release, asset_kind).ok_or_else(|| {
         format!(
             "GitHub Release {} 未找到{}（期望文件后缀 {}）",
             latest_version,
@@ -2129,6 +2275,7 @@ pub async fn check_app_update(app: AppHandle) -> Result<AppUpdateResult, String>
             asset_kind.asset_suffix()
         )
     })?;
+    verify_inferred_update_asset(&client, &release, asset).await?;
     add_log(
         "warn",
         "更新",
@@ -2232,6 +2379,7 @@ async fn install_unsigned_app_update(
             asset_kind.asset_suffix()
         )
     })?;
+    verify_inferred_update_asset(&client, &release, asset).await?;
 
     add_log(
         "warn",
@@ -2273,6 +2421,10 @@ async fn install_unsigned_app_update(
 // ---------------------------------------------------------------------------
 
 static START_TIME: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+#[path = "commands_regression_tests.rs"]
+mod regression_tests;
 
 pub fn record_start_time() {
     let secs = std::time::SystemTime::now()
@@ -2790,6 +2942,7 @@ mod tests {
         let release = GithubRelease {
             tag_name: "v0.1.5".to_string(),
             body: String::new(),
+            asset_urls_inferred: false,
             assets: vec![
                 GithubReleaseAsset {
                     name: "HomeNet_v0.1.5_macos-arm64-app.zip".to_string(),

@@ -33,6 +33,7 @@ import type { AppPage, AppUpdateResult, RuntimeStatus } from "./types";
 import { formatUptime } from "./utils/presentation";
 import { useTheme } from "./hooks/useTheme";
 import { useDeviceInventory } from "./hooks/useDeviceInventory";
+import { operationError } from "./utils/errors";
 import HomeNetIcon from "./components/HomeNetIcon";
 
 const emptyStatus: RuntimeStatus = {
@@ -219,7 +220,7 @@ export default function App() {
       return result;
     } catch (error) {
       if (!automatic) {
-        setUpdateStatusMessage(`检查更新失败：${String(error)}`);
+        setUpdateStatusMessage(operationError("检查更新失败", error));
         setUpdateStatusType("error");
       }
       return null;
@@ -252,7 +253,7 @@ export default function App() {
       setUpdateStatusType("success");
       notifyLogsChanged();
     } catch (error) {
-      setUpdateStatusMessage(`安装更新失败：${String(error)}`);
+      setUpdateStatusMessage(operationError("安装更新失败", error));
       setUpdateStatusType("error");
     } finally {
       setUpdateInstalling(false);

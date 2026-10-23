@@ -137,7 +137,7 @@ jobs:
           node scripts/verify-port-expression.mjs
           node scripts/verify-ci-workflow.mjs
           node --test scripts/generate-updater-manifest.test.mjs
-          node --test scripts/device-inventory.test.mjs
+          node --test scripts/device-inventory.test.mjs scripts/update-errors.test.mjs
 
       - name: Build Tauri app
         if: ${{ github.event_name == 'pull_request' }}
