@@ -107,6 +107,8 @@ const requiredSnippets = [
   "actions/setup-node@v7",
   "dtolnay/rust-toolchain@stable",
   "pnpm install --frozen-lockfile",
+  "name: Verify macOS app bundle",
+  "node scripts/verify-macos-bundle.mjs",
   "Generate updater manifest",
   "if: ${{ needs.metadata.outputs.updater_enabled == 'true' }}",
   "HOMENET_RELEASE_TAG: ${{ needs.metadata.outputs.release_tag }}",

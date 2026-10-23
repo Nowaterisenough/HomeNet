@@ -159,6 +159,10 @@ jobs:
         with:
           args: ${{ matrix.args }} ${{ needs.metadata.outputs.updater_enabled == 'true' && '--config src-tauri/tauri.updater.conf.json' || '' }}
 
+      - name: Verify macOS app bundle
+        if: runner.os == 'macOS'
+        run: node scripts/verify-macos-bundle.mjs src-tauri/target/${{ matrix.rustTarget }}/release/bundle/macos/HomeNet.app
+
       - name: Normalize package name
         shell: pwsh
         run: |
