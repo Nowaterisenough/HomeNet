@@ -12,7 +12,6 @@ import {
   MonitorSmartphone,
   RefreshCw,
   ShieldCheck,
-  Waypoints,
   Workflow,
 } from "lucide-react";
 import { invokeCommand } from "../lib/tauri";
@@ -26,6 +25,7 @@ import type {
 import { formatSyncTime } from "../utils/time";
 import { statusTone } from "../utils/presentation";
 import PageHeading from "./PageHeading";
+import HomeNetIcon from "./HomeNetIcon";
 
 interface NetworkOverviewProps {
   status: RuntimeStatus;
@@ -261,7 +261,7 @@ export default function NetworkOverview({
             <div className="topology-line" />
             <div className="topology-node is-center">
               <div className="topology-icon">
-                <Waypoints />
+                <HomeNetIcon size={26} />
               </div>
               <span>HomeNet</span>
             </div>

@@ -32,6 +32,7 @@ const checks = [
     'invokeCommand("save_device_ddns_config"',
   ],
   ["src/components/DeviceDdnsPanel.tsx", "prioritizeEnabledDeviceRows"],
+  ["src/components/HomeNetIcon.tsx", "tray-icon.svg"],
   ["src/components/DeviceDdnsPanel.tsx", "device-status-icons"],
   [
     "src/components/ReverseProxyPanel.tsx",
