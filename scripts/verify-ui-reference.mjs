@@ -147,6 +147,7 @@ const requiredChecks = [
   ["src-tauri/src/tray.rs", 'const TRAY_TOOLTIP: &str = "HomeNet";'],
   ["src-tauri/src/tray.rs", "TrayIconEvent::DoubleClick"],
   ["src-tauri/src/tray.rs", "TrayIconAction::RestoreMainWindow"],
+  ["src-tauri/src/tray.rs", 'tauri::include_image!("icons/tray-icon.png")'],
   ["src-tauri/src/config.rs", "pub reverse_proxy_rules: Vec<ReverseProxyRule>"],
   ["src-tauri/src/config.rs", "pub webdav: WebDavConfig"],
   ["src-tauri/src/reverse_proxy.rs", "pub struct ReverseProxyManager"],

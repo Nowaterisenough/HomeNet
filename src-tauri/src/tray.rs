@@ -49,11 +49,8 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 
     // ---- tray icon ---------------------------------------------------
     let _tray = TrayIconBuilder::new()
-        .icon(
-            app.default_window_icon()
-                .cloned()
-                .unwrap_or_else(|| app.default_window_icon().unwrap().clone()),
-        )
+        .icon(tauri::include_image!("icons/tray-icon.png"))
+        .icon_as_template(cfg!(target_os = "macos"))
         .menu(&menu)
         .tooltip(TRAY_TOOLTIP)
         .on_menu_event(|app, event| match event.id().as_ref() {
