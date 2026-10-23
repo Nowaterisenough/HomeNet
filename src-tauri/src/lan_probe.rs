@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use std::io::{self, ErrorKind};
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
+use std::num::NonZeroU32;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
@@ -9,6 +11,7 @@ const PROBE_BUDGET: usize = 1024;
 struct Subnet {
     address: Ipv4Addr,
     prefix: u8,
+    interface_index: Option<NonZeroU32>,
 }
 
 impl Subnet {
@@ -16,7 +19,11 @@ impl Subnet {
         if !(8..=30).contains(&prefix) {
             return None;
         }
-        let subnet = Self { address, prefix };
+        let subnet = Self {
+            address,
+            prefix,
+            interface_index: None,
+        };
         let (network, broadcast) = subnet.bounds();
         let local = |ip: Ipv4Addr| ip.is_private() || ip.is_link_local();
         (local(Ipv4Addr::from(network)) && local(Ipv4Addr::from(broadcast))).then_some(subnet)
@@ -31,6 +38,38 @@ impl Subnet {
     fn initial_cursor(self) -> u32 {
         u32::from(self.address).saturating_sub(self.bounds().0 + 1)
     }
+
+    #[cfg(any(target_os = "macos", test))]
+    fn broadcast(self) -> Ipv4Addr {
+        Ipv4Addr::from(self.bounds().1)
+    }
+}
+
+fn bound_probe_socket(subnet: Subnet) -> io::Result<UdpSocket> {
+    let socket = UdpSocket::bind(SocketAddrV4::new(subnet.address, 0))?;
+    #[cfg(target_os = "macos")]
+    {
+        let index = subnet
+            .interface_index
+            .ok_or_else(|| io::Error::new(ErrorKind::AddrNotAvailable, "未取得局域网网卡索引"))?;
+        // Binding the source address alone does not prevent a VPN route from
+        // capturing local traffic. IP_BOUND_IF pins both probes to this interface.
+        socket2::SockRef::from(&socket).bind_device_by_index_v4(Some(index))?;
+    }
+    socket.set_ttl(1)?;
+    Ok(socket)
+}
+
+fn probe_error_message(operation: &str, error: &io::Error) -> String {
+    let advice = match error.kind() {
+        ErrorKind::PermissionDenied => "被系统拒绝，请检查本地网络权限或防火墙",
+        ErrorKind::HostUnreachable | ErrorKind::NetworkUnreachable | ErrorKind::NetworkDown => {
+            "路由不可达，请检查网卡连接和 VPN 的局域网访问设置"
+        }
+        ErrorKind::AddrNotAvailable => "无法绑定本地网卡地址，请检查网卡连接后刷新",
+        _ => "失败",
+    };
+    format!("{operation}{advice}：{error}")
 }
 
 fn probe_targets(subnet: Subnet, cursor: &mut u32, budget: usize) -> Vec<Ipv4Addr> {
@@ -58,10 +97,9 @@ pub(super) fn refresh_ipv4_neighbors() -> Result<(), String> {
     let mut sent = false;
     let mut last_error = None;
     for subnet in subnets {
-        let probe = || -> std::io::Result<UdpSocket> {
-            let socket = UdpSocket::bind(SocketAddrV4::new(subnet.address, 0))?;
+        let probe = || -> io::Result<UdpSocket> {
+            let socket = bound_probe_socket(subnet)?;
             socket.set_nonblocking(true)?;
-            socket.set_ttl(1)?;
             Ok(socket)
         };
         let socket = match probe() {
@@ -82,11 +120,6 @@ pub(super) fn refresh_ipv4_neighbors() -> Result<(), String> {
                 let denied = error.kind() == std::io::ErrorKind::PermissionDenied;
                 last_error = Some(error);
                 if denied {
-                    crate::config::add_log(
-                        "warn",
-                        "设备发现",
-                        "局域网主动探测被拒绝，请检查本地网络权限",
-                    );
                     break;
                 }
             } else {
@@ -98,9 +131,76 @@ pub(super) fn refresh_ipv4_neighbors() -> Result<(), String> {
     if sent {
         std::thread::sleep(Duration::from_millis(500));
     } else if let Some(error) = last_error {
-        return Err(format!(
-            "局域网主动探测未能发送，请检查本地网络权限、网卡和 VPN 设置：{error}"
-        ));
+        return Err(probe_error_message("局域网主动探测", &error));
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn record_probe_failure(
+    failures: &mut HashMap<Subnet, ErrorKind>,
+    subnet: Subnet,
+    error: Option<ErrorKind>,
+) -> bool {
+    match error {
+        Some(kind) => failures.insert(subnet, kind) != Some(kind),
+        None => {
+            failures.remove(&subnet);
+            false
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn refresh_macos_broadcast_neighbors() {
+    static FAILURES: OnceLock<Mutex<HashMap<Subnet, ErrorKind>>> = OnceLock::new();
+    let Ok(mut failures) = FAILURES.get_or_init(Mutex::default).try_lock() else {
+        return;
+    };
+    let subnets = local_subnets();
+    failures.retain(|subnet, _| subnets.contains(subnet));
+    for subnet in subnets {
+        let result = probe_macos_broadcast(subnet);
+        if record_probe_failure(
+            &mut failures,
+            subnet,
+            result.as_ref().err().map(io::Error::kind),
+        ) {
+            let error = result.unwrap_err();
+            crate::config::add_log(
+                "warn",
+                "设备发现",
+                &format!(
+                    "{}；已继续其他设备发现路径",
+                    probe_error_message("局域网辅助广播", &error)
+                ),
+            );
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn probe_macos_broadcast(subnet: Subnet) -> io::Result<()> {
+    use std::time::Instant;
+    let socket = bound_probe_socket(subnet)?;
+    socket.set_broadcast(true)?;
+    socket.set_write_timeout(Some(super::NETBIOS_QUERY_TIMEOUT))?;
+    let target = subnet.broadcast();
+    let mut packet = super::build_netbios_node_status_query(super::netbios_transaction_id(target));
+    packet[3] |= 0x10;
+    socket.send_to(&packet, SocketAddrV4::new(target, 137))?;
+    let deadline = Instant::now() + super::NETBIOS_QUERY_TIMEOUT;
+    let mut buffer = [0_u8; 1024];
+    while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
+        socket.set_read_timeout(Some(remaining.max(Duration::from_millis(1))))?;
+        match socket.recv_from(&mut buffer) {
+            Ok(_) => {}
+            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                break
+            }
+            Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
     }
     Ok(())
 }
@@ -108,7 +208,7 @@ pub(super) fn refresh_ipv4_neighbors() -> Result<(), String> {
 #[cfg(target_os = "macos")]
 fn local_subnets() -> Vec<Subnet> {
     let output = std::process::Command::new("/sbin/ifconfig")
-        .arg("-a")
+        .args(["-v", "-a"])
         .output();
     let text = super::discovery_command_stdout("/sbin/ifconfig", output);
     parse_macos_subnets(&text)
@@ -117,13 +217,37 @@ fn local_subnets() -> Vec<Subnet> {
 #[cfg(any(target_os = "macos", test))]
 fn parse_macos_subnets(text: &str) -> Vec<Subnet> {
     let mut eligible = false;
+    let mut interface_index = None;
+    let mut pending = Vec::new();
     let mut result = Vec::new();
     for line in text.lines() {
         if let Some(name) = super::parse_macos_ifconfig_interface_name(line) {
+            if eligible {
+                result.append(&mut pending);
+            } else {
+                pending.clear();
+            }
+            let flags: Vec<_> = line
+                .split(['<', '>'])
+                .nth(1)
+                .unwrap_or_default()
+                .split(',')
+                .collect();
             eligible = super::is_likely_physical_lan_interface(&name)
-                && line.split(['<', '>', ',']).any(|flag| flag == "UP")
-                && !line.contains("POINTOPOINT");
+                && ["UP", "RUNNING", "BROADCAST"]
+                    .iter()
+                    .all(|flag| flags.contains(flag))
+                && !flags.contains(&"POINTOPOINT");
+            let tokens: Vec<_> = line.split_whitespace().collect();
+            interface_index = tokens
+                .windows(2)
+                .find(|pair| pair[0] == "index")
+                .and_then(|pair| pair[1].parse::<u32>().ok())
+                .and_then(NonZeroU32::new);
             continue;
+        }
+        if line.trim().starts_with("status:") && line.trim() != "status: active" {
+            eligible = false;
         }
         if !eligible {
             continue;
@@ -144,12 +268,16 @@ fn parse_macos_subnets(text: &str) -> Vec<Subnet> {
             if prefix == 0 || mask != u32::MAX << (32 - prefix) {
                 continue;
             }
-            if let Some(subnet) = Subnet::new(address, prefix) {
-                if !result.contains(&subnet) {
-                    result.push(subnet);
+            if let Some(mut subnet) = Subnet::new(address, prefix) {
+                subnet.interface_index = interface_index;
+                if !pending.contains(&subnet) {
+                    pending.push(subnet);
                 }
             }
         }
+    }
+    if eligible {
+        result.append(&mut pending);
     }
     result
 }
@@ -254,5 +382,106 @@ mod tests {
             .len(),
             1
         );
+    }
+
+    #[test]
+    fn broadcasts_follow_each_subnet_mask_instead_of_the_global_route() {
+        for (address, prefix, expected) in [
+            ("192.168.8.5", 23, "192.168.9.255"),
+            ("10.2.3.7", 24, "10.2.3.255"),
+        ] {
+            let subnet = Subnet::new(address.parse().unwrap(), prefix).unwrap();
+            assert_eq!(subnet.broadcast(), expected.parse::<Ipv4Addr>().unwrap());
+            assert_ne!(subnet.broadcast(), Ipv4Addr::BROADCAST);
+        }
+    }
+
+    #[test]
+    fn macos_verbose_interfaces_keep_the_index_and_discard_inactive_links() {
+        let text = "en0: flags=8863<UP,BROADCAST,RUNNING> mtu 1500 index 17\n inet 192.168.8.5 netmask 0xffffff00\n status: active\nen1: flags=8863<UP,BROADCAST,RUNNING> mtu 1500 index 18\n inet 10.0.0.2 netmask 0xffffff00\n status: inactive\nen2: flags=8863<UP,BROADCAST> mtu 1500 index 19\n inet 10.1.0.2 netmask 0xffffff00\nen3: flags=8863<UP,BROADCAST,RUNNING> mtu 1500 index 20\n status: inactive\n inet 10.2.0.2 netmask 0xffffff00\nutun4: flags=8051<UP,POINTOPOINT,RUNNING> mtu 1500 index 21\n inet 10.3.0.2 netmask 0xffffff00";
+        let subnets = parse_macos_subnets(text);
+        assert_eq!(subnets.len(), 1);
+        assert_eq!(subnets[0].interface_index, NonZeroU32::new(17));
+        assert_eq!(
+            subnets[0].address,
+            "192.168.8.5".parse::<Ipv4Addr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn route_failures_are_not_mislabeled_as_permission_denials() {
+        for kind in [
+            ErrorKind::HostUnreachable,
+            ErrorKind::NetworkUnreachable,
+            ErrorKind::NetworkDown,
+        ] {
+            let message = probe_error_message("探测", &io::Error::new(kind, "fixture"));
+            assert!(message.contains("路由不可达"));
+            assert!(!message.contains("权限"));
+        }
+        assert!(probe_error_message(
+            "探测",
+            &io::Error::new(ErrorKind::PermissionDenied, "fixture")
+        )
+        .contains("本地网络权限"));
+        assert!(probe_error_message(
+            "探测",
+            &io::Error::new(ErrorKind::AddrNotAvailable, "fixture")
+        )
+        .contains("本地网卡地址"));
+    }
+
+    #[test]
+    fn unchanged_auxiliary_failures_are_reported_once_until_recovery() {
+        let mut failures = HashMap::new();
+        let first = Subnet::new("192.168.1.10".parse().unwrap(), 24).unwrap();
+        let second = Subnet::new("192.168.2.10".parse().unwrap(), 24).unwrap();
+        assert!(record_probe_failure(
+            &mut failures,
+            first,
+            Some(ErrorKind::HostUnreachable)
+        ));
+        assert!(!record_probe_failure(
+            &mut failures,
+            first,
+            Some(ErrorKind::HostUnreachable)
+        ));
+        assert!(record_probe_failure(
+            &mut failures,
+            second,
+            Some(ErrorKind::HostUnreachable)
+        ));
+        assert!(record_probe_failure(
+            &mut failures,
+            first,
+            Some(ErrorKind::PermissionDenied)
+        ));
+        assert!(!record_probe_failure(&mut failures, first, None));
+        assert!(record_probe_failure(
+            &mut failures,
+            first,
+            Some(ErrorKind::PermissionDenied)
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn darwin_error_65_has_route_specific_guidance() {
+        let message = probe_error_message("局域网辅助广播", &io::Error::from_raw_os_error(65));
+        assert!(message.contains("路由不可达"));
+        assert!(!message.contains("权限"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn missing_interface_index_never_falls_back_to_the_default_route() {
+        let subnet = Subnet {
+            address: Ipv4Addr::LOCALHOST,
+            prefix: 8,
+            interface_index: None,
+        };
+        let error = bound_probe_socket(subnet).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::AddrNotAvailable);
+        assert!(error.to_string().contains("网卡索引"));
     }
 }

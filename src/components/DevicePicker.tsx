@@ -252,7 +252,7 @@ export default function DevicePicker({
                   role="status"
                   title={error}
                 >
-                  扫描失败，保留已有设备。请检查本地网络权限后重试。
+                  扫描失败，保留已有设备。请查看具体错误后重试。
                 </p>
               ) : null}
               <div

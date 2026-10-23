@@ -165,7 +165,7 @@ fn powershell_output(script: &str) -> std::io::Result<std::process::Output> {
 
 #[cfg(target_os = "macos")]
 fn discover_neighbor_devices(hints: &[DeviceDiscoveryHint]) -> Vec<LanDevice> {
-    probe_macos_lan();
+    lan_probe::refresh_macos_broadcast_neighbors();
     refresh_macos_ipv6_neighbors();
 
     let mut rows = read_macos_neighbor_rows();
@@ -176,44 +176,6 @@ fn discover_neighbor_devices(hints: &[DeviceDiscoveryHint]) -> Vec<LanDevice> {
     let mut devices = merge_neighbor_rows_with_source(rows, "macos-neighbor");
     enrich_neighbor_devices_with_active_discovery(&mut devices, hints);
     devices
-}
-
-#[cfg(target_os = "macos")]
-fn probe_macos_lan() {
-    // Seed the neighbor cache even when it is empty. A local UDP operation also
-    // lets macOS request consent; reading a filtered ARP table alone may not.
-    let probe = || -> std::io::Result<()> {
-        let socket = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0))?;
-        socket.set_broadcast(true)?;
-        socket.set_ttl(1)?;
-        socket.set_write_timeout(Some(NETBIOS_QUERY_TIMEOUT))?;
-        let mut packet =
-            build_netbios_node_status_query(netbios_transaction_id(Ipv4Addr::BROADCAST));
-        packet[3] |= 0x10; // NetBIOS broadcast query flag.
-        socket.send_to(&packet, SocketAddrV4::new(Ipv4Addr::BROADCAST, 137))?;
-        let deadline = Instant::now() + NETBIOS_QUERY_TIMEOUT;
-        let mut buffer = [0_u8; 1024];
-        while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
-            socket.set_read_timeout(Some(remaining))?;
-            match socket.recv_from(&mut buffer) {
-                Ok(_) => {}
-                Err(error)
-                    if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
-                {
-                    break
-                }
-                Err(error) => return Err(error),
-            }
-        }
-        Ok(())
-    };
-    if let Err(error) = probe() {
-        crate::config::add_log(
-            "warn",
-            "设备发现",
-            &format!("局域网探测失败，请检查本地网络权限：{error}"),
-        );
-    }
 }
 
 #[cfg(windows)]
