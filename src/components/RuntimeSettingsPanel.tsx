@@ -53,7 +53,7 @@ export default function RuntimeSettingsPanel({
       <label className="setting-toggle">
         <span>
           <strong>主题外观</strong>
-          <small>科技蓝配色，支持深浅模式</small>
+          <small>石墨灰配色，支持深浅模式</small>
         </span>
         <select
           aria-label="主题外观"
@@ -61,8 +61,8 @@ export default function RuntimeSettingsPanel({
           onChange={(event) => onThemeChange(event.target.value as ThemeMode)}
         >
           <option value="system">跟随系统</option>
-          <option value="dark">深空蓝</option>
-          <option value="light">冷白</option>
+          <option value="dark">石墨深色</option>
+          <option value="light">柔和浅色</option>
         </select>
       </label>
 

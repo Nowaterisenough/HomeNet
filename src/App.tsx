@@ -8,14 +8,12 @@ import NetworkOverview from "./components/NetworkOverview";
 import PageHeading from "./components/PageHeading";
 import {
   ArrowLeftRight,
-  ChevronRight,
   FolderOpen,
-  House,
   LayoutDashboard,
   Minus,
   MonitorSmartphone,
   ScrollText,
-  Server,
+  RefreshCw,
   SlidersHorizontal,
   Square,
   Waypoints,
@@ -37,9 +35,9 @@ import type {
   DeviceDdnsConfig,
   LanDevice,
   RuntimeStatus,
-  ThemeMode,
 } from "./types";
 import { formatUptime } from "./utils/presentation";
+import { useTheme } from "./hooks/useTheme";
 
 const emptyStatus: RuntimeStatus = {
   version: "",
@@ -59,33 +57,23 @@ const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const navigation = [
   {
     id: "overview",
-    title: "网络总览",
+    title: "总览",
     icon: LayoutDashboard,
-    group: "工作空间",
   },
   { id: "devices", title: "设备与 DDNS", icon: MonitorSmartphone },
-  { id: "forward", title: "端口转发", icon: ArrowLeftRight, group: "连接服务" },
+  { id: "forward", title: "端口转发", icon: ArrowLeftRight },
   { id: "proxy", title: "反向代理", icon: Workflow },
   { id: "webdav", title: "文件服务", icon: FolderOpen },
-  { id: "logs", title: "运行日志", icon: ScrollText, group: "系统" },
-  { id: "settings", title: "偏好设置", icon: SlidersHorizontal },
+  { id: "logs", title: "日志", icon: ScrollText },
 ] as const;
-
-function initialTheme(): ThemeMode {
-  try {
-    const saved = localStorage.getItem("homenet:theme");
-    return saved === "light" || saved === "dark" ? saved : "system";
-  } catch {
-    return "system";
-  }
-}
 
 export default function App() {
   const [statusData, setStatusData] = useState<RuntimeStatus>({
     ...emptyStatus,
   });
   const [page, setPage] = useState<AppPage>("overview");
-  const [theme, setTheme] = useState<ThemeMode>(initialTheme);
+  const [theme, setTheme] = useTheme();
+  const [refreshing, setRefreshing] = useState(false);
   const [runtimeAvailable, setRuntimeAvailable] = useState(false);
   const [lastRefresh, setLastRefresh] = useState("");
   const [deviceSummary, setDeviceSummary] = useState({
@@ -137,15 +125,6 @@ export default function App() {
     );
     setBindings(configs.status === "fulfilled" ? configs.value : null);
   }
-
-  useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-    try {
-      localStorage.setItem("homenet:theme", theme);
-    } catch {
-      /* The selected theme still applies when storage is unavailable. */
-    }
-  }, [theme]);
 
   async function loadAutoStart() {
     try {
@@ -337,7 +316,47 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [autoUpdateCheckEnabled]);
 
-  const currentPage = navigation.find((item) => item.id === page)!;
+  async function refreshWorkspace() {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      await Promise.all([loadRuntimeStatus(), loadDeviceSummary()]);
+      notifyLogsChanged();
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
+  const isMac = /Mac/.test(navigator.platform);
+  const windowControls = (
+    <div className={`window-controls${isMac ? " window-controls-macos" : ""}`}>
+      <button
+        className="window-control control-minimize"
+        type="button"
+        aria-label="最小化"
+        onClick={minimizeCurrentWindow}
+      >
+        <Minus size={14} />
+      </button>
+      <button
+        className="window-control control-maximize"
+        type="button"
+        aria-label="最大化"
+        onClick={toggleMaximizeCurrentWindow}
+      >
+        <Square size={12} />
+      </button>
+      <button
+        className="window-control control-close"
+        type="button"
+        aria-label="关闭"
+        title="关闭窗口，后台服务继续运行"
+        onClick={closeCurrentWindow}
+      >
+        <X size={14} />
+      </button>
+    </div>
+  );
   const pageContent =
     page === "overview" ? (
       <NetworkOverview
@@ -402,122 +421,77 @@ export default function App() {
 
   return (
     <div className="window-frame">
-      <aside className="app-sidebar">
-        <div className="app-brand" onMouseDown={startWindowDrag}>
-          <Waypoints aria-hidden="true" />
-          <div>
-            <strong>
-              HomeNet<span>.</span>
-            </strong>
-            <small>PERSONAL NETWORK</small>
-          </div>
+      <header className="titlebar" onMouseDown={startWindowDrag}>
+        {isMac ? windowControls : null}
+        <div className="app-brand">
+          <Waypoints size={21} aria-hidden="true" />
+          <strong>HomeNet</strong>
         </div>
         <nav className="app-navigation" aria-label="主导航">
           {navigation.map((item) => (
-            <div className="nav-item" key={item.id}>
-              {"group" in item ? (
-                <p className="nav-group">{item.group}</p>
-              ) : null}
-              <button
-                type="button"
-                aria-label={item.title}
-                title={item.title}
-                aria-current={page === item.id ? "page" : undefined}
-                onClick={() => setPage(item.id)}
-              >
-                <item.icon size={18} />
-                <span>{item.title}</span>
-                {item.id === "devices" && deviceSummary.available ? (
-                  <small>{deviceSummary.total}</small>
-                ) : item.id === "forward" && runtimeAvailable ? (
-                  <small>{statusData.enabled_rule_count}</small>
-                ) : item.id === "proxy" && runtimeAvailable ? (
-                  <small>{statusData.enabled_reverse_proxy_rule_count}</small>
-                ) : null}
-              </button>
-            </div>
+            <button
+              key={item.id}
+              type="button"
+              aria-label={item.title}
+              title={item.title}
+              aria-current={page === item.id ? "page" : undefined}
+              onClick={() => setPage(item.id)}
+            >
+              <item.icon size={16} />
+              <span>{item.title}</span>
+            </button>
           ))}
         </nav>
-        <div className="sidebar-bottom">
-          <div className="local-service">
-            <Server size={28} />
-            <div>
-              <strong>
-                {runtimeAvailable ? "本机服务运行中" : "本机服务未连接"}
-              </strong>
-              <small>
-                {runtimeAvailable
-                  ? `已运行 ${formatUptime(statusData.uptime)}`
-                  : "请检查服务状态"}
-              </small>
-            </div>
-          </div>
-          <div className="sidebar-version">
-            <span>HomeNet</span>
-            <span>{statusData.version ? `v${statusData.version}` : "--"}</span>
-          </div>
+        <div className="titlebar-actions">
+          <button
+            className="chrome-action"
+            aria-label="刷新状态"
+            title="刷新状态"
+            disabled={refreshing}
+            onClick={refreshWorkspace}
+          >
+            <RefreshCw size={16} className={refreshing ? "spinning" : ""} />
+          </button>
+          <button
+            className="chrome-action"
+            aria-label="偏好设置"
+            title="偏好设置"
+            aria-current={page === "settings" ? "page" : undefined}
+            onClick={() => setPage("settings")}
+          >
+            <SlidersHorizontal size={17} />
+          </button>
         </div>
-      </aside>
-      <div className="app-workspace">
-        <header className="titlebar" onMouseDown={startWindowDrag}>
-          <div className="titlebar-left">
-            <House size={15} />
-            <span className="breadcrumb-home">个人网络</span>
-            <ChevronRight size={14} />
-            <span className="breadcrumb-current">{currentPage.title}</span>
-          </div>
-          {updateStatusMessage ? (
-            <button
-              type="button"
-              role="status"
-              title={updateStatusMessage}
-              className={`update-status update-${updateStatusType}`}
-              onClick={() => setPage("settings")}
-            >
-              {updateStatusMessage}
-            </button>
-          ) : null}
-          <div className="window-controls">
-            <button
-              className="window-control"
-              type="button"
-              aria-label="最小化"
-              onClick={minimizeCurrentWindow}
-            >
-              <Minus size={15} />
-            </button>
-            <button
-              className="window-control"
-              type="button"
-              aria-label="最大化"
-              onClick={toggleMaximizeCurrentWindow}
-            >
-              <Square size={13} />
-            </button>
-            <button
-              className="window-control control-close"
-              type="button"
-              aria-label="关闭"
-              onClick={closeCurrentWindow}
-            >
-              <X size={16} />
-            </button>
-          </div>
-        </header>
-        <main className="main-content" key={page}>
-          {pageContent}
-        </main>
-        <footer className="app-footer">
-          <span>
-            <span
-              className={`status-dot ${runtimeAvailable ? "" : "is-muted"}`}
-            />
-            {runtimeAvailable ? "服务运行中" : "服务未连接"}
-            {lastRefresh ? ` · 最近刷新 ${lastRefresh}` : ""}
-          </span>
-          <span>所有配置保存在本机</span>
-        </footer>
-      </div>
+        {!isMac ? windowControls : null}
+      </header>
+      {updateStatusMessage ? (
+        <button
+          type="button"
+          role="status"
+          title={updateStatusMessage}
+          className={`update-status update-${updateStatusType}`}
+          onClick={() => setPage("settings")}
+        >
+          {updateStatusMessage}
+        </button>
+      ) : null}
+      <main className="main-content" key={page}>
+        {pageContent}
+      </main>
+      <footer className="app-footer">
+        <span>
+          <span
+            className={`status-dot ${runtimeAvailable ? "" : "is-muted"}`}
+          />
+          {runtimeAvailable ? "服务运行中" : "服务未连接"}
+          {lastRefresh ? ` · 最近刷新 ${lastRefresh}` : ""}
+        </span>
+        <span>
+          {runtimeAvailable
+            ? `已运行 ${formatUptime(statusData.uptime)} · v${statusData.version}`
+            : "所有配置保存在本机"}
+        </span>
+      </footer>
       {updateToConfirm ? (
         <UpdateConfirmDialog
           update={updateToConfirm}
