@@ -587,13 +587,56 @@ fn device_ddns_has_device_selector(config: &DeviceDdnsConfig) -> bool {
 fn device_ddns_targets_same_device(left: &DeviceDdnsConfig, right: &DeviceDdnsConfig) -> bool {
     let left_id = left.device_id.trim();
     let right_id = right.device_id.trim();
-    if !left_id.is_empty() && !right_id.is_empty() && left_id == right_id {
+    if left_id == "local-machine"
+        && right_id == "local-machine"
+        && left.device_name.trim().starts_with("本机设备")
+        && right.device_name.trim().starts_with("本机设备")
+    {
         return true;
     }
+    let left_mac = crate::device_discovery::normalize_mac(&left.device_mac);
+    let right_mac = crate::device_discovery::normalize_mac(&right.device_mac);
+    match (left_mac, right_mac) {
+        (Some(left), Some(right)) => left == right,
+        _ => !left_id.is_empty() && left_id == right_id,
+    }
+}
 
-    let left_mac = left.device_mac.trim();
-    let right_mac = right.device_mac.trim();
-    !left_mac.is_empty() && !right_mac.is_empty() && left_mac.eq_ignore_ascii_case(right_mac)
+pub(crate) fn device_ddns_record_key(
+    config: &DeviceDdnsConfig,
+) -> Option<(String, String, String)> {
+    let domain = config
+        .domain
+        .trim()
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    if domain.is_empty() {
+        return None;
+    }
+    let sub = config
+        .sub_domain
+        .trim()
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    let name = if sub.is_empty() || sub == "@" {
+        domain
+    } else {
+        format!("{sub}.{domain}")
+    };
+    Some((
+        config.provider.trim().to_ascii_lowercase(),
+        name,
+        config.record_type.trim().to_ascii_uppercase(),
+    ))
+}
+
+pub(crate) fn device_ddns_bindings_conflict(
+    left: &DeviceDdnsConfig,
+    right: &DeviceDdnsConfig,
+) -> bool {
+    device_ddns_targets_same_device(left, right)
+        || device_ddns_record_key(left)
+            .is_some_and(|key| Some(key) == device_ddns_record_key(right))
 }
 
 fn migrate_legacy_device_ddns_config(config: &mut AppConfig) -> bool {
@@ -603,7 +646,7 @@ fn migrate_legacy_device_ddns_config(config: &mut AppConfig) -> bool {
     if config
         .device_ddns_configs
         .iter()
-        .any(|item| device_ddns_targets_same_device(item, &config.device_ddns))
+        .any(|item| device_ddns_bindings_conflict(item, &config.device_ddns))
     {
         return false;
     }
@@ -612,7 +655,7 @@ fn migrate_legacy_device_ddns_config(config: &mut AppConfig) -> bool {
     true
 }
 
-fn dedupe_device_ddns_configs(configs: &mut Vec<DeviceDdnsConfig>) -> bool {
+pub(crate) fn dedupe_device_ddns_configs(configs: &mut Vec<DeviceDdnsConfig>) -> bool {
     let mut changed = false;
     let mut deduped: Vec<DeviceDdnsConfig> = Vec::new();
 
@@ -622,15 +665,11 @@ fn dedupe_device_ddns_configs(configs: &mut Vec<DeviceDdnsConfig>) -> bool {
             continue;
         }
 
-        if let Some(existing) = deduped
-            .iter_mut()
-            .find(|item| device_ddns_targets_same_device(item, &config))
-        {
-            *existing = config;
-            changed = true;
-        } else {
-            deduped.push(config);
-        }
+        // A saved DNS record has one owner, even after the device's NIC changes.
+        let previous_len = deduped.len();
+        deduped.retain(|item| !device_ddns_bindings_conflict(item, &config));
+        changed |= previous_len != deduped.len();
+        deduped.push(config);
     }
 
     *configs = deduped;
@@ -806,10 +845,10 @@ pub fn load_config() -> AppConfig {
                         add_log(
                             "warn",
                             "配置",
-                            &format!("旧版转发规则配置迁移写入失败：{}", e),
+                            &format!("旧版配置规范化写入失败：{}", e),
                         );
                     } else {
-                        add_log("info", "配置", "已迁移旧版转发规则配置");
+                        add_log("info", "配置", "已规范化旧版配置");
                     }
                 }
                 cfg
@@ -992,6 +1031,52 @@ interval_minutes = 10
         assert_eq!(config.device_ddns_configs.len(), 1);
         assert_eq!(config.device_ddns_configs[0].device_id, "local-machine");
         assert_eq!(config.device_ddns_configs[0].device_name, "本机设备");
+    }
+
+    #[test]
+    fn normalization_keeps_the_latest_owner_of_a_dns_record_after_nic_change() {
+        let old = DeviceDdnsConfig {
+            device_id: "old-nic".into(),
+            device_mac: "02:aa:bb:cc:dd:01".into(),
+            domain: "Example.Test.".into(),
+            sub_domain: "Game".into(),
+            ..DeviceDdnsConfig::default()
+        };
+        let current = DeviceDdnsConfig {
+            device_id: "new-nic".into(),
+            device_mac: "02:aa:bb:cc:dd:02".into(),
+            domain: "example.test".into(),
+            sub_domain: "game".into(),
+            ..old.clone()
+        };
+        let mut config = AppConfig {
+            device_ddns: old.clone(),
+            device_ddns_configs: vec![old, current.clone()],
+            ..AppConfig::default()
+        };
+        assert!(normalize_app_config(&mut config));
+        assert_eq!(config.device_ddns_configs, vec![current]);
+        assert!(!normalize_app_config(&mut config));
+    }
+
+    #[test]
+    fn dedupe_preserves_distinct_record_types_and_conflicting_legacy_local_ids() {
+        let first = DeviceDdnsConfig {
+            device_id: "local-machine".into(),
+            device_mac: "02:aa:bb:cc:dd:01".into(),
+            domain: "example.test".into(),
+            sub_domain: "game".into(),
+            record_type: "A".into(),
+            ..DeviceDdnsConfig::default()
+        };
+        let second = DeviceDdnsConfig {
+            device_mac: "02:aa:bb:cc:dd:02".into(),
+            record_type: "AAAA".into(),
+            ..first.clone()
+        };
+        let mut configs = vec![first, second];
+        assert!(!dedupe_device_ddns_configs(&mut configs));
+        assert_eq!(configs.len(), 2);
     }
 
     #[test]

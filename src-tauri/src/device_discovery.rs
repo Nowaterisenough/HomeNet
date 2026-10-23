@@ -1630,7 +1630,7 @@ fn add_neighbor_ip_to_device(device: &mut LanDevice, ip: &str, state: &str) {
     }
 }
 
-fn normalize_mac(value: &str) -> Option<String> {
+pub(crate) fn normalize_mac(value: &str) -> Option<String> {
     let trimmed = value
         .trim()
         .trim_matches(|ch| matches!(ch, '(' | ')' | '[' | ']' | '<' | '>' | ','));

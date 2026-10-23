@@ -41,9 +41,11 @@ fn service_summaries(config: &AppConfig, webdav: WebDavRuntimeStatus) -> Vec<Ser
     for binding in commands::active_device_ddns_configs(config) {
         services.push(ServiceSummary {
             id: format!(
-                "ddns:{}:{}",
-                binding.device_id,
-                commands::device_ddns_domain(&binding)
+                "ddns:{}:{}:{}:{}",
+                binding.provider,
+                commands::device_ddns_domain(&binding),
+                binding.record_type,
+                binding.device_mac
             ),
             page: "devices",
             name: commands::device_ddns_domain(&binding),
@@ -142,6 +144,41 @@ mod tests {
         assert_eq!(rule_status(false, "运行中"), "已停用");
         assert_eq!(rule_status(true, ""), "等待启动");
         assert_eq!(rule_status(true, "端口冲突"), "端口冲突");
+    }
+
+    #[test]
+    fn tray_lists_one_service_per_effective_dns_record() {
+        let old = crate::config::DeviceDdnsConfig {
+            device_id: "old-nic".into(),
+            device_mac: "02:aa:bb:cc:dd:01".into(),
+            domain: "example.test".into(),
+            sub_domain: "game".into(),
+            ..crate::config::DeviceDdnsConfig::default()
+        };
+        let new = crate::config::DeviceDdnsConfig {
+            device_id: "new-nic".into(),
+            device_mac: "02:aa:bb:cc:dd:02".into(),
+            ..old.clone()
+        };
+        let config = AppConfig {
+            device_ddns_configs: vec![old, new],
+            ..AppConfig::default()
+        };
+        let webdav = WebDavRuntimeStatus {
+            state: "disabled".into(),
+            message: String::new(),
+            endpoint: String::new(),
+            active_since: String::new(),
+        };
+        let services = service_summaries(&config, webdav);
+        assert_eq!(
+            services
+                .iter()
+                .filter(|service| service.name == "game.example.test")
+                .count(),
+            1
+        );
+        assert_eq!(commands::active_device_ddns_configs(&config).len(), 1);
     }
 
     #[test]

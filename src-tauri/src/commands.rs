@@ -592,10 +592,11 @@ fn generated_local_machine_config(config: &DeviceDdnsConfig) -> bool {
 }
 
 fn device_selectors_match(left_id: &str, left_mac: &str, right_id: &str, right_mac: &str) -> bool {
-    let left_mac = left_mac.trim();
-    let right_mac = right_mac.trim();
-    if !left_mac.is_empty() && !right_mac.is_empty() {
-        return left_mac.eq_ignore_ascii_case(right_mac);
+    if let (Some(left), Some(right)) = (
+        crate::device_discovery::normalize_mac(left_mac),
+        crate::device_discovery::normalize_mac(right_mac),
+    ) {
+        return left == right;
     }
 
     let left_id = left_id.trim();
@@ -603,16 +604,11 @@ fn device_selectors_match(left_id: &str, left_mac: &str, right_id: &str, right_m
     !left_id.is_empty() && !right_id.is_empty() && left_id == right_id
 }
 
-fn device_ddns_configs_target_same_device(
-    left: &DeviceDdnsConfig,
-    right: &DeviceDdnsConfig,
-) -> bool {
-    device_ddns_selector_matches(left, &right.device_id, &right.device_mac)
-}
-
 pub(crate) fn active_device_ddns_configs(config: &AppConfig) -> Vec<DeviceDdnsConfig> {
     if !config.device_ddns_configs.is_empty() {
-        return config.device_ddns_configs.clone();
+        let mut configs = config.device_ddns_configs.clone();
+        crate::config::dedupe_device_ddns_configs(&mut configs);
+        return configs;
     }
 
     if device_ddns_has_device_selector(&config.device_ddns) {
@@ -674,15 +670,10 @@ fn upsert_device_ddns_config(config: &mut AppConfig, device_config: DeviceDdnsCo
         return;
     }
 
-    if let Some(existing) = config
+    config
         .device_ddns_configs
-        .iter_mut()
-        .find(|item| device_ddns_configs_target_same_device(item, &device_config))
-    {
-        *existing = device_config;
-    } else {
-        config.device_ddns_configs.push(device_config);
-    }
+        .retain(|item| !crate::config::device_ddns_bindings_conflict(item, &device_config));
+    config.device_ddns_configs.push(device_config);
 }
 
 fn delete_device_ddns_config_from_config(
@@ -690,13 +681,23 @@ fn delete_device_ddns_config_from_config(
     device_id: &str,
     device_mac: &str,
 ) -> bool {
+    let removed: Vec<_> = active_device_ddns_configs(config)
+        .into_iter()
+        .filter(|item| device_ddns_selector_matches(item, device_id, device_mac))
+        .collect();
+    let matches_removed = |item: &DeviceDdnsConfig| {
+        device_ddns_selector_matches(item, device_id, device_mac)
+            || removed
+                .iter()
+                .any(|removed| crate::config::device_ddns_bindings_conflict(item, removed))
+    };
     let original_len = config.device_ddns_configs.len();
     config
         .device_ddns_configs
-        .retain(|item| !device_ddns_selector_matches(item, device_id, device_mac));
+        .retain(|item| !matches_removed(item));
 
     let mut changed = config.device_ddns_configs.len() != original_len;
-    if device_ddns_selector_matches(&config.device_ddns, device_id, device_mac) {
+    if matches_removed(&config.device_ddns) {
         config.device_ddns = DeviceDdnsConfig::default();
         changed = true;
     }
@@ -1592,7 +1593,7 @@ pub async fn trigger_device_ddns_update(
         let mut hint_configs = active_device_ddns_configs(&cfg);
         if let Some(existing) = hint_configs
             .iter()
-            .position(|config| device_ddns_configs_target_same_device(config, &device_config))
+            .position(|config| crate::config::device_ddns_bindings_conflict(config, &device_config))
         {
             hint_configs[existing] = device_config.clone();
         } else if device_ddns_has_device_selector(&device_config) {
@@ -2628,6 +2629,57 @@ mod tests {
         assert_eq!(app_config.device_ddns_configs.len(), 1);
         assert_eq!(app_config.device_ddns_configs[0].device_name, "客厅主机");
         assert_eq!(app_config.device_ddns_configs[0].sub_domain, "game");
+    }
+
+    #[test]
+    fn effective_bindings_and_deletion_do_not_resurrect_old_nic_aliases() {
+        let old = DeviceDdnsConfig {
+            device_id: "old".into(),
+            device_mac: "02:aa:bb:cc:dd:01".into(),
+            domain: "example.test".into(),
+            sub_domain: "game".into(),
+            ..DeviceDdnsConfig::default()
+        };
+        let current = DeviceDdnsConfig {
+            device_id: "current".into(),
+            device_mac: "02:aa:bb:cc:dd:02".into(),
+            ..old.clone()
+        };
+        let mut config = AppConfig {
+            device_ddns: old.clone(),
+            device_ddns_configs: vec![old, current.clone()],
+            ..AppConfig::default()
+        };
+        assert_eq!(active_device_ddns_configs(&config), vec![current.clone()]);
+        assert!(delete_device_ddns_config_from_config(
+            &mut config,
+            &current.device_id,
+            &current.device_mac
+        ));
+        assert!(active_device_ddns_configs(&config).is_empty());
+    }
+
+    #[test]
+    fn saving_a_record_reassigns_its_owner_instead_of_adding_a_duplicate() {
+        let old = DeviceDdnsConfig {
+            device_id: "old".into(),
+            device_mac: "02:aa:bb:cc:dd:01".into(),
+            domain: "example.test".into(),
+            sub_domain: "game".into(),
+            ..DeviceDdnsConfig::default()
+        };
+        let current = DeviceDdnsConfig {
+            device_id: "current".into(),
+            device_mac: "02:aa:bb:cc:dd:02".into(),
+            ..old.clone()
+        };
+        let mut config = AppConfig {
+            device_ddns_configs: vec![old],
+            ..AppConfig::default()
+        };
+        upsert_device_ddns_config(&mut config, current.clone());
+        assert_eq!(config.device_ddns_configs, vec![current.clone()]);
+        assert_eq!(config.device_ddns, current);
     }
 
     #[test]
