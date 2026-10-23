@@ -16,6 +16,7 @@ import {
   RefreshCw,
   SlidersHorizontal,
   Square,
+  Waypoints,
   Workflow,
   X,
 } from "lucide-react";
@@ -34,7 +35,6 @@ import { formatUptime } from "./utils/presentation";
 import { useTheme } from "./hooks/useTheme";
 import { useDeviceInventory } from "./hooks/useDeviceInventory";
 import { operationError } from "./utils/errors";
-import HomeNetIcon from "./components/HomeNetIcon";
 
 const emptyStatus: RuntimeStatus = {
   version: "",
@@ -427,7 +427,7 @@ export default function App() {
       <header className="titlebar" onMouseDown={startWindowDrag}>
         {isMac ? windowControls : null}
         <div className="app-brand">
-          <HomeNetIcon size={24} />
+          <Waypoints size={21} aria-hidden="true" />
           <strong>HomeNet</strong>
         </div>
         <nav className="app-navigation" aria-label="主导航">

@@ -38,7 +38,9 @@ const checks = [
   ],
   ["src/components/DeviceDdnsPanel.tsx", "originalRecordKey"],
   ["src/components/DeviceDdnsPanel.tsx", "recordKey"],
-  ["src/components/HomeNetIcon.tsx", "tray-icon.svg"],
+  ["src/App.tsx", '<Waypoints size={21} aria-hidden="true" />'],
+  ["src/components/TrayStatus.tsx", '<Waypoints size={22} />'],
+  ["src/components/NetworkOverview.tsx", "<Waypoints />"],
   ["src/components/DeviceDdnsPanel.tsx", "device-status-icons"],
   [
     "src/components/ReverseProxyPanel.tsx",
@@ -95,6 +97,13 @@ for (const [file, needle] of checks) {
 }
 
 const appContent = readFileSync(join(root, "src/App.tsx"), "utf8");
+const trayIcon = readFileSync(join(root, "src-tauri/icons/tray-icon.svg"), "utf8");
+const appIcon = readFileSync(join(root, "src-tauri/icons/app-icon.svg"), "utf8");
+if (trayIcon.includes("<rect") || !appIcon.includes("<rect")) {
+  missing.push(
+    "Only the application icon should have a rounded frame, not the menu bar icon",
+  );
+}
 if (appContent.includes("window.confirm")) {
   missing.push(
     "src/App.tsx: browser confirm must not gate app update installation",

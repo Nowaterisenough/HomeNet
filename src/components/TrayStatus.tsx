@@ -18,7 +18,6 @@ import { useTheme } from "../hooks/useTheme";
 import type { AppPage, ServiceSummary, TraySnapshot } from "../types";
 import { formatUptime, statusTone } from "../utils/presentation";
 import { formatSyncTime } from "../utils/time";
-import HomeNetIcon from "./HomeNetIcon";
 
 type TrayTab = "overview" | "services" | "logs";
 const tabs = [
@@ -204,7 +203,7 @@ export default function TrayStatus() {
     <div className="tray-shell">
       <header className="tray-header">
         <div className="app-brand">
-          <HomeNetIcon size={24} />
+          <Waypoints size={22} />
           <strong>HomeNet</strong>
         </div>
         <div className="titlebar-actions">

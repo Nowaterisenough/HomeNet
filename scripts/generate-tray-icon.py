@@ -1,4 +1,4 @@
-"""Rasterize the shared HomeNet SVG at 2x without third-party dependencies."""
+"""Rasterize the unframed menu bar SVG at 2x without third-party dependencies."""
 
 import math
 from pathlib import Path
@@ -14,15 +14,12 @@ SIZE = int(SVG.attrib["width"])
 VIEW_SIZE = float(SVG.attrib["viewBox"].split()[2])
 SAMPLES = 8
 COLOR = tuple(bytes.fromhex(SVG.attrib["stroke"].removeprefix("#")))
-FRAME = SVG.find("svg:rect", NS)
-GROUP = SVG.find("svg:g", NS)
-STROKE = float(GROUP.attrib["stroke-width"])
-TX, TY, SCALE = map(float, re.findall(r"[-+]?(?:\d*\.\d+|\d+)", GROUP.attrib["transform"]))
-CIRCLES = [tuple(float(circle.attrib[key]) for key in ("cx", "cy", "r")) for circle in GROUP.findall("svg:circle", NS)]
+STROKE = float(SVG.attrib["stroke-width"])
+CIRCLES = [tuple(float(circle.attrib[key]) for key in ("cx", "cy", "r")) for circle in SVG.findall("svg:circle", NS)]
 
 
 def line_segment(path):
-    # The shared mark uses relative straight segments and a horizontal connector.
+    # The menu bar mark uses relative straight segments and a horizontal connector.
     data = path.attrib["d"]
     values = list(map(float, re.findall(r"[-+]?(?:\d*\.\d+|\d+)", data)))
     if data.startswith("m") and len(values) == 4:
@@ -34,17 +31,10 @@ def line_segment(path):
     raise ValueError(f"Unsupported icon path: {data}")
 
 
-LINES = [line_segment(path) for path in GROUP.findall("svg:path", NS)]
-FX, FY, FW, FH, RADIUS, FRAME_STROKE = (float(FRAME.attrib[key]) for key in ("x", "y", "width", "height", "rx", "stroke-width"))
+LINES = [line_segment(path) for path in SVG.findall("svg:path", NS)]
 
 
 def covered(x, y):
-    qx = abs(x - FX - FW / 2) - (FW / 2 - RADIUS)
-    qy = abs(y - FY - FH / 2) - (FH / 2 - RADIUS)
-    distance = math.hypot(max(qx, 0), max(qy, 0)) + min(max(qx, qy), 0) - RADIUS
-    if abs(distance) <= FRAME_STROKE / 2:
-        return True
-    x, y = (x - TX) / SCALE, (y - TY) / SCALE
     for cx, cy, radius in CIRCLES:
         if abs(math.hypot(x - cx, y - cy) - radius) <= STROKE / 2:
             return True
