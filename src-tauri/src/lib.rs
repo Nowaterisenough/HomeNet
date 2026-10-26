@@ -10,6 +10,7 @@ mod reverse_proxy;
 mod status_snapshot;
 mod tray;
 mod webdav;
+mod window_chrome;
 
 use std::sync::Mutex;
 use tauri::Manager;
@@ -109,14 +110,7 @@ pub fn run() {
         .setup(|app| {
             // -- close-to-tray: hide window instead of closing ----------
             if let Some(window) = app.get_webview_window("main") {
-                let window_clone = window.clone();
-                window.on_window_event(move |event| {
-                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                        api.prevent_close();
-                        let _ = window_clone.hide();
-                        config::add_log("debug", "系统", "主窗口已隐藏到系统托盘");
-                    }
-                });
+                window_chrome::install_close_handler(&window);
             }
 
             // -- system tray ---------------------------------------------
