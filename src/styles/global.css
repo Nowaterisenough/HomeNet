@@ -132,6 +132,15 @@ svg {
   padding: 0 14px;
   user-select: none;
 }
+/* AppKit owns the outer edge, corner clipping and shadow on macOS. */
+.window-frame[data-native-chrome="macos"] {
+  border: 0;
+  border-radius: 0;
+}
+.window-frame[data-native-chrome="macos"] .titlebar {
+  padding-left: 96px;
+  padding-top: 2px;
+}
 .app-brand {
   display: flex;
   align-items: center;

@@ -33,6 +33,7 @@ import {
 import type { AppPage, AppUpdateResult, RuntimeStatus } from "./types";
 import { formatUptime } from "./utils/presentation";
 import { useTheme } from "./hooks/useTheme";
+import { useWindowChrome } from "./hooks/useWindowChrome";
 import { useDeviceInventory } from "./hooks/useDeviceInventory";
 import { operationError } from "./utils/errors";
 
@@ -70,6 +71,7 @@ export default function App() {
   });
   const [page, setPage] = useState<AppPage>("overview");
   const [theme, setTheme] = useTheme();
+  const nativeMacChrome = useWindowChrome(theme);
   const [refreshing, setRefreshing] = useState(false);
   const [runtimeAvailable, setRuntimeAvailable] = useState(false);
   const [lastRefresh, setLastRefresh] = useState("");
@@ -423,9 +425,12 @@ export default function App() {
     );
 
   return (
-    <div className="window-frame">
+    <div
+      className="window-frame"
+      data-native-chrome={nativeMacChrome ? "macos" : undefined}
+    >
       <header className="titlebar" onMouseDown={startWindowDrag}>
-        {isMac ? windowControls : null}
+        {isMac && !nativeMacChrome ? windowControls : null}
         <div className="app-brand">
           <Waypoints size={21} aria-hidden="true" />
           <strong>HomeNet</strong>

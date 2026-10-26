@@ -55,6 +55,8 @@ WebDAV 使用 Basic Auth。通过公网访问时，请保持 WebDAV 仅监听本
 
 ## macOS 安装提示
 
+macOS 主窗口使用系统原生圆角、外沿、阴影和红黄绿按钮，内容延伸到隐藏的标题栏下方；不再叠加网页边框。窗口外观跟随应用的深色、浅色或系统主题。平台窗口配置位于 `src-tauri/tauri.macos.conf.json`，修改公共尺寸时需保持同步；Windows 的无边框布局和状态栏小窗不受影响。
+
 macOS 构建会对整个应用包执行 ad hoc 签名，签名标识使用固定的 `com.nowat.homenet`，CI 在发布前校验资源封印及签名。它不等同于 Developer ID 签名或 Apple 公证，也不保证系统授权跨更新保留；签名校验通过不代表已取得本地网络权限。调试包可用 `pnpm verify:macos-bundle` 验证。
 
 如果 macOS 提示应用来自未知开发者，或下载后的应用被系统隔离，可以在安装到 `/Applications` 后执行：
