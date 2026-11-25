@@ -12,7 +12,8 @@ mod tray;
 mod webdav;
 mod window_chrome;
 
-use std::sync::Mutex;
+use std::{collections::HashMap, sync::Mutex, time::Duration};
+use tokio::time::Instant;
 use tauri::Manager;
 use tokio::sync::Mutex as TokioMutex;
 
@@ -50,6 +51,7 @@ pub fn run() {
 
     // Wrap config and forward manager in shared state.
     let app_state = commands::AppState {
+        ddns_config_changed: tokio::sync::watch::channel(()).0,
         config: Mutex::new(app_config),
         forward_manager: TokioMutex::new(forward::manager::ForwardManager::new()),
         reverse_proxy_manager: TokioMutex::new(reverse_proxy::ReverseProxyManager::new()),
@@ -169,239 +171,260 @@ pub fn run() {
 // Background tasks (M1 stubs)
 // ---------------------------------------------------------------------------
 
-/// DDNS periodic-check task.
-///
-/// Wakes every `interval_minutes`, fetches current IP addresses, and
-/// updates the Alibaba Cloud DNS record when the IP has changed.
+fn ddns_interval(minutes: u32) -> Duration {
+    Duration::from_secs(u64::from(minutes.max(1)) * 60)
+}
+
 async fn ddns_background_task(app: tauri::AppHandle) {
+    use tokio::time::{sleep, sleep_until};
+    let state = app.state::<commands::AppState>();
+    let mut changed = state.ddns_config_changed.subscribe();
+
     config::add_log("info", "DDNS", "DDNS 后台任务已启动");
-
+    sleep(Duration::from_secs(30)).await;
+    let mut last_attempt: Option<Instant> = None;
     loop {
-        // Wait first so the user has time to configure DDNS after startup
-        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-
-        let (enabled, interval_secs, ipv6_interface) = {
-            let state = app.state::<commands::AppState>();
+        let now = Instant::now();
+        let (ddns_config, ipv6_interface) = {
             let cfg = state.config.lock().unwrap();
-            (
-                cfg.ddns.enabled,
-                (cfg.ddns.interval_minutes.max(1) as u64) * 60,
-                cfg.ipv6_interface.clone(),
-            )
+            (cfg.ddns.clone(), cfg.ipv6_interface.clone())
         };
-
-        if !enabled {
-            tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
-            continue;
-        }
-
-        // Fetch IPs and trigger update
-        let ipv4 = ddns::get_public_ipv4().await;
-        let ipv6 = ddns::get_local_ipv6_for_interface(&ipv6_interface);
-
-        let result = {
-            let ddns_config = {
-                let state = app.state::<commands::AppState>();
-                let cfg = state.config.lock().unwrap();
-                cfg.ddns.clone()
+        let interval = ddns_interval(ddns_config.interval_minutes);
+        if !ddns_config.enabled {
+            last_attempt = None;
+        } else if last_attempt.is_none_or(|last| now >= last + interval) {
+            last_attempt = Some(now);
+            let (ipv4, ipv6) = if ddns_config.record_type == "AAAA" {
+                (String::new(), ddns::get_local_ipv6_for_interface(&ipv6_interface))
+            } else {
+                (ddns::get_public_ipv4().await, String::new())
             };
+            // The configuration can change while fetching the public address.
+            {
+                let cfg = state.config.lock().unwrap();
+                if cfg.ddns != ddns_config || cfg.ipv6_interface != ipv6_interface {
+                    last_attempt = None;
+                    continue;
+                }
+            }
             let client = ddns::aliyun::AliyunDdns::new(ddns_config);
-            client.update_record(&ipv4, &ipv6).await
-        };
-
-        match &result {
-            Ok(msg) => config::add_log("info", "DDNS", &format!("DDNS 定时更新完成：{}", msg)),
-            Err(e) => config::add_log("error", "DDNS", &format!("DDNS 定时更新失败：{}", e)),
+            match client.update_record(&ipv4, &ipv6).await {
+                Ok(msg) => config::add_log("info", "DDNS", &format!("DDNS 定时更新完成：{}", msg)),
+                Err(e) => config::add_log("error", "DDNS", &format!("DDNS 定时更新失败：{}", e)),
+            }
         }
 
-        tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
+        tokio::select! {
+            _ = sleep_until(last_attempt.unwrap_or(now) + interval), if last_attempt.is_some() => {},
+            _ = changed.changed() => {},
+        }
     }
 }
 
-fn device_ddns_update_due(config: &config::DeviceDdnsConfig) -> bool {
-    let last_update_time = config.last_update_time.trim();
-    if last_update_time.is_empty() {
-        return true;
+type RecordKey = (String, String, String);
+
+// Preserve the saved cadence across restarts. In memory we also track unsuccessful
+// scans and offline devices, which deliberately do not update the last DNS sync time.
+#[derive(Default)]
+struct DeviceDdnsSchedule {
+    attempts: HashMap<RecordKey, Instant>,
+}
+
+impl DeviceDdnsSchedule {
+    fn due(
+        &mut self,
+        configs: Vec<config::DeviceDdnsConfig>,
+        now: Instant,
+        wall_time: chrono::DateTime<chrono::Local>,
+    ) -> (Vec<config::DeviceDdnsConfig>, Option<Instant>) {
+        let previous = std::mem::take(&mut self.attempts);
+        let mut due = Vec::new();
+        let mut next: Option<Instant> = None;
+        for binding in configs.into_iter().filter(|item| item.enabled) {
+            let Some(key) = config::device_ddns_record_key(&binding) else {
+                continue;
+            };
+            let interval = ddns_interval(binding.interval_minutes);
+            let elapsed = match previous.get(&key) {
+                Some(attempt) => now.duration_since(*attempt),
+                None => chrono::NaiveDateTime::parse_from_str(
+                    binding.last_update_time.trim(), "%Y-%m-%d %H:%M:%S",
+                )
+                .ok()
+                .and_then(|time| time.and_local_timezone(chrono::Local).single())
+                .and_then(|time| (wall_time - time).to_std().ok())
+                .unwrap_or(interval),
+            };
+            let deadline = if elapsed >= interval {
+                self.attempts.insert(key, now);
+                due.push(binding);
+                now + interval
+            } else {
+                if let Some(attempt) = previous.get(&key) {
+                    self.attempts.insert(key, *attempt);
+                }
+                now + (interval - elapsed)
+            };
+            next = Some(next.map_or(deadline, |earlier| earlier.min(deadline)));
+        }
+        (due, next)
     }
-
-    let Ok(last_update_time) =
-        chrono::NaiveDateTime::parse_from_str(last_update_time, "%Y-%m-%d %H:%M:%S")
-    else {
-        return true;
-    };
-    let Some(last_update_time) = last_update_time.and_local_timezone(chrono::Local).single()
-    else {
-        return true;
-    };
-
-    chrono::Local::now()
-        .signed_duration_since(last_update_time)
-        .num_minutes()
-        >= config.interval_minutes.max(1) as i64
 }
 
 const DEVICE_DDNS_OFFLINE_RESULT: &str = "设备离线，等待上线后自动同步";
-
-fn device_ddns_should_sync(
-    config: &config::DeviceDdnsConfig,
-    currently_online: bool,
-    record_value_changed: bool,
-) -> bool {
-    currently_online
-        && (record_value_changed || !config.last_online || device_ddns_update_due(config))
-}
 
 fn device_ddns_should_write_offline_state(config: &config::DeviceDdnsConfig) -> bool {
     config.last_online || config.last_result.trim() != DEVICE_DDNS_OFFLINE_RESULT
 }
 
-/// Device-level DDNS periodic-check task.
-///
-/// It scans every enabled device config, records offline state, and syncs the
-/// Aliyun A/AAAA record when the device comes online, its target IP changes,
-/// or its interval is due.
+/// One fresh address inventory serves all bindings due in this scheduling round.
 async fn device_ddns_background_task(app: tauri::AppHandle) {
     config::add_log("info", "设备DDNS", "设备 DDNS 后台任务已启动");
-    tokio::time::sleep(std::time::Duration::from_secs(45)).await;
-
+    let state = app.state::<commands::AppState>();
+    let mut changed = state.ddns_config_changed.subscribe();
+    let mut schedule = DeviceDdnsSchedule::default();
     loop {
-        let device_configs = {
-            let state = app.state::<commands::AppState>();
-            let cfg = state.config.lock().unwrap();
-            commands::active_device_ddns_configs(&cfg)
-                .into_iter()
-                .filter(|config| config.enabled)
-                .collect::<Vec<_>>()
-        };
+        let configs = commands::active_device_ddns_configs(&state.config.lock().unwrap());
+        let (due, next) = schedule.due(configs, Instant::now(), chrono::Local::now());
+        if !due.is_empty() {
+            match commands::refresh_device_addresses(&due).await {
+                Ok(devices) => sync_due_devices(&state, due, &devices).await,
+                Err(error) => config::add_log(
+                    "error", "设备DDNS", &format!("刷新设备地址失败，本轮跳过同步：{error}"),
+                ),
+            }
+            continue; // Time or configuration may have changed during discovery or DNS calls.
+        }
+        match next {
+            Some(deadline) => tokio::select! {
+                _ = tokio::time::sleep_until(deadline) => {},
+                _ = changed.changed() => {},
+            },
+            None => {
+                let _ = changed.changed().await;
+            }
+        }
+    }
+}
 
-        if device_configs.is_empty() {
-            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+async fn sync_due_devices(
+    state: &commands::AppState,
+    device_configs: Vec<config::DeviceDdnsConfig>,
+    devices: &[device_discovery::LanDevice],
+) {
+    for device_config in device_configs {
+        let identity = commands::device_ddns_identity(&device_config);
+        let domain = commands::device_ddns_domain(&device_config);
+        let currently_online = commands::device_ddns_device_is_online(&device_config, devices);
+        // A binding can be edited or disabled while a shared scan is in flight.
+        if !commands::device_binding_is_current(state, &device_config, &identity) {
             continue;
         }
 
-        let hints = commands::device_discovery_hints(&device_configs);
-        let devices = device_discovery::discover_lan_devices_with_hints(&hints);
-        for device_config in device_configs {
-            let identity = commands::device_ddns_identity(&device_config);
-            let domain = commands::device_ddns_domain(&device_config);
-            let currently_online = commands::device_ddns_device_is_online(&device_config, &devices);
-            let record_value_changed = currently_online
-                && commands::device_ddns_record_value_has_changed(&device_config, &devices);
-
-            if !currently_online {
-                if device_ddns_should_write_offline_state(&device_config) {
-                    let state = app.state::<commands::AppState>();
-                    match commands::apply_device_ddns_status_if_current(
-                        &state,
-                        &identity,
-                        None,
-                        DEVICE_DDNS_OFFLINE_RESULT.to_string(),
-                        Some(false),
-                        false,
-                    ) {
-                        Ok(true) => config::add_log(
-                            "info",
-                            "璁惧DDNS",
-                            &format!("设备 DDNS 检测到设备离线，等待上线后自动同步：{}", domain),
+        if !currently_online {
+            if device_ddns_should_write_offline_state(&device_config) {
+                match commands::apply_device_ddns_status_if_current(
+                    state,
+                    &identity,
+                    None,
+                    DEVICE_DDNS_OFFLINE_RESULT.to_string(),
+                    Some(false),
+                    false,
+                ) {
+                    Ok(true) => config::add_log(
+                        "info",
+                        "设备DDNS",
+                        &format!("设备 DDNS 检测到设备离线，等待上线后自动同步：{}", domain),
+                    ),
+                    Ok(false) => config::add_log(
+                        "warn",
+                        "设备DDNS",
+                        &format!(
+                            "设备 DDNS 检测到设备离线但配置已变化，跳过状态写入：{}",
+                            domain
                         ),
-                        Ok(false) => config::add_log(
-                            "warn",
-                            "璁惧DDNS",
-                            &format!(
-                                "设备 DDNS 检测到设备离线但配置已变化，跳过状态写入：{}",
-                                domain
-                            ),
-                        ),
-                        Err(error) => config::add_log(
-                            "error",
-                            "璁惧DDNS",
-                            &format!("设备 DDNS 离线状态写入失败：{}，{}", domain, error),
-                        ),
-                    }
+                    ),
+                    Err(error) => config::add_log(
+                        "error",
+                        "设备DDNS",
+                        &format!("设备 DDNS 离线状态写入失败：{}，{}", domain, error),
+                    ),
                 }
-                continue;
             }
+            continue;
+        }
 
-            if !device_ddns_should_sync(&device_config, currently_online, record_value_changed) {
-                continue;
-            }
+        let update_result = commands::update_device_ddns_record(&device_config, devices).await;
 
-            let update_result = commands::update_device_ddns_record(&device_config, &devices).await;
-
-            match update_result {
-                Ok((ip, result)) => {
-                    let state = app.state::<commands::AppState>();
-                    match commands::apply_device_ddns_status_if_current(
-                        &state,
-                        &identity,
-                        Some(ip.clone()),
-                        result.clone(),
-                        Some(true),
-                        true,
-                    ) {
-                        Ok(true) => config::add_log(
-                            "info",
-                            "设备DDNS",
-                            &format!(
-                                "设备 DDNS 定时更新完成：{} -> {}，{}",
-                                domain, ip, result
-                            ),
+        match update_result {
+            Ok((ip, result)) => {
+                match commands::apply_device_ddns_status_if_current(
+                    state,
+                    &identity,
+                    Some(ip.clone()),
+                    result.clone(),
+                    Some(true),
+                    true,
+                ) {
+                    Ok(true) => config::add_log(
+                        "info",
+                        "设备DDNS",
+                        &format!(
+                            "设备 DDNS 定时更新完成：{} -> {}，{}",
+                            domain, ip, result
                         ),
-                        Ok(false) => config::add_log(
-                            "warn",
-                            "设备DDNS",
-                            &format!(
-                                "设备 DDNS 定时更新完成但配置已变化，结果未写入：{} -> {}，{}",
-                                domain, ip, result
-                            ),
+                    ),
+                    Ok(false) => config::add_log(
+                        "warn",
+                        "设备DDNS",
+                        &format!(
+                            "设备 DDNS 定时更新完成但配置已变化，结果未写入：{} -> {}，{}",
+                            domain, ip, result
                         ),
-                        Err(error) => config::add_log(
-                            "error",
-                            "设备DDNS",
-                            &format!(
-                                "设备 DDNS 定时更新完成但结果写入失败：{} -> {}，{}；{}",
-                                domain, ip, result, error
-                            ),
+                    ),
+                    Err(error) => config::add_log(
+                        "error",
+                        "设备DDNS",
+                        &format!(
+                            "设备 DDNS 定时更新完成但结果写入失败：{} -> {}，{}；{}",
+                            domain, ip, result, error
                         ),
-                    }
+                    ),
                 }
-                Err(error) => {
-                    let state = app.state::<commands::AppState>();
-                    match commands::apply_device_ddns_status_if_current(
-                        &state,
-                        &identity,
-                        None,
-                        error.clone(),
-                        Some(true),
-                        true,
-                    ) {
-                        Ok(true) => config::add_log(
-                            "error",
-                            "设备DDNS",
-                            &format!("设备 DDNS 定时更新失败：{}，{}", domain, error),
+            }
+            Err(error) => {
+                match commands::apply_device_ddns_status_if_current(
+                    state,
+                    &identity,
+                    None,
+                    error.clone(),
+                    Some(true),
+                    true,
+                ) {
+                    Ok(true) => config::add_log(
+                        "error",
+                        "设备DDNS",
+                        &format!("设备 DDNS 定时更新失败：{}，{}", domain, error),
+                    ),
+                    Ok(false) => config::add_log(
+                        "warn",
+                        "设备DDNS",
+                        &format!(
+                            "设备 DDNS 定时更新失败但配置已变化，失败结果未写入：{}，{}",
+                            domain, error
                         ),
-                        Ok(false) => config::add_log(
-                            "warn",
-                            "设备DDNS",
-                            &format!(
-                                "设备 DDNS 定时更新失败但配置已变化，失败结果未写入：{}，{}",
-                                domain, error
-                            ),
+                    ),
+                    Err(save_error) => config::add_log(
+                        "error",
+                        "设备DDNS",
+                        &format!(
+                            "设备 DDNS 定时更新失败且结果写入失败：{}，{}；{}",
+                            domain, error, save_error
                         ),
-                        Err(save_error) => config::add_log(
-                            "error",
-                            "设备DDNS",
-                            &format!(
-                                "设备 DDNS 定时更新失败且结果写入失败：{}，{}；{}",
-                                domain, error, save_error
-                            ),
-                        ),
-                    }
+                    ),
                 }
             }
         }
-
-        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
     }
 }
 
@@ -452,41 +475,48 @@ async fn webdav_background_task(app: tauri::AppHandle) {
 mod tests {
     use super::*;
 
-    fn recent_device_ddns_config(last_online: bool) -> config::DeviceDdnsConfig {
+    fn binding(domain: &str, minutes: u32) -> config::DeviceDdnsConfig {
         config::DeviceDdnsConfig {
             enabled: true,
-            interval_minutes: 60,
-            last_online,
-            last_update_time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
-            ..config::DeviceDdnsConfig::default()
+            domain: domain.into(),
+            interval_minutes: minutes,
+            ..Default::default()
         }
     }
 
     #[test]
-    fn device_ddns_should_sync_when_device_comes_online_even_if_interval_not_due() {
-        let config = recent_device_ddns_config(false);
-
-        assert!(device_ddns_should_sync(&config, true, false));
+    fn offline_or_failed_scans_wait_for_each_bindings_configured_interval() {
+        let start = Instant::now();
+        let wall = chrono::Local::now();
+        let bindings = vec![binding("a.example", 2), binding("b.example", 30)];
+        let mut schedule = DeviceDdnsSchedule::default();
+        let round = |schedule: &mut DeviceDdnsSchedule, minutes: u64| {
+            let (due, _) = schedule.due(bindings.clone(), start + Duration::from_secs(minutes * 60), wall);
+            due.into_iter().map(|c| c.domain).collect::<Vec<_>>()
+        };
+        assert_eq!(round(&mut schedule, 0), ["a.example", "b.example"]);
+        assert!(round(&mut schedule, 1).is_empty());
+        assert_eq!(round(&mut schedule, 2), ["a.example"]);
+        assert_eq!(round(&mut schedule, 10), ["a.example"]);
+        assert_eq!(round(&mut schedule, 30), ["a.example", "b.example"]);
     }
 
     #[test]
-    fn device_ddns_should_not_sync_when_online_device_is_not_due() {
-        let config = recent_device_ddns_config(true);
-
-        assert!(!device_ddns_should_sync(&config, true, false));
-    }
-
-    #[test]
-    fn device_ddns_should_sync_when_record_value_changed_even_if_interval_not_due() {
-        let config = recent_device_ddns_config(true);
-
-        assert!(device_ddns_should_sync(&config, true, true));
-    }
-
-    #[test]
-    fn device_ddns_should_not_sync_when_device_is_offline() {
-        let config = recent_device_ddns_config(false);
-
-        assert!(!device_ddns_should_sync(&config, false, true));
+    fn restarting_uses_the_saved_sync_time_and_an_interval_edit_reschedules() {
+        let now = Instant::now();
+        let wall = chrono::Local::now();
+        let mut b = binding("a.example", 30);
+        b.last_update_time = (wall - chrono::Duration::minutes(5))
+            .format("%Y-%m-%d %H:%M:%S").to_string();
+        let mut schedule = DeviceDdnsSchedule::default();
+        let (due, next) = schedule.due(vec![b.clone()], now, wall);
+        assert!(due.is_empty());
+        let remaining = next.unwrap().duration_since(now);
+        assert!(remaining <= Duration::from_secs(25 * 60));
+        assert!(remaining > Duration::from_secs(25 * 60 - 1));
+        b.interval_minutes = 2;
+        assert_eq!(schedule.due(vec![b.clone()], now, wall).0.len(), 1);
+        b.enabled = false;
+        assert_eq!(schedule.due(vec![b], now, wall), (Vec::new(), None));
     }
 }

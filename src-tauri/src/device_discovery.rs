@@ -122,7 +122,6 @@ pub fn scan_lan_devices_with_hints(
     hints: &[DeviceDiscoveryHint],
 ) -> Result<Vec<LanDevice>, String> {
     let started = Instant::now();
-    // Only inventory scans probe the subnet; DDNS sync keeps its lightweight lookup.
     #[cfg(any(windows, target_os = "macos"))]
     let probe = lan_probe::refresh_ipv4_neighbors();
     let mut devices = discover_lan_devices_with_hints(hints);

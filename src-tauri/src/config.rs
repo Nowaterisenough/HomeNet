@@ -50,7 +50,7 @@ pub struct AppConfig {
     pub webdav: WebDavConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DdnsConfig {
     #[serde(default)]
     pub enabled: bool,

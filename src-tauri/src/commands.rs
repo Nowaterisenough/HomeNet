@@ -34,6 +34,7 @@ use crate::webdav::{
 // ---------------------------------------------------------------------------
 
 pub struct AppState {
+    pub ddns_config_changed: tokio::sync::watch::Sender<()>,
     pub config: Mutex<AppConfig>,
     pub forward_manager: TokioMutex<ForwardManager>,
     pub reverse_proxy_manager: TokioMutex<ReverseProxyManager>,
@@ -736,6 +737,20 @@ pub(crate) fn device_ddns_identity_matches(
     device_ddns_identity(config) == *identity
 }
 
+pub(crate) fn device_binding_is_current(
+    state: &AppState,
+    binding: &DeviceDdnsConfig,
+    identity: &DeviceDdnsOperationIdentity,
+) -> bool {
+    let config = state.config.lock().unwrap();
+    if config.device_ddns_configs.is_empty() {
+        return device_ddns_identity_matches(&config.device_ddns, identity);
+    }
+    config.device_ddns_configs.iter().rev()
+        .find(|item| crate::config::device_ddns_bindings_conflict(item, binding))
+        .is_some_and(|item| device_ddns_identity_matches(item, identity))
+}
+
 fn device_ddns_has_device_selector(config: &DeviceDdnsConfig) -> bool {
     !config.device_id.trim().is_empty() || !config.device_mac.trim().is_empty()
 }
@@ -1093,19 +1108,6 @@ fn first_ipv4(device: &LanDevice) -> Option<&str> {
         .find(|value| !value.is_empty())
 }
 
-fn configured_device_record_value(config: &DeviceDdnsConfig) -> &str {
-    if config.record_type.trim().eq_ignore_ascii_case("A") {
-        config.selected_ip.trim()
-    } else {
-        let selected_ip = config.selected_ip.trim();
-        if selected_ip.is_empty() {
-            config.selected_ipv6.trim()
-        } else {
-            selected_ip
-        }
-    }
-}
-
 pub(crate) fn resolve_device_ipv6(
     config: &DeviceDdnsConfig,
     devices: &[LanDevice],
@@ -1155,23 +1157,14 @@ pub(crate) fn resolve_device_record_value(
     }
 }
 
-pub(crate) fn device_ddns_record_value_has_changed(
-    config: &DeviceDdnsConfig,
-    devices: &[LanDevice],
-) -> bool {
-    let Ok(current_value) = resolve_device_record_value(config, devices) else {
-        return false;
-    };
-
-    let configured_value = configured_device_record_value(config);
-    configured_value.is_empty() || current_value.trim() != configured_value
-}
-
 pub(crate) async fn update_device_ddns_record(
     config: &DeviceDdnsConfig,
     devices: &[LanDevice],
 ) -> Result<(String, String), String> {
     validate_device_ddns_config(config)?;
+    if !device_ddns_device_is_online(config, devices) {
+        return Err("设备离线，无法更新 DDNS".to_string());
+    }
     let ip = resolve_device_record_value(config, devices)?;
     let client = crate::ddns::aliyun::AliyunDdns::new(to_device_ddns_aliyun_config(config));
     let result = if config.record_type.trim().eq_ignore_ascii_case("A") {
@@ -1665,6 +1658,7 @@ pub async fn save_ddns_config(
     let domain = ddns_domain(&config);
     cfg.ddns = config;
     write_config(&state, &cfg)?;
+    state.ddns_config_changed.send_replace(());
     add_log("info", "DDNS", &format!("DDNS 配置已保存：{}", domain));
     Ok(())
 }
@@ -1734,6 +1728,7 @@ pub async fn set_ipv6_interface(
     let normalized_name = interface_name.trim().to_string();
     cfg.ipv6_interface = normalized_name.clone();
     write_config(&state, &cfg)?;
+    state.ddns_config_changed.send_replace(());
     add_log(
         "info",
         "网络",
@@ -1753,7 +1748,13 @@ pub async fn set_ipv6_interface(
 pub async fn list_lan_devices(state: State<'_, AppState>) -> Result<Vec<LanDevice>, String> {
     let cfg = read_config(&state)?;
     let configs = active_device_ddns_configs(&cfg);
-    let hints = device_discovery_hints(&configs);
+    refresh_device_addresses(&configs).await
+}
+
+pub(crate) async fn refresh_device_addresses(
+    configs: &[DeviceDdnsConfig],
+) -> Result<Vec<LanDevice>, String> {
+    let hints = device_discovery_hints(configs);
     tauri::async_runtime::spawn_blocking(move || {
         crate::device_discovery::scan_lan_devices_with_hints(&hints)
     })
@@ -1791,6 +1792,7 @@ pub async fn create_device_ddns_config(
     let binding = create_device_binding(&mut next, config)?;
     save_config(&next)?;
     *guard = next;
+    state.ddns_config_changed.send_replace(());
     add_log(
         "info",
         "设备DDNS",
@@ -1812,6 +1814,7 @@ pub async fn save_device_ddns_config(
     save_device_binding(&mut cfg, config, original_record_key.as_ref())?;
     save_config(&cfg)?;
     *guard = cfg;
+    state.ddns_config_changed.send_replace(());
     add_log(
         "info",
         "设备DDNS",
@@ -1850,6 +1853,7 @@ pub async fn delete_device_ddns_config(
     if changed {
         save_config(&cfg)?;
         *guard = cfg;
+        state.ddns_config_changed.send_replace(());
         add_log("info", "设备DDNS", "设备 DDNS 绑定已解除");
     } else if record_key.is_some() {
         return Err("原绑定已变更或被删除，请刷新后重试".into());
@@ -1901,8 +1905,11 @@ pub async fn trigger_device_ddns_update(
     }
     validate_device_ddns_config(&device_config)?;
 
-    let hints = device_discovery_hints(&hint_configs);
-    let devices = crate::device_discovery::discover_lan_devices_with_hints(&hints);
+    let was_saved = device_binding_is_current(&state, &device_config, &identity);
+    let devices = refresh_device_addresses(&hint_configs).await?;
+    if was_saved && !device_binding_is_current(&state, &device_config, &identity) {
+        return Err("地址刷新期间 DDNS 绑定已变更，请重新同步".into());
+    }
     let currently_online = device_ddns_device_is_online(&device_config, &devices);
     let domain = device_ddns_domain(&device_config);
     let update_result = update_device_ddns_record(&device_config, &devices).await;
@@ -2720,7 +2727,7 @@ mod tests {
     }
 
     #[test]
-    fn device_ddns_record_value_has_changed_when_selected_ipv6_disappeared() {
+    fn refreshed_ipv6_replaces_a_stale_selected_address() {
         let config = DeviceDdnsConfig {
             device_id: "device-1".to_string(),
             selected_ipv6: "2408:8200::10".to_string(),
@@ -2733,11 +2740,11 @@ mod tests {
             vec!["2408:8200::20"],
         )];
 
-        assert!(device_ddns_record_value_has_changed(&config, &devices));
+        assert_eq!(resolve_device_record_value(&config, &devices).unwrap(), "2408:8200::20");
     }
 
     #[test]
-    fn device_ddns_record_value_has_not_changed_when_selected_ipv6_is_current() {
+    fn refreshed_ipv6_keeps_the_current_candidate() {
         let config = DeviceDdnsConfig {
             device_id: "device-1".to_string(),
             selected_ipv6: "2408:8200::10".to_string(),
@@ -2750,7 +2757,7 @@ mod tests {
             vec!["2408:8200::10"],
         )];
 
-        assert!(!device_ddns_record_value_has_changed(&config, &devices));
+        assert_eq!(resolve_device_record_value(&config, &devices).unwrap(), "2408:8200::10");
     }
 
     #[test]
