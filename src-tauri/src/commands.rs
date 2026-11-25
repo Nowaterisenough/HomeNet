@@ -929,6 +929,7 @@ fn create_device_binding(
     {
         return Err("此域名和记录类型已存在，请编辑原绑定；新增不会覆盖已有配置".into());
     }
+    binding.last_synced_ip.clear();
     binding.last_update_time.clear();
     binding.last_result.clear();
     binding.last_online = false;
@@ -943,14 +944,20 @@ fn save_device_binding(
     original_record_key: Option<&(String, String, String)>,
 ) -> Result<(), String> {
     validate_device_ddns_config(&binding)?;
-    let binding = normalize_device_ddns_payload(binding);
+    let mut binding = normalize_device_ddns_payload(binding);
     let mut existing = active_device_ddns_configs(config);
+    let next_key = crate::config::device_ddns_record_key(&binding);
+    // Sync state belongs to the DNS record and may have changed since the editor opened.
+    let saved = existing.iter().find(|item| crate::config::device_ddns_record_key(item) == next_key);
+    binding.last_synced_ip = saved.map(|item| item.last_synced_ip.clone()).unwrap_or_default();
+    binding.last_result = saved.map(|item| item.last_result.clone()).unwrap_or_default();
+    binding.last_update_time = saved.map(|item| item.last_update_time.clone()).unwrap_or_default();
+    binding.last_online = saved.is_some_and(|item| item.last_online);
     if let Some(original) = original_record_key {
         let index = existing
             .iter()
             .position(|item| crate::config::device_ddns_record_key(item).as_ref() == Some(original))
             .ok_or_else(|| "原绑定已变更或被删除，请刷新后重试".to_string())?;
-        let next_key = crate::config::device_ddns_record_key(&binding);
         if !device_ddns_selector_matches(&existing[index], &binding.device_id, &binding.device_mac)
         {
             return Err("绑定的目标设备已变化，请刷新后重试".into());
@@ -1027,6 +1034,7 @@ fn apply_device_ddns_status(
     touch_update_time: bool,
 ) {
     if let Some(selected_ip) = selected_ip {
+        config.last_synced_ip.clone_from(&selected_ip);
         config.selected_ip = selected_ip.clone();
         if config.record_type.trim().eq_ignore_ascii_case("AAAA") {
             config.selected_ipv6 = selected_ip;

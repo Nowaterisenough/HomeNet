@@ -155,18 +155,6 @@ function selectedIpForDraft(
   );
 }
 
-function boundIpForConfig(
-  config: DeviceDdnsConfig | null,
-  device: LanDevice,
-): string {
-  if (!config) return "-";
-  return (
-    (device.online
-      ? currentIpForConfig(config, device)
-      : configuredIpForConfig(config)) || "-"
-  );
-}
-
 function configuredDomain(config: DeviceDdnsConfig | null): string {
   return config?.domain.trim() ? ddnsRecordKey(config)[1] : "-";
 }
@@ -198,7 +186,7 @@ function mapDdnsDevice(
     enabled: boundConfigs.some((config) => config.enabled),
     domain: configuredDomain(config),
     lastSync: formatSyncTime(config?.last_update_time || ""),
-    boundIp: boundIpForConfig(config, device),
+    boundIp: config?.last_synced_ip || "",
     raw: device,
     config,
     configs: boundConfigs,
@@ -749,9 +737,7 @@ export default function DeviceDdnsPanel({
                     <span className="device-list-copy">
                       <strong>{device.name}</strong>
                       <small className="mono">
-                        {device.raw.ipv4[0] ||
-                          device.raw.global_ipv6[0] ||
-                          device.mac}
+                        {device.boundIp || "暂无已同步地址"}
                       </small>
                     </span>
                     <span className="device-status-icons">
@@ -938,8 +924,8 @@ export default function DeviceDdnsPanel({
                       </strong>
                       <p className="mono">
                         {recordTypeForConfig(selectedRow.config)} ·{" "}
-                        {selectedRow.boundIp}
-                        {!selectedRow.online ? "（上次地址）" : ""}
+                        {selectedRow.boundIp || "暂无已同步地址"}
+                        {selectedRow.boundIp && !selectedRow.online ? "（上次地址）" : ""}
                       </p>
                     </div>
                     <dl className="detail-list">

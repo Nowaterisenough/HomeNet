@@ -128,6 +128,9 @@ pub struct DeviceDdnsConfig {
     pub selected_ip: String,
 
     #[serde(default)]
+    pub last_synced_ip: String,
+
+    #[serde(default)]
     pub last_update_time: String,
 
     #[serde(default)]
@@ -554,6 +557,7 @@ fn clear_placeholder_device_ddns_config(config: &mut DeviceDdnsConfig) -> bool {
     config.sub_domain.clear();
     config.last_update_time.clear();
     config.last_result.clear();
+    config.last_synced_ip.clear();
     config.last_online = false;
     true
 }
@@ -572,6 +576,20 @@ fn normalize_device_ddns_config(config: &mut DeviceDdnsConfig) -> bool {
     if config.selected_ip.trim().is_empty() && !config.selected_ipv6.trim().is_empty() {
         config.selected_ip = config.selected_ipv6.trim().to_string();
         changed = true;
+    }
+    // Older versions stored the confirmed value only in the provider success message.
+    if config.last_synced_ip.is_empty() && !config.last_update_time.is_empty() {
+        let result = config.last_result.trim();
+        let value = result.strip_prefix("无需更新，当前值已是 ").or_else(|| {
+            result.strip_prefix("已更新：").or_else(|| result.strip_prefix("已新增："))?
+                .rsplit_once(" → ").map(|(_, value)| value)
+        });
+        if let Some(ip) = value.and_then(|value| value.parse::<std::net::IpAddr>().ok()) {
+            if ip.is_ipv4() == (config.record_type == "A") {
+                config.last_synced_ip = ip.to_string();
+                changed = true;
+            }
+        }
     }
     if config.ip_candidate_index == 0 {
         config.ip_candidate_index = default_ip_candidate_index();
@@ -755,6 +773,7 @@ impl Default for DeviceDdnsConfig {
             device_name: String::new(),
             selected_ipv6: String::new(),
             selected_ip: String::new(),
+            last_synced_ip: String::new(),
             last_update_time: String::new(),
             last_result: String::new(),
             last_online: false,
@@ -982,6 +1001,25 @@ pub fn clear_logs() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_records_show_only_a_previously_confirmed_dns_value() {
+        let mut binding = DeviceDdnsConfig {
+            selected_ip: "2001:db8::20".into(),
+            last_update_time: "2026-11-25 22:39:26".into(),
+            ..Default::default()
+        };
+        for (result, confirmed) in [
+            ("无需更新，当前值已是 2001:db8::10", "2001:db8::10"),
+            ("已更新：game.example.com → 2001:db8::11", "2001:db8::11"),
+            ("设备离线", ""),
+        ] {
+            binding.last_result = result.into();
+            binding.last_synced_ip.clear();
+            normalize_device_ddns_config(&mut binding);
+            assert_eq!(binding.last_synced_ip, confirmed);
+        }
+    }
 
     #[test]
     fn device_ddns_default_uses_ddns_defaults_and_empty_device_fields() {

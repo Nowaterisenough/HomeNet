@@ -289,3 +289,21 @@ fn rule_reconciliation_only_persists_changed_statuses_by_id() {
     assert!(changed_rule_statuses(rules.into_iter(), results("disabled")).is_empty());
     assert_eq!(changed_rule_statuses(rules.into_iter(), results("ready")), vec![(1, "ready".into())]);
 }
+
+#[test]
+fn confirmed_dns_value_survives_offline_sync_failure_and_stale_editor() {
+    let mut config = AppConfig::default();
+    let mut draft = create_device_binding(&mut config, binding("game", "AAAA")).unwrap();
+    let key = crate::config::device_ddns_record_key(&draft).unwrap();
+    let confirmed = "2001:db8::10";
+    let saved = &mut config.device_ddns_configs[0];
+    apply_device_ddns_status(saved, Some(confirmed.into()), "成功", Some(true), true);
+    apply_device_ddns_status(saved, None, "设备离线", Some(false), false);
+    draft.selected_ip = "2001:db8::20".into();
+    save_device_binding(&mut config, draft.clone(), Some(&key)).unwrap();
+    assert_eq!(config.device_ddns_configs[0].last_synced_ip, confirmed);
+    assert!(!config.device_ddns_configs[0].last_online);
+    draft.sub_domain = "nas".into();
+    save_device_binding(&mut config, draft, Some(&key)).unwrap();
+    assert!(config.device_ddns_configs[0].last_synced_ip.is_empty());
+}

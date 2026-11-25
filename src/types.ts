@@ -186,6 +186,7 @@ export interface DeviceDdnsConfig {
   device_name: string;
   selected_ipv6: string;
   selected_ip: string;
+  last_synced_ip: string;
   last_update_time: string;
   last_result: string;
   last_online: boolean;
