@@ -24,7 +24,7 @@ const requiredChecks = [
   ["src/App.tsx", 'from "./components/RuntimeSettingsPanel"'],
   ["src/App.tsx", 'from "./components/UpdateConfirmDialog"'],
   ["src/App.tsx", 'from "./components/WebDavPanel"'],
-  ["src/App.tsx", 'invokeCommand<RuntimeStatus>("get_runtime_status")'],
+  ["src/App.tsx", 'invokeCommand<RuntimeStatus>("get_runtime_status", { allowCached })'],
   ["src/App.tsx", 'invokeCommand<AppUpdateResult>("check_app_update")'],
   ["src/App.tsx", 'invokeCommand<AppUpdateResult>("install_app_update",'],
   ["src/App.tsx", 'invokeCommand<boolean>("get_auto_start")'],
@@ -164,7 +164,7 @@ const requiredChecks = [
   ["src/main.tsx", "isTray ? <TrayStatus /> : <App />"],
   [
     "src/components/TrayStatus.tsx",
-    'invokeCommand<TraySnapshot>("get_tray_snapshot")',
+    'invokeCommand<TraySnapshot>("get_tray_snapshot", { allowCached })',
   ],
   [
     "src/components/TrayStatus.tsx",

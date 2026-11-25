@@ -8,7 +8,7 @@ const checks = [
   ["package.json", '"build"'],
   ["package.json", '"verify"'],
   ["src/App.tsx", "HomeNet"],
-  ["src/App.tsx", 'invokeCommand<RuntimeStatus>("get_runtime_status")'],
+  ["src/App.tsx", 'invokeCommand<RuntimeStatus>("get_runtime_status", { allowCached })'],
   ["src/App.tsx", 'invokeCommand<AppUpdateResult>("check_app_update")'],
   ["src/App.tsx", 'invokeCommand<AppUpdateResult>("install_app_update",'],
   [

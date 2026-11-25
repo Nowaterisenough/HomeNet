@@ -107,7 +107,13 @@ export function createDeviceInventory(source: InventorySource) {
     refreshConfigs,
     start() {
       if (owners++ === 0) {
-        if (!requested) void refresh();
+        const now = (source.now ?? Date.now)();
+        if (
+          !requested ||
+          (state.lastScan !== null && now - state.lastScan >= DEVICE_REFRESH_INTERVAL_MS)
+        ) {
+          void refresh();
+        }
         stopTimer = schedule(() => {
           void refresh();
         }, DEVICE_REFRESH_INTERVAL_MS);

@@ -1,3 +1,4 @@
+import { pollWhileVisible } from "../lib/visiblePolling";
 import { useEffect, useMemo, useState } from "react";
 import {
   Activity,
@@ -358,9 +359,7 @@ export default function WebDavPanel({
 
   useEffect(() => {
     if (settingsOpen) return;
-    void loadConfig();
-    const timer = window.setInterval(() => void loadConfig(), 30000);
-    return () => window.clearInterval(timer);
+    return pollWhileVisible(loadConfig, 30000);
   }, [settingsOpen]);
 
   return (

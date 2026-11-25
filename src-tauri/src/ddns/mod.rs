@@ -27,6 +27,23 @@ pub(crate) struct Ipv6AddressCandidate {
     pub skip_as_source: bool,
 }
 
+// UI polling can reuse a recent display value. DDNS updates always query the network.
+pub async fn display_public_ipv4(allow_cached: bool) -> String {
+    use std::time::{Duration, Instant};
+    static CACHE: tokio::sync::Mutex<Option<(Instant, String)>> = tokio::sync::Mutex::const_new(None);
+    let requested = Instant::now();
+    let mut cache = CACHE.lock().await;
+    if let Some((checked, address)) = cache.as_ref() {
+        let ttl = Duration::from_secs(if address.is_empty() { 10 } else { 60 });
+        if *checked >= requested || (allow_cached && checked.elapsed() < ttl) {
+            return address.clone();
+        }
+    }
+    let address = get_public_ipv4().await;
+    *cache = Some((Instant::now(), address.clone()));
+    address
+}
+
 /// Try to get the public IPv4 address via external services.
 pub async fn get_public_ipv4() -> String {
     let services = [
@@ -35,7 +52,8 @@ pub async fn get_public_ipv4() -> String {
         "https://checkip.amazonaws.com",
     ];
 
-    let client = reqwest::Client::new();
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    let client = CLIENT.get_or_init(reqwest::Client::new);
     for url in &services {
         match client.get(*url).timeout(std::time::Duration::from_secs(5)).send().await {
             Ok(resp) => {

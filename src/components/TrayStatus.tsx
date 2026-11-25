@@ -75,12 +75,12 @@ export default function TrayStatus() {
   const busy = useRef(false);
   const alive = useRef(false);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (allowCached = true) => {
     if (busy.current) return;
     busy.current = true;
     setLoading(true);
     try {
-      const next = await invokeCommand<TraySnapshot>("get_tray_snapshot");
+      const next = await invokeCommand<TraySnapshot>("get_tray_snapshot", { allowCached });
       if (!alive.current) return;
       setSnapshot(next);
       setUpdatedAt(new Date().toLocaleTimeString("zh-CN", { hour12: false }));
@@ -212,7 +212,7 @@ export default function TrayStatus() {
             aria-label="刷新状态"
             title="刷新状态"
             disabled={loading}
-            onClick={refresh}
+            onClick={() => void refresh(false)}
           >
             <RefreshCw size={16} className={loading ? "spinning" : ""} />
           </button>

@@ -411,123 +411,20 @@ async fn device_ddns_background_task(app: tauri::AppHandle) {
 async fn forward_background_task(app: tauri::AppHandle) {
     config::add_log("info", "转发", "转发管理后台任务已启动");
 
-    // Apply rules on startup
-    {
-        let rules = {
-            let state = app.state::<commands::AppState>();
-            let config = state.config.lock().unwrap();
-            config.forward_rules.clone()
-        };
-        let state = app.state::<commands::AppState>();
-        let mut manager = state.forward_manager.lock().await;
-        let results = manager.apply_rules(&rules).await;
-        drop(manager);
-
-        // Sync status back to config
-        let mut config = state.config.lock().unwrap();
-        for result in &results {
-            if let Some(rule) = config
-                .forward_rules
-                .iter_mut()
-                .find(|r| r.id == result.rule_id)
-            {
-                rule.status = result.status.clone();
-            }
-        }
-        let _ = config::save_config(&config);
-    }
-
-    // Periodically re-apply to catch any changes missed by commands
+    let state = app.state::<commands::AppState>();
     loop {
+        commands::reapply_forward_rules(&state).await;
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-
-        let rules = {
-            let state = app.state::<commands::AppState>();
-            let config = state.config.lock().unwrap();
-            config.forward_rules.clone()
-        };
-
-        let state = app.state::<commands::AppState>();
-        let mut manager = state.forward_manager.lock().await;
-        let results = manager.apply_rules(&rules).await;
-        drop(manager);
-
-        // Sync status back to config
-        let mut config = state.config.lock().unwrap();
-        for result in &results {
-            if let Some(rule) = config
-                .forward_rules
-                .iter_mut()
-                .find(|r| r.id == result.rule_id)
-            {
-                rule.status = result.status.clone();
-            }
-        }
-        let _ = config::save_config(&config);
     }
 }
 
 async fn reverse_proxy_background_task(app: tauri::AppHandle) {
     config::add_log("info", "反代", "反向代理后台任务已启动");
-
-    {
-        {
-            let state = app.state::<commands::AppState>();
-            commands::ensure_reverse_proxy_certificates(&state).await;
-        }
-        let rules = {
-            let state = app.state::<commands::AppState>();
-            let config = state.config.lock().unwrap();
-            config.reverse_proxy_rules.clone()
-        };
-        let state = app.state::<commands::AppState>();
-        let mut manager = state.reverse_proxy_manager.lock().await;
-        let results = manager.apply_rules(&rules).await;
-        drop(manager);
-
-        let mut config = state.config.lock().unwrap();
-        for result in &results {
-            if let Some(rule) = config
-                .reverse_proxy_rules
-                .iter_mut()
-                .find(|rule| rule.id == result.rule_id)
-            {
-                rule.status = result.status.clone();
-            }
-        }
-        let _ = config::save_config(&config);
-    }
-
+    let state = app.state::<commands::AppState>();
     loop {
+        commands::ensure_reverse_proxy_certificates(&state).await;
+        commands::reapply_reverse_proxy_rules(&state).await;
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-
-        {
-            let state = app.state::<commands::AppState>();
-            commands::ensure_reverse_proxy_certificates(&state).await;
-        }
-
-        let rules = {
-            let state = app.state::<commands::AppState>();
-            let config = state.config.lock().unwrap();
-            config.reverse_proxy_rules.clone()
-        };
-
-        let state = app.state::<commands::AppState>();
-        let mut manager = state.reverse_proxy_manager.lock().await;
-        let results = manager.apply_rules(&rules).await;
-        drop(manager);
-
-        let mut config = state.config.lock().unwrap();
-        for result in &results {
-            if let Some(rule) = config
-                .reverse_proxy_rules
-                .iter_mut()
-                .find(|rule| rule.id == result.rule_id)
-            {
-                rule.status = result.status.clone();
-            }
-        }
-        let _ = config::save_config(&config);
     }
 }
 

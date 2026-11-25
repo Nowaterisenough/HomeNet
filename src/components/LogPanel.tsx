@@ -1,3 +1,4 @@
+import { pollWhileVisible } from "../lib/visiblePolling";
 import { useEffect, useMemo, useState } from "react";
 import { RefreshCw, Trash2 } from "lucide-react";
 import { invokeCommand } from "../lib/tauri";
@@ -68,11 +69,10 @@ export default function LogPanel() {
   }
 
   useEffect(() => {
-    loadLogs();
     window.addEventListener("homenet:logs-refresh", loadLogs);
-    const timer = window.setInterval(loadLogs, 5000);
+    const stop = pollWhileVisible(loadLogs, 5000);
     return () => {
-      window.clearInterval(timer);
+      stop();
       window.removeEventListener("homenet:logs-refresh", loadLogs);
     };
   }, []);

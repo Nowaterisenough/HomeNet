@@ -1,5 +1,6 @@
 use chrono::Local;
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
@@ -908,11 +909,11 @@ pub fn save_config(config: &AppConfig) -> Result<(), String> {
 // In-memory log buffer
 // ---------------------------------------------------------------------------
 
-static LOG_BUFFER: OnceLock<Mutex<Vec<LogEntry>>> = OnceLock::new();
+static LOG_BUFFER: OnceLock<Mutex<VecDeque<LogEntry>>> = OnceLock::new();
 const LOG_BUFFER_CAPACITY: usize = 1000;
 
-fn get_log_buffer() -> &'static Mutex<Vec<LogEntry>> {
-    LOG_BUFFER.get_or_init(|| Mutex::new(Vec::new()))
+fn get_log_buffer() -> &'static Mutex<VecDeque<LogEntry>> {
+    LOG_BUFFER.get_or_init(|| Mutex::new(VecDeque::new()))
 }
 
 /// Add a log entry to the in-memory ring buffer.
@@ -935,21 +936,39 @@ pub fn add_log(level: &str, module: &str, message: &str) {
 
     let buffer = get_log_buffer();
     if let Ok(mut guard) = buffer.lock() {
-        while guard.len() >= LOG_BUFFER_CAPACITY {
-            guard.remove(0);
+        if guard.len() == LOG_BUFFER_CAPACITY {
+            guard.pop_front();
         }
-        guard.push(entry);
+        guard.push_back(entry);
     }
 }
 
 /// Return a snapshot of all in-memory log entries (newest last).
-pub fn get_logs() -> Vec<LogEntry> {
+pub fn get_logs(limit: usize) -> Vec<LogEntry> {
     let buffer = get_log_buffer();
     if let Ok(guard) = buffer.lock() {
-        guard.clone()
+        guard.range(guard.len().saturating_sub(limit)..)
+            .cloned()
+            .collect()
     } else {
         Vec::new()
     }
+}
+
+pub(crate) fn latest_ddns_update_time() -> String {
+    let Ok(logs) = get_log_buffer().lock() else {
+        return "暂无".into();
+    };
+    logs.iter()
+        .rev()
+        .find(|entry| {
+            entry.module == "DDNS"
+                && (entry.message.contains("DNS 记录已更新")
+                    || entry.message.contains("DNS 记录已新增")
+                    || entry.message.contains("DNS 记录无需更新"))
+        })
+        .map(|entry| entry.time.clone())
+        .unwrap_or_else(|| "暂无".to_string())
 }
 
 /// Clear all in-memory log entries.

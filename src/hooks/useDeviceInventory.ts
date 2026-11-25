@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useSyncExternalStore } from "react";
+import { whilePageVisible } from "../lib/visiblePolling";
 import { createDeviceInventory } from "../lib/deviceInventory";
 import { invokeCommand } from "../lib/tauri";
 import type { DeviceDdnsConfig, LanDevice } from "../types";
@@ -16,7 +17,7 @@ export function useDeviceInventory() {
     inventory.subscribe,
     inventory.getSnapshot,
   );
-  useEffect(() => inventory.start(), []);
+  useEffect(() => whilePageVisible(inventory.start), []);
   const devices = useMemo(
     () => withBoundDevices(state.devices, state.configs),
     [state.devices, state.configs],

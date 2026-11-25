@@ -1,3 +1,4 @@
+import { pollWhileVisible } from "./lib/visiblePolling";
 import { MouseEvent, useEffect, useRef, useState } from "react";
 import DeviceDdnsPanel from "./components/DeviceDdnsPanel";
 import ForwardRulesPanel from "./components/ForwardRulesPanel";
@@ -98,9 +99,9 @@ export default function App() {
   >("normal");
   const updateBusyRef = useRef(false);
 
-  async function loadRuntimeStatus() {
+  async function loadRuntimeStatus(allowCached = false) {
     try {
-      const data = await invokeCommand<RuntimeStatus>("get_runtime_status");
+      const data = await invokeCommand<RuntimeStatus>("get_runtime_status", { allowCached });
       setStatusData({ ...emptyStatus, ...data });
       setRuntimeAvailable(true);
       setLastRefresh(new Date().toLocaleTimeString("zh-CN", { hour12: false }));
@@ -298,16 +299,16 @@ export default function App() {
   }
 
   useEffect(() => {
-    loadRuntimeStatus();
     loadAutoStart();
     loadAutoUpdateCheck();
-    window.addEventListener("homenet:refresh-status", loadRuntimeStatus);
+    const refresh = () => void loadRuntimeStatus();
+    window.addEventListener("homenet:refresh-status", refresh);
 
-    const runtimeTimer = window.setInterval(loadRuntimeStatus, 10000);
+    const stop = pollWhileVisible(() => void loadRuntimeStatus(true), 10000);
 
     return () => {
-      window.removeEventListener("homenet:refresh-status", loadRuntimeStatus);
-      window.clearInterval(runtimeTimer);
+      window.removeEventListener("homenet:refresh-status", refresh);
+      stop();
     };
   }, []);
 

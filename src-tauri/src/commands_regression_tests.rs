@@ -277,3 +277,15 @@ fn ip_only_replies_and_redacted_macs_cannot_claim_an_existing_binding() {
     };
     assert!(!device_ddns_device_is_online(&config, &[local]));
 }
+
+#[test]
+fn rule_reconciliation_only_persists_changed_statuses_by_id() {
+    let rules = [("first", "ready"), ("second", "disabled")];
+    let results = |status: &str| vec![
+        ("second".to_owned(), status.to_owned()),
+        ("removed".to_owned(), "error".to_owned()),
+        ("first".to_owned(), "ready".to_owned()),
+    ].into_iter();
+    assert!(changed_rule_statuses(rules.into_iter(), results("disabled")).is_empty());
+    assert_eq!(changed_rule_statuses(rules.into_iter(), results("ready")), vec![(1, "ready".into())]);
+}

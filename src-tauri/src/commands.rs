@@ -1182,20 +1182,6 @@ pub(crate) async fn update_device_ddns_record(
     Ok((ip, result))
 }
 
-fn latest_ddns_update_time() -> String {
-    crate::config::get_logs()
-        .into_iter()
-        .rev()
-        .find(|entry| {
-            entry.module == "DDNS"
-                && (entry.message.contains("DNS 记录已更新")
-                    || entry.message.contains("DNS 记录已新增")
-                    || entry.message.contains("DNS 记录无需更新"))
-        })
-        .map(|entry| entry.time)
-        .unwrap_or_else(|| "暂无".to_string())
-}
-
 fn runtime_ddns_status(config: &AppConfig) -> &'static str {
     if config.ddns.enabled
         || active_device_ddns_configs(config)
@@ -1225,7 +1211,7 @@ fn latest_enabled_device_ddns_update_time(config: &AppConfig) -> Option<String> 
 
 fn latest_runtime_ddns_update_time(config: &AppConfig) -> String {
     let global_update_time = if config.ddns.enabled {
-        let update_time = latest_ddns_update_time();
+        let update_time = crate::config::latest_ddns_update_time();
         if update_time == "暂无" {
             None
         } else {
@@ -1461,68 +1447,82 @@ pub(crate) async fn ensure_reverse_proxy_certificates(state: &AppState) {
     }
 }
 
+// Managers return results in listener order, which may differ from configuration order.
+fn changed_rule_statuses<'a>(
+    rules: impl Iterator<Item = (&'a str, &'a str)>,
+    results: impl Iterator<Item = (String, String)>,
+) -> Vec<(usize, String)> {
+    let mut statuses: std::collections::HashMap<_, _> = results.collect();
+    rules.enumerate()
+        .filter_map(|(index, (id, previous))| {
+            let status = statuses.remove(id)?;
+            (status != previous).then_some((index, status))
+        })
+        .collect()
+}
+
 /// After rules change, re-apply the forward manager.
-async fn reapply_forward_rules(state: &AppState) {
+pub(crate) async fn reapply_forward_rules(state: &AppState) {
+    let mut manager = state.forward_manager.lock().await;
     let rules = {
         let config = state.config.lock().unwrap();
         config.forward_rules.clone()
     };
-    let mut manager = state.forward_manager.lock().await;
     let results = manager.apply_rules(&rules).await;
-    drop(manager);
 
     // Write status updates back to config
     if results.is_empty() {
         return;
     }
     let mut config = state.config.lock().unwrap();
-    let mut changed = false;
-    for result in &results {
-        if let Some(rule) = config
-            .forward_rules
-            .iter_mut()
-            .find(|r| r.id == result.rule_id)
-        {
-            if rule.status != result.status {
-                rule.status = result.status.clone();
-                changed = true;
-            }
-        }
+    let changes = changed_rule_statuses(
+        config.forward_rules.iter()
+            .map(|rule| (rule.id.as_str(), rule.status.as_str())),
+        results.into_iter().map(|result| (result.rule_id, result.status)),
+    );
+    if changes.is_empty() {
+        return;
     }
-    if changed {
-        let _ = save_config(&config);
+    // Publish only after persistence so a failed save is retried next tick.
+    let mut updated = config.clone();
+    for (index, status) in changes {
+        updated.forward_rules[index].status = status;
+    }
+    match save_config(&updated) {
+        Ok(()) => *config = updated,
+        Err(error) => add_log("warn", "配置", &error),
     }
 }
 
-async fn reapply_reverse_proxy_rules(state: &AppState) {
+pub(crate) async fn reapply_reverse_proxy_rules(state: &AppState) {
+    let mut manager = state.reverse_proxy_manager.lock().await;
     let rules = {
         let config = state.config.lock().unwrap();
         config.reverse_proxy_rules.clone()
     };
-    let mut manager = state.reverse_proxy_manager.lock().await;
     let results = manager.apply_rules(&rules).await;
-    drop(manager);
 
     if results.is_empty() {
         return;
     }
 
     let mut config = state.config.lock().unwrap();
-    let mut changed = false;
-    for result in &results {
-        if let Some(rule) = config
-            .reverse_proxy_rules
-            .iter_mut()
-            .find(|rule| rule.id == result.rule_id)
-        {
-            if rule.status != result.status {
-                rule.status = result.status.clone();
-                changed = true;
-            }
-        }
+    let changes = changed_rule_statuses(
+        config.reverse_proxy_rules.iter()
+            .map(|rule| (rule.id.as_str(), rule.status.as_str())),
+        results.into_iter().map(|result| (result.rule_id, result.status)),
+    );
+    if changes.is_empty() {
+        return;
     }
-    if changed {
-        let _ = save_config(&config);
+    // Publish only after persistence so a failed save is retried next tick.
+    let mut updated = config.clone();
+    for (index, status) in changes {
+        updated.reverse_proxy_rules[index].status = status;
+    }
+    match save_config(&updated) {
+        Ok(()) => *config = updated,
+        Err(error) => add_log("warn", "配置", &error),
     }
 }
 
@@ -1617,7 +1617,10 @@ fn webdav_config_view(
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-pub async fn get_runtime_status(state: State<'_, AppState>) -> Result<RuntimeStatus, String> {
+pub async fn get_runtime_status(
+    state: State<'_, AppState>,
+    allow_cached: Option<bool>,
+) -> Result<RuntimeStatus, String> {
     let cfg = read_config(&state)?;
 
     let enabled_count = cfg.forward_rules.iter().filter(|r| r.enabled).count();
@@ -1630,7 +1633,7 @@ pub async fn get_runtime_status(state: State<'_, AppState>) -> Result<RuntimeSta
         .map(|d| d.as_secs().saturating_sub(start_time_secs()))
         .unwrap_or(0);
 
-    let ipv4 = crate::ddns::get_public_ipv4().await;
+    let ipv4 = crate::ddns::display_public_ipv4(allow_cached.unwrap_or(false)).await;
     let ipv6 = crate::ddns::get_local_ipv6_for_interface(&cfg.ipv6_interface);
 
     Ok(RuntimeStatus {
@@ -2299,8 +2302,8 @@ pub async fn select_webdav_directory(app: AppHandle) -> Result<Option<String>, S
 }
 
 #[tauri::command]
-pub async fn get_recent_logs() -> Result<Vec<LogEntry>, String> {
-    Ok(crate::config::get_logs())
+pub async fn get_recent_logs(limit: Option<usize>) -> Result<Vec<LogEntry>, String> {
+    Ok(crate::config::get_logs(limit.unwrap_or(usize::MAX)))
 }
 
 #[tauri::command]

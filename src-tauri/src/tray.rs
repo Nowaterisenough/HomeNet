@@ -16,6 +16,7 @@ const POPOVER_HEIGHT: f64 = 600.0;
 
 #[derive(Default)]
 struct TrayState {
+    popover_action: Mutex<()>,
     blurred_at: Mutex<Option<Instant>>,
     pending_page: Mutex<Option<String>>,
 }
@@ -121,8 +122,9 @@ fn show_popover(
     app: &AppHandle,
     anchor: Option<(Rect, PhysicalPosition<f64>)>,
 ) -> tauri::Result<()> {
-    let Some(window) = app.get_webview_window(POPOVER_LABEL) else {
-        return Ok(());
+    let window = match app.get_webview_window(POPOVER_LABEL) {
+        Some(window) => window,
+        None => create_popover(app)?,
     };
     let monitor = if let Some((_, point)) = anchor {
         app.monitor_from_point(point.x, point.y)?
@@ -175,11 +177,10 @@ fn toggle_popover(
     rect: Rect,
     position: PhysicalPosition<f64>,
 ) -> tauri::Result<()> {
-    let Some(window) = app.get_webview_window(POPOVER_LABEL) else {
-        return Ok(());
-    };
-    if window.is_visible()? {
-        return window.hide();
+    if let Some(window) = app.get_webview_window(POPOVER_LABEL) {
+        if window.is_visible()? {
+            return window.hide();
+        }
     }
     // Clicking the icon can blur/hide the window before the mouse-up event arrives.
     let state = app.state::<TrayState>();
@@ -195,8 +196,7 @@ fn toggle_popover(
     Ok(())
 }
 
-pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
-    app.manage(TrayState::default());
+fn create_popover(app: &AppHandle) -> tauri::Result<tauri::WebviewWindow> {
     let popover = WebviewWindowBuilder::new(
         app,
         POPOVER_LABEL,
@@ -234,6 +234,27 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         _ => {}
     });
 
+    Ok(popover)
+}
+
+// WebView2 needs the event thread free while it creates a native webview.
+fn request_popover(app: &AppHandle, anchor: Option<(Rect, PhysicalPosition<f64>)>) {
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<TrayState>();
+        let _action = state.popover_action.lock().unwrap();
+        let result = match anchor {
+            Some((rect, position)) => toggle_popover(&app, rect, position),
+            None => show_popover(&app, None),
+        };
+        if let Err(error) = result {
+            crate::config::add_log("warn", "托盘", &error.to_string());
+        }
+    });
+}
+
+pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+    app.manage(TrayState::default());
     // Linux tray implementations may only support a menu, not pointer events.
     let status_item = MenuItem::with_id(app, "status", "查看当前状态", true, None::<&str>)?;
     let show_item = MenuItem::with_id(app, "show", "打开 HomeNet", true, None::<&str>)?;
@@ -249,11 +270,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let builder = builder.menu(&menu);
     builder
         .on_menu_event(|app, event| match event.id().as_ref() {
-            "status" => {
-                if let Err(error) = show_popover(app, None) {
-                    crate::config::add_log("warn", "托盘", &error.to_string());
-                }
-            }
+            "status" => request_popover(app, None),
             "show" => show_main_window(app),
             "quit" => quit_app(app.clone()),
             _ => {}
@@ -262,9 +279,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         .on_tray_icon_event(move |tray, event| match tray_icon_action(&event) {
             TrayIconAction::TogglePopover => {
                 if let TrayIconEvent::Click { rect, position, .. } = event {
-                    if let Err(error) = toggle_popover(tray.app_handle(), rect, position) {
-                        crate::config::add_log("warn", "托盘", &error.to_string());
-                    }
+                    request_popover(tray.app_handle(), Some((rect, position)));
                 }
             }
             TrayIconAction::RestoreMainWindow => show_main_window(tray.app_handle()),

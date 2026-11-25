@@ -1,3 +1,4 @@
+import { pollWhileVisible } from "../lib/visiblePolling";
 import { useEffect, useState } from "react";
 import {
   ArrowLeftRight,
@@ -52,22 +53,21 @@ export default function NetworkOverview({
   async function loadServices() {
     const [service, entries] = await Promise.allSettled([
       invokeCommand<WebDavConfigView>("get_webdav_config"),
-      invokeCommand<LogEntry[]>("get_recent_logs"),
+      invokeCommand<LogEntry[]>("get_recent_logs", { limit: 3 }),
     ]);
     setWebdav(service.status === "fulfilled" ? service.value : null);
     setLogs(
       entries.status === "fulfilled"
-        ? entries.value.slice().reverse().slice(0, 3)
+        ? entries.value.reverse()
         : [],
     );
     setLogsAvailable(entries.status === "fulfilled");
   }
   useEffect(() => {
-    void loadServices();
-    const timer = window.setInterval(loadServices, 30000);
+    const stop = pollWhileVisible(loadServices, 30000);
     window.addEventListener("homenet:logs-refresh", loadServices);
     return () => {
-      window.clearInterval(timer);
+      stop();
       window.removeEventListener("homenet:logs-refresh", loadServices);
     };
   }, []);

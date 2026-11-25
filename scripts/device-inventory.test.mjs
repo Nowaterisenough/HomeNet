@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { whilePageVisible } from "../src/lib/visiblePolling.ts";
 import {
   createDeviceInventory,
   DEVICE_REFRESH_INTERVAL_MS,
@@ -204,4 +205,42 @@ test("a slow pre-mutation config response cannot undo a newer save or deletion",
   old.resolve([binding()]);
   await scan;
   assert.deepEqual(store.getSnapshot().configs, []);
+});
+
+test("hidden inventory stays idle and refreshes stale data on return", async (t) => {
+  const page = new EventTarget();
+  page.hidden = true;
+  const original = Object.getOwnPropertyDescriptor(globalThis, "document");
+  Object.defineProperty(globalThis, "document", { configurable: true, value: page });
+  t.after(() => {
+    if (original) Object.defineProperty(globalThis, "document", original);
+    else delete globalThis.document;
+  });
+  let scans = 0, timers = 0, now = 1;
+  const store = createDeviceInventory({
+    loadDevices: async () => { scans++; return []; },
+    loadConfigs: async () => [],
+    now: () => now,
+    schedule: () => { timers++; return () => timers--; },
+  });
+  function setHidden(value) {
+    page.hidden = value;
+    page.dispatchEvent(new Event("visibilitychange"));
+  }
+  const stop = whilePageVisible(store.start);
+  assert.deepEqual([scans, timers], [0, 0]);
+  setHidden(false);
+  await store.refresh();
+  setHidden(true);
+  assert.deepEqual([scans, timers], [1, 0]);
+  setHidden(false);
+  assert.deepEqual([scans, timers], [1, 1]);
+  setHidden(true);
+  now += DEVICE_REFRESH_INTERVAL_MS;
+  setHidden(false);
+  assert.deepEqual([scans, timers], [2, 1]);
+  stop();
+  setHidden(true);
+  setHidden(false);
+  assert.deepEqual([scans, timers], [2, 0]);
 });

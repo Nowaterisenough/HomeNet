@@ -121,17 +121,20 @@ fn rule_status(enabled: bool, status: &str) -> String {
 
 /// Project only display fields; credentials and private-key paths never enter the popover.
 #[tauri::command]
-pub async fn get_tray_snapshot(state: State<'_, AppState>) -> Result<TraySnapshot, String> {
-    let runtime = commands::get_runtime_status(state.clone()).await?;
-    let config = state.config.lock().map_err(|e| e.to_string())?.clone();
+pub async fn get_tray_snapshot(
+    state: State<'_, AppState>,
+    allow_cached: Option<bool>,
+) -> Result<TraySnapshot, String> {
+    let runtime = commands::get_runtime_status(state.clone(), allow_cached).await?;
     let webdav = state.webdav_manager.lock().await.status();
+    let config = state.config.lock().map_err(|e| e.to_string())?;
     let bindings = commands::active_device_ddns_configs(&config);
     Ok(TraySnapshot {
         runtime,
         binding_count: bindings.len(),
         enabled_binding_count: bindings.iter().filter(|binding| binding.enabled).count(),
         services: service_summaries(&config, webdav),
-        logs: config::get_logs().into_iter().rev().take(12).collect(),
+        logs: config::get_logs(12).into_iter().rev().collect(),
     })
 }
 
