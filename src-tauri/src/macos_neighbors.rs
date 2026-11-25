@@ -183,14 +183,8 @@ fn parse_message(header: &libc::rt_msghdr, bytes: &[u8]) -> Option<NeighborRow> 
     Some(NeighborRow {
         ip_address: ip?,
         link_layer_address: mac?,
-        state: if header.rtm_rmx.rmx_expire > 0
-            && i64::from(header.rtm_rmx.rmx_expire) <= chrono::Utc::now().timestamp()
-        {
-            "Stale"
-        } else {
-            "Reachable"
-        }
-        .into(),
+        // The route expiry is a cache lifetime, not a reachability confirmation.
+        state: "Cached".into(),
         interface_alias,
         _address_family: None,
     })
@@ -296,12 +290,14 @@ mod tests {
     }
 
     #[test]
-    fn ignores_unknown_versions_and_marks_expired_entries_stale() {
+    fn route_cache_lifetime_does_not_establish_reachability() {
         let mut bytes = message([2, 0xaa, 0xbb, 0xcc, 0xdd, 1]);
         let expire = std::mem::offset_of!(libc::rt_msghdr, rtm_rmx)
             + std::mem::offset_of!(libc::rt_metrics, rmx_expire);
         bytes[expire..expire + 4].copy_from_slice(&1_i32.to_ne_bytes());
-        assert_eq!(parse_table(&bytes)[0].state, "Stale");
+        assert_eq!(parse_table(&bytes)[0].state, "Cached");
+        bytes[expire..expire + 4].copy_from_slice(&i32::MAX.to_ne_bytes());
+        assert_eq!(parse_table(&bytes)[0].state, "Cached");
         bytes[std::mem::offset_of!(libc::rt_msghdr, rtm_version)] = 0;
         assert!(parse_table(&bytes).is_empty());
     }

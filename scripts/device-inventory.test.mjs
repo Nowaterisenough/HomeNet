@@ -244,3 +244,12 @@ test("hidden inventory stays idle and refreshes stale data on return", async (t)
   setHidden(false);
   assert.deepEqual([scans, timers], [2, 0]);
 });
+
+test("a cache-only refresh keeps the last confirmed sighting until the device returns", () => {
+  const previous = device();
+  const cached = device({ online: false, global_ipv6: [], last_seen: "" });
+  const offline = mergeDiscoveredDevices([previous], [cached]);
+  assert.deepEqual(offline, [{ ...cached, last_seen: previous.last_seen }]);
+  const returned = device({ last_seen: "2026-11-25T14:40:00Z" });
+  assert.deepEqual(mergeDiscoveredDevices(offline, [returned]), [returned]);
+});

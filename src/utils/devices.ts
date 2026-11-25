@@ -79,9 +79,13 @@ export function mergeDiscoveredDevices(
       )
     )
       continue;
-    if (!devices.has(deviceRowId(device))) {
+    const id = deviceRowId(device);
+    const next = devices.get(id);
+    if (next && !next.online && !next.last_seen && device.last_seen) {
+      devices.set(id, { ...next, last_seen: device.last_seen });
+    } else if (!next) {
       // Remember devices for this session without presenting stale addresses as sync candidates.
-      devices.set(deviceRowId(device), {
+      devices.set(id, {
         ...device,
         online: false,
         global_ipv6: [],

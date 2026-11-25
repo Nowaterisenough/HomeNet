@@ -160,6 +160,7 @@ fn append_echo_devices(
 ) {
     let mut known: BTreeSet<_> = devices
         .iter()
+        .filter(|device| device.online)
         .flat_map(|device| device.ipv4.iter().cloned())
         .collect();
     let now = Utc::now().to_rfc3339();
@@ -227,6 +228,12 @@ fn discover_neighbor_devices(hints: &[DeviceDiscoveryHint]) -> Vec<LanDevice> {
     let mut rows = read_macos_neighbor_rows();
     if refresh_stale_global_ipv6_neighbors(&rows) {
         rows = read_macos_neighbor_rows();
+        if rows.iter().any(|row| is_global_ipv6(&row.ip_address) && matches!(row.state.as_str(), "Delay" | "Probe")) {
+            // NUD waits about five seconds before probing a stale neighbor.
+            // Echo-blocking hosts can then be confirmed by their NDP reply.
+            thread::sleep(Duration::from_secs(6));
+            rows = read_macos_neighbor_rows();
+        }
     }
 
     let mut devices = merge_neighbor_rows_with_source(rows, "macos-neighbor");
@@ -261,19 +268,36 @@ fn read_macos_neighbor_rows() -> Vec<NeighborRow> {
     };
     let arp_stdout = discovery_command_stdout(
         "/usr/sbin/arp",
-        Command::new("/usr/sbin/arp").arg("-an").output(),
+        Command::new("/usr/sbin/arp").arg("-anl").output(),
     );
     let ndp_stdout = discovery_command_stdout(
         "/usr/sbin/ndp",
         Command::new("/usr/sbin/ndp").arg("-an").output(),
     );
 
-    let command_rows = parse_macos_neighbor_tables(&arp_stdout, &ndp_stdout);
+    let mut command_rows = parse_macos_neighbor_tables(&arp_stdout, &ndp_stdout);
+    // Some child tools get a redacted MAC. Recover the identity from the
+    // native snapshot while keeping the actual NDP/ARP reachability state.
+    let native_by_address: HashMap<_, _> = native_rows.iter().map(|row| {
+        ((row.interface_alias.as_str(), row.ip_address.as_str()), row.link_layer_address.as_str())
+    }).collect();
+    for row in &mut command_rows {
+        if matches!(row.link_layer_address.as_str(), "02:00:00:00:00:00" | "2:0:0:0:0:0") {
+            if let Some(mac) = native_by_address.get(&(row.interface_alias.as_str(), row.ip_address.as_str())) {
+                row.link_layer_address = (*mac).to_owned();
+            }
+        }
+    }
+    let reported: BTreeSet<_> = command_rows.iter().map(|row| {
+        (row.interface_alias.as_str(), row.ip_address.as_str())
+    }).collect();
+    native_rows.retain(|row| !reported.contains(&(row.interface_alias.as_str(), row.ip_address.as_str())));
+    command_rows.retain(NeighborRow::is_usable);
     crate::config::add_log(
         "info",
         "设备发现",
         &format!(
-            "邻居表有效记录：原生 {}，命令 {}（ARP {} 行，NDP {} 行）",
+            "邻居表有效记录：仅原生 {}，命令 {}（ARP {} 行，NDP {} 行）",
             native_rows.len(), command_rows.len(),
             arp_stdout.lines().count(), ndp_stdout.lines().count(),
         ),
@@ -378,11 +402,14 @@ fn merge_neighbor_rows_with_source(rows: Vec<NeighborRow>, source: &str) -> Vec<
                 global_ipv6: Vec::new(),
                 online: false,
                 source: source.to_string(),
-                last_seen: now.clone(),
+                last_seen: String::new(),
             }
         });
 
-        device.online = true;
+        if !device.online && is_current_neighbor_state(&row.state) {
+            device.online = true;
+            device.last_seen.clone_from(&now);
+        }
         add_neighbor_ip_to_device(device, &row.ip_address, &row.state);
     }
 
@@ -448,7 +475,7 @@ fn refresh_hinted_device_ipv6_candidates_with_resolver<F>(
 ) where
     F: FnMut(&LanDevice, &DeviceDiscoveryHint) -> Vec<Ipv6Addr>,
 {
-    for device in devices {
+    for device in devices.iter_mut().filter(|device| device.online) {
         let Some(hint) = matching_device_hint(device, hints) else {
             continue;
         };
@@ -755,7 +782,7 @@ fn active_discovery_ipv4_targets(devices: &[LanDevice]) -> Vec<(usize, Ipv4Addr)
     let mut targets = Vec::new();
 
     for (device_index, device) in devices.iter().enumerate() {
-        if !device.global_ipv6.is_empty() {
+        if !device.online || !device.global_ipv6.is_empty() {
             continue;
         }
 
@@ -1206,10 +1233,12 @@ fn skip_dns_name(packet: &[u8], offset: usize) -> Option<usize> {
 }
 
 fn refresh_stale_global_ipv6_neighbors(rows: &[NeighborRow]) -> bool {
+    let mut seen = BTreeSet::new();
     let targets = rows
         .iter()
-        .filter(|row| is_global_ipv6(&row.ip_address) && !is_current_neighbor_state(&row.state))
+        .filter(|row| row.is_usable() && row.state != "Permanent" && row.state != "6" && is_global_ipv6(&row.ip_address) && !is_current_neighbor_state(&row.state))
         .filter_map(|row| row.ip_address.parse::<Ipv6Addr>().ok())
+        .filter(|ip| seen.insert(*ip))
         .take(8)
         .collect::<Vec<_>>();
 
@@ -1299,7 +1328,6 @@ fn parse_macos_neighbor_tables(arp_output: &str, ndp_output: &str) -> Vec<Neighb
     parse_macos_arp_output(arp_output)
         .into_iter()
         .chain(parse_macos_ndp_output(ndp_output))
-        .filter(NeighborRow::is_usable)
         .collect()
 }
 
@@ -1310,23 +1338,20 @@ fn parse_macos_arp_output(value: &str) -> Vec<NeighborRow> {
 
 #[cfg(any(target_os = "macos", test))]
 fn parse_macos_arp_line(line: &str) -> Option<NeighborRow> {
-    let line = line.trim();
-    let ip_address = extract_parenthesized_ip(line)?;
-    if ip_address.parse::<Ipv4Addr>().is_err() {
-        return None;
-    }
-
-    let tokens: Vec<&str> = line.split_whitespace().collect();
-    let at_index = tokens.iter().position(|token| *token == "at")?;
-    let link_layer_address = tokens.get(at_index + 1)?;
-    let interface_alias = token_after(&tokens, "on").unwrap_or_default();
-
+    // arp -anl reports outgoing and incoming link-layer reachability timers.
+    let mut fields = line.split_whitespace();
+    let ip_address = fields.next()?.parse::<Ipv4Addr>().ok()?.to_string();
+    let link_layer_address = fields.next()?.to_string();
+    let _outgoing = fields.next()?;
+    let incoming = fields.next()?;
+    let recent = incoming.as_bytes().first()?.is_ascii_digit()
+        && incoming.bytes().any(|byte| matches!(byte, b'1'..=b'9'));
     Some(NeighborRow {
         ip_address,
-        link_layer_address: link_layer_address.to_string(),
-        state: "Reachable".to_string(),
-        interface_alias,
-        _address_family: Some(Value::String("IPv4".to_string())),
+        link_layer_address,
+        state: if recent { "Reachable" } else { "Stale" }.into(),
+        interface_alias: fields.next()?.into(),
+        _address_family: Some(Value::String("IPv4".into())),
     })
 }
 
@@ -1354,14 +1379,15 @@ fn parse_macos_ndp_line(line: &str) -> Option<NeighborRow> {
 
     let link_layer_address = tokens.next()?;
     let interface_alias = tokens.next().unwrap_or_default().to_string();
-    let remaining_tokens = tokens.collect::<Vec<_>>();
-    let state = if remaining_tokens
-        .iter()
-        .any(|token| token.eq_ignore_ascii_case("expired"))
-    {
-        "Stale"
-    } else {
-        "Reachable"
+    let expiry = tokens.next()?;
+    // The state immediately follows Expire. A later R is the router flag.
+    let state = match tokens.next() {
+        Some("R") if expiry != "permanent" && expiry != "expired" => "Reachable",
+        _ if expiry == "permanent" => "Permanent",
+        Some("D") => "Delay",
+        Some("P") => "Probe",
+        Some("I") => "Incomplete",
+        _ => "Stale",
     };
 
     Some(NeighborRow {
@@ -1388,7 +1414,7 @@ fn parse_macos_parenthesized_ndp_line(line: &str) -> Option<NeighborRow> {
     Some(NeighborRow {
         ip_address,
         link_layer_address: link_layer_address.to_string(),
-        state: "Reachable".to_string(),
+        state: "Stale".to_string(),
         interface_alias,
         _address_family: Some(Value::String("IPv6".to_string())),
     })
@@ -1852,7 +1878,7 @@ fn is_usable_neighbor_state(value: &str) -> bool {
 fn is_current_neighbor_state(value: &str) -> bool {
     matches!(
         value.trim().to_ascii_lowercase().as_str(),
-        "reachable" | "delay" | "probe" | "permanent" | "2" | "3" | "5" | "6"
+        "reachable" | "5"
     )
 }
 
@@ -2288,12 +2314,12 @@ ip_address: 192.168.100.143
     #[test]
     fn parses_macos_arp_and_ndp_neighbors_by_mac() {
         let arp = r#"
-? (192.168.100.143) at 88:c9:b3:b3:2:58 on en0 ifscope [ethernet]
-? (192.168.100.255) at ff:ff:ff:ff:ff:ff on en0 ifscope [ethernet]
+192.168.100.143 88:c9:b3:b3:2:58 2m10s 2m5s en0 1
+192.168.100.255 ff:ff:ff:ff:ff:ff (none) (none) en0
 "#;
         let ndp = r#"
 Neighbor                             Linklayer Address  Netif Expire    S Flags
-240e:358:abcd:1234:1111:2222:3333:4444 88:c9:b3:b3:2:58 en0 23h59m59s S R
+240e:358:abcd:1234:1111:2222:3333:4444 88:c9:b3:b3:2:58 en0 25s R
 240e:358:abcd:1234:9999:8888:7777:6666 88:c9:b3:b3:2:58 en0 expired S
 fe80::1%en0                          88:c9:b3:b3:2:58 en0 23h59m59s S R
 ff02::1                              33:33:00:00:00:01 en0 permanent  R
@@ -2317,6 +2343,23 @@ ff02::1                              33:33:00:00:00:01 en0 permanent  R
             device.global_ipv6,
             vec!["240e:358:abcd:1234:1111:2222:3333:4444"]
         );
+    }
+
+    #[test]
+    fn stale_macos_entries_do_not_keep_a_disconnected_device_online() {
+        let arp = "192.0.2.42 02:aa:bb:cc:dd:42 2m30s expired en0 1";
+        let ndp = "2001:db8:1::42 02:aa:bb:cc:dd:42 en0 10h52m16s S R";
+        let mut rows = parse_macos_neighbor_tables(arp, ndp);
+        for state in ["Cached", "Delay", "Probe", "Permanent"] {
+            rows.push(NeighborRow::new("2001:db8:1::42", "02:aa:bb:cc:dd:42", state, "en0", None));
+        }
+        let devices = merge_neighbor_rows(rows);
+        assert_eq!(devices.len(), 1);
+        assert!(!devices[0].online);
+        assert!(devices[0].last_seen.is_empty() && devices[0].global_ipv6.is_empty());
+        let devices = merge_neighbor_rows(parse_macos_neighbor_tables(arp, &ndp.replace("10h52m16s S R", "27s R")));
+        assert!(devices[0].online);
+        assert_eq!(devices[0].global_ipv6, ["2001:db8:1::42"]);
     }
 
     #[test]
