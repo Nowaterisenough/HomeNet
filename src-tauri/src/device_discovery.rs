@@ -193,7 +193,7 @@ pub fn is_global_ipv6(value: &str) -> bool {
 #[cfg(windows)]
 fn discover_neighbor_devices(hints: &[DeviceDiscoveryHint]) -> Vec<LanDevice> {
     let mut rows = read_windows_neighbor_rows();
-    if refresh_stale_global_ipv6_neighbors(&rows) {
+    if refresh_stale_global_ipv6_neighbors(&rows, hints) {
         rows = read_windows_neighbor_rows();
     }
 
@@ -226,7 +226,7 @@ fn discover_neighbor_devices(hints: &[DeviceDiscoveryHint]) -> Vec<LanDevice> {
     refresh_macos_ipv6_neighbors();
 
     let mut rows = read_macos_neighbor_rows();
-    if refresh_stale_global_ipv6_neighbors(&rows) {
+    if refresh_stale_global_ipv6_neighbors(&rows, hints) {
         rows = read_macos_neighbor_rows();
         if rows.iter().any(|row| is_global_ipv6(&row.ip_address) && matches!(row.state.as_str(), "Delay" | "Probe")) {
             // NUD waits about five seconds before probing a stale neighbor.
@@ -1232,29 +1232,45 @@ fn skip_dns_name(packet: &[u8], offset: usize) -> Option<usize> {
     }
 }
 
-fn refresh_stale_global_ipv6_neighbors(rows: &[NeighborRow]) -> bool {
-    let mut seen = BTreeSet::new();
-    let targets = rows
+fn stale_ipv6_targets<'a>(
+    rows: &'a [NeighborRow],
+    hints: &[DeviceDiscoveryHint],
+) -> Vec<(&'a str, Ipv6Addr)> {
+    let bound_macs: BTreeSet<_> = hints
         .iter()
-        .filter(|row| row.is_usable() && row.state != "Permanent" && row.state != "6" && is_global_ipv6(&row.ip_address) && !is_current_neighbor_state(&row.state))
-        .filter_map(|row| row.ip_address.parse::<Ipv6Addr>().ok())
-        .filter(|ip| seen.insert(*ip))
-        .take(8)
+        .filter_map(|hint| normalize_mac(&hint.device_mac))
+        .collect();
+    let mut candidates = rows
+        .iter()
+        .filter(|row| {
+            row.is_usable()
+                && !matches!(row.state.as_str(), "Permanent" | "6")
+                && is_global_ipv6(&row.ip_address)
+                && !is_current_neighbor_state(&row.state)
+        })
         .collect::<Vec<_>>();
+    candidates.sort_by_key(|row| {
+        !row.normalized_mac().is_some_and(|mac| bound_macs.contains(&mac))
+    });
+    let mut seen = BTreeSet::new();
+    candidates
+        .into_iter()
+        .filter_map(|row| Some((row.interface_alias.as_str(), row.ip_address.parse().ok()?)))
+        .filter(|target| seen.insert(*target))
+        .take(8)
+        .collect()
+}
 
-    if targets.is_empty() {
-        return false;
+fn refresh_stale_global_ipv6_neighbors(rows: &[NeighborRow], hints: &[DeviceDiscoveryHint]) -> bool {
+    let targets = stale_ipv6_targets(rows, hints);
+    for &(interface, ip) in &targets {
+        probe_ipv6_neighbor(interface, ip);
     }
-
-    for target in targets {
-        ping_ipv6_once(target);
-    }
-
-    true
+    !targets.is_empty()
 }
 
 #[cfg(windows)]
-fn ping_ipv6_once(address: Ipv6Addr) {
+fn probe_ipv6_neighbor(_interface: &str, address: Ipv6Addr) {
     use std::os::windows::process::CommandExt;
 
     let value = address.to_string();
@@ -1265,9 +1281,23 @@ fn ping_ipv6_once(address: Ipv6Addr) {
 }
 
 #[cfg(target_os = "macos")]
-fn ping_ipv6_once(address: Ipv6Addr) {
-    let value = address.to_string();
-    probe_macos_ipv6(&["-c", "1", &value]);
+fn probe_ipv6_neighbor(interface: &str, address: Ipv6Addr) {
+    use socket2::{Domain, Protocol, Socket, Type};
+    use std::{ffi::CString, net::SocketAddrV6, num::NonZeroU32};
+
+    let Ok(name) = CString::new(interface) else { return };
+    let Some(index) = NonZeroU32::new(unsafe { libc::if_nametoindex(name.as_ptr()) }) else {
+        return;
+    };
+    let Ok(socket) = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP)) else {
+        return;
+    };
+    // Sending on the neighbor's interface triggers NUD under the app's own local-network grant.
+    // Only the kernel state after probing can confirm this address.
+    if socket.bind_device_by_index_v6(Some(index)).is_ok() && socket.set_unicast_hops_v6(1).is_ok()
+    {
+        let _ = socket.send_to(&[], &SocketAddrV6::new(address, 9, 0, 0).into());
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -1297,7 +1327,7 @@ fn probe_macos_ipv6(args: &[&str]) {
 }
 
 #[cfg(all(not(windows), not(target_os = "macos")))]
-fn ping_ipv6_once(_address: Ipv6Addr) {}
+fn probe_ipv6_neighbor(_interface: &str, _address: Ipv6Addr) {}
 
 #[cfg(target_os = "macos")]
 fn refresh_macos_ipv6_neighbors() {
@@ -2343,6 +2373,21 @@ ff02::1                              33:33:00:00:00:01 en0 permanent  R
             device.global_ipv6,
             vec!["240e:358:abcd:1234:1111:2222:3333:4444"]
         );
+    }
+
+    #[test]
+    fn stale_probe_budget_prioritizes_the_bound_mac_on_its_interface() {
+        let mut rows: Vec<_> = (1..=8)
+            .map(|i| NeighborRow::new(&format!("2001:db8::{i}"), "02:aa:bb:cc:dd:11", "Stale", "en0", None))
+            .collect();
+        let mac = "02:aa:bb:cc:dd:22";
+        rows.push(NeighborRow::new("2001:db8::20", mac, "Stale", "en1", None));
+        rows.push(NeighborRow::new("2001:db8::21", mac, "Reachable", "en1", None));
+        let hint = DeviceDiscoveryHint { device_mac: mac.to_string(), ..Default::default() };
+        let targets = stale_ipv6_targets(&rows, &[hint]);
+        assert_eq!(targets.len(), 8);
+        assert_eq!(targets[0], ("en1", "2001:db8::20".parse().unwrap()));
+        assert!(!targets.contains(&("en1", "2001:db8::21".parse().unwrap())));
     }
 
     #[test]

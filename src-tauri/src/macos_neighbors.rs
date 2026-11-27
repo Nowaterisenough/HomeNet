@@ -1,17 +1,87 @@
 use super::NeighborRow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::CStr;
 use std::io;
 use std::mem::size_of;
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::{Ipv4Addr, Ipv6Addr, UdpSocket};
+use std::os::fd::AsRawFd;
 
 const MAX_TABLE_BYTES: usize = 8 * 1024 * 1024;
+
+// Darwin net/route_private.h. arp -l reads this extended routing message.
+const NET_RT_DUMPX_FLAGS: i32 = 9;
+const RTM_GET_EXT: u8 = 0x15;
+
+#[repr(C)]
+struct ArpRouteHeader {
+    length: u16,
+    version: u8,
+    kind: u8,
+    index: u32,
+    flags: i32,
+    reserved: u32,
+    addrs: i32,
+    _pid_seq_errno_use_inits: [i32; 5],
+    _metrics: libc::rt_metrics,
+    refs: u32,
+    _probes: u32,
+    _send_expire: u64,
+    receive_expire: u64,
+    _link_metrics: [i32; 3],
+}
+
+// Darwin netinet6/nd6.h (in6_nbrinfo) and in6_var.h (_IOWR('i', 78, ...)).
+#[repr(C)]
+struct NdpInfo {
+    interface: [u8; libc::IF_NAMESIZE],
+    address: libc::in6_addr,
+    asked: libc::c_long,
+    is_router: libc::c_int,
+    state: libc::c_int,
+    expire: libc::c_int,
+}
+const SIOCGNBRINFO_IN6: libc::c_ulong = 0xc0000000
+    | ((size_of::<NdpInfo>() as libc::c_ulong) << 16)
+    | ((b'i' as libc::c_ulong) << 8)
+    | 78;
+
+fn ndp_state(socket: &UdpSocket, interface: &str, ip: Ipv6Addr, now: i64) -> Option<&'static str> {
+    if interface.is_empty() || interface.len() >= libc::IF_NAMESIZE {
+        return None;
+    }
+    let mut info = NdpInfo {
+        interface: [0; libc::IF_NAMESIZE],
+        address: libc::in6_addr {
+            s6_addr: ip.octets(),
+        },
+        asked: 0,
+        is_router: 0,
+        state: 0,
+        expire: 0,
+    };
+    info.interface[..interface.len()].copy_from_slice(interface.as_bytes());
+    if unsafe { libc::ioctl(socket.as_raw_fd(), SIOCGNBRINFO_IN6, &mut info) } != 0 {
+        return None;
+    }
+    Some(classify_ndp(info.state, i64::from(info.expire), now))
+}
+
+fn classify_ndp(state: i32, expiry: i64, now: i64) -> &'static str {
+    match (state, expiry) {
+        (0, _) => "Incomplete",
+        (_, 0) => "Permanent",
+        (1, expiry) if expiry > now => "Reachable",
+        (3, _) => "Delay",
+        (4, _) => "Probe",
+        _ => "Stale",
+    }
+}
 
 pub(super) fn read() -> io::Result<Vec<NeighborRow>> {
     let mut rows = Vec::new();
     let mut last_error = None;
     for family in [libc::AF_INET, libc::AF_INET6] {
-        match read_table(family) {
+        match read_table(family, libc::NET_RT_FLAGS) {
             Ok(table) => rows.extend(parse_table(&table)),
             Err(error) => {
                 crate::config::add_log(
@@ -26,6 +96,28 @@ pub(super) fn read() -> io::Result<Vec<NeighborRow>> {
     if rows.is_empty() {
         if let Some(error) = last_error {
             return Err(error);
+        }
+    }
+    let now = chrono::Utc::now().timestamp();
+    let arp_rows = read_table(libc::AF_INET, NET_RT_DUMPX_FLAGS)
+        .map(|bytes| parse_routes(&bytes, |message| active_arp_row(message, now)))
+        .unwrap_or_default();
+    // Require the same interface, IP and MAC across the two snapshots.
+    fn identity(row: &NeighborRow) -> (&str, &str, &str) {
+        (&row.interface_alias, &row.ip_address, &row.link_layer_address)
+    }
+    let active_arp: HashSet<_> = arp_rows.iter().map(identity).collect();
+    let socket = UdpSocket::bind((Ipv6Addr::UNSPECIFIED, 0)).ok();
+    for row in &mut rows {
+        if let Ok(ip) = row.ip_address.parse::<Ipv6Addr>() {
+            let state = socket.as_ref().and_then(|socket| {
+                ndp_state(socket, &row.interface_alias, ip, now)
+            });
+            if let Some(state) = state {
+                row.state = state.into();
+            }
+        } else if active_arp.contains(&identity(row)) {
+            row.state = "Reachable".into();
         }
     }
     Ok(rows)
@@ -71,13 +163,13 @@ pub(super) fn local_macs() -> io::Result<HashMap<String, String>> {
     Ok(result)
 }
 
-fn read_table(family: i32) -> io::Result<Vec<u8>> {
+fn read_table(family: i32, query: i32) -> io::Result<Vec<u8>> {
     let mut mib = [
         libc::CTL_NET,
         libc::PF_ROUTE,
         0,
         family,
-        libc::NET_RT_FLAGS,
+        query,
         libc::RTF_LLINFO,
     ];
     // Read under HomeNet's own identity instead of relying on a child tool's access.
@@ -128,22 +220,52 @@ fn read_table(family: i32) -> io::Result<Vec<u8>> {
     ))
 }
 
-fn parse_table(mut bytes: &[u8]) -> Vec<NeighborRow> {
+fn parse_table(bytes: &[u8]) -> Vec<NeighborRow> {
+    parse_routes(bytes, |message| {
+        if message.len() < size_of::<libc::rt_msghdr>() {
+            return None;
+        }
+        let header = unsafe { message.as_ptr().cast::<libc::rt_msghdr>().read_unaligned() };
+        if header.rtm_flags & libc::RTF_LLINFO == 0 {
+            return None;
+        }
+        parse_addresses(
+            header.rtm_index.into(),
+            header.rtm_addrs,
+            &message[size_of::<libc::rt_msghdr>()..],
+        )
+    })
+}
+
+fn active_arp_row(message: &[u8], now: i64) -> Option<NeighborRow> {
+    if message.len() < size_of::<ArpRouteHeader>() {
+        return None;
+    }
+    let header = unsafe { message.as_ptr().cast::<ArpRouteHeader>().read_unaligned() };
+    if header.kind != RTM_GET_EXT
+        || header.flags & libc::RTF_LLINFO == 0
+        || header.refs == 0
+        || header.receive_expire <= u64::try_from(now).ok()?
+    {
+        return None;
+    }
+    parse_addresses(
+        header.index,
+        header.addrs,
+        &message[size_of::<ArpRouteHeader>()..],
+    )
+}
+
+fn parse_routes(mut bytes: &[u8], parse: impl Fn(&[u8]) -> Option<NeighborRow>) -> Vec<NeighborRow> {
     let mut rows = Vec::new();
-    while bytes.len() >= size_of::<libc::rt_msghdr>() {
-        // Kernel messages are byte-aligned; never dereference an aligned struct pointer.
-        let header = unsafe { bytes.as_ptr().cast::<libc::rt_msghdr>().read_unaligned() };
-        let length = header.rtm_msglen as usize;
-        if length < size_of::<libc::rt_msghdr>() || length > bytes.len() {
+    while bytes.len() >= 4 {
+        let length = u16::from_ne_bytes([bytes[0], bytes[1]]) as usize;
+        if length < 4 || length > bytes.len() {
             break;
         }
-        let message = &bytes[..length];
-        if header.rtm_version == libc::RTM_VERSION as u8 && header.rtm_flags & libc::RTF_LLINFO != 0
-        {
-            if let Some(row) = parse_message(&header, message) {
-                if row.is_usable() {
-                    rows.push(row);
-                }
+        if bytes[2] == libc::RTM_VERSION as u8 {
+            if let Some(row) = parse(&bytes[..length]).filter(NeighborRow::is_usable) {
+                rows.push(row);
             }
         }
         bytes = &bytes[length..];
@@ -151,11 +273,11 @@ fn parse_table(mut bytes: &[u8]) -> Vec<NeighborRow> {
     rows
 }
 
-fn parse_message(header: &libc::rt_msghdr, bytes: &[u8]) -> Option<NeighborRow> {
-    let mut cursor = size_of::<libc::rt_msghdr>();
+fn parse_addresses(ifindex: u32, addrs: i32, bytes: &[u8]) -> Option<NeighborRow> {
+    let mut cursor = 0usize;
     let (mut ip, mut mac) = (None, None);
     for index in 0..libc::RTAX_MAX {
-        if header.rtm_addrs & (1 << index) == 0 {
+        if addrs & (1 << index) == 0 {
             continue;
         }
         let length = *bytes.get(cursor)? as usize;
@@ -172,7 +294,7 @@ fn parse_message(header: &libc::rt_msghdr, bytes: &[u8]) -> Option<NeighborRow> 
         }
     }
     let mut name = [0_i8; libc::IF_NAMESIZE];
-    let interface = unsafe { libc::if_indextoname(header.rtm_index as u32, name.as_mut_ptr()) };
+    let interface = unsafe { libc::if_indextoname(ifindex, name.as_mut_ptr()) };
     let interface_alias = if interface.is_null() {
         String::new()
     } else {
@@ -300,6 +422,43 @@ mod tests {
         assert_eq!(parse_table(&bytes)[0].state, "Cached");
         bytes[std::mem::offset_of!(libc::rt_msghdr, rtm_version)] = 0;
         assert!(parse_table(&bytes).is_empty());
+    }
+
+    #[test]
+    fn native_arp_requires_unexpired_receive_evidence() {
+        let base = message([2, 0xaa, 0xbb, 0xcc, 0xdd, 1]);
+        let mut bytes = vec![0; size_of::<ArpRouteHeader>()];
+        bytes.extend_from_slice(&base[size_of::<libc::rt_msghdr>()..]);
+        let len = bytes.len() as u16;
+        bytes[..2].copy_from_slice(&len.to_ne_bytes());
+        bytes[2] = libc::RTM_VERSION as u8;
+        bytes[3] = RTM_GET_EXT;
+        let flags = std::mem::offset_of!(ArpRouteHeader, flags);
+        bytes[flags..flags + 4].copy_from_slice(&libc::RTF_LLINFO.to_ne_bytes());
+        let addrs = std::mem::offset_of!(ArpRouteHeader, addrs);
+        bytes[addrs..addrs + 4].copy_from_slice(&(libc::RTA_DST | libc::RTA_GATEWAY).to_ne_bytes());
+        let send = std::mem::offset_of!(ArpRouteHeader, _send_expire);
+        bytes[send..send + 8].copy_from_slice(&200_u64.to_ne_bytes());
+        let refs = std::mem::offset_of!(ArpRouteHeader, refs);
+        bytes[refs..refs + 4].copy_from_slice(&1_u32.to_ne_bytes());
+        assert!(active_arp_row(&bytes, 100).is_none());
+        let recv = std::mem::offset_of!(ArpRouteHeader, receive_expire);
+        bytes[recv..recv + 8].copy_from_slice(&101_u64.to_ne_bytes());
+        let row = active_arp_row(&bytes, 100).unwrap();
+        assert_eq!(row.ip_address, "192.168.1.42");
+        assert_eq!(row.link_layer_address, "02:aa:bb:cc:dd:01");
+        assert!(active_arp_row(&bytes, 101).is_none());
+        bytes[refs..refs + 4].fill(0);
+        assert!(active_arp_row(&bytes, 100).is_none());
+    }
+
+    #[test]
+    fn native_ndp_only_confirms_a_current_reachable_address() {
+        let confirmed = |state, expiry| super::super::is_current_neighbor_state(classify_ndp(state, expiry, 100));
+        assert!(confirmed(1, 101));
+        for (state, expiry) in [(1, 100), (1, 0), (0, 101), (2, 101), (3, 101), (4, 101)] {
+            assert!(!confirmed(state, expiry));
+        }
     }
 
     #[test]
