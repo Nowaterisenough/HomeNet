@@ -1088,13 +1088,6 @@ fn matching_device_for_config<'a>(
         .find(|device| device_matches_config(device, config))
 }
 
-pub(crate) fn device_ddns_device_is_online(
-    config: &DeviceDdnsConfig,
-    devices: &[LanDevice],
-) -> bool {
-    matching_device_for_config(config, devices).is_some_and(|device| device.online)
-}
-
 fn global_ipv6_by_candidate_index<'a>(
     config: &DeviceDdnsConfig,
     device: &'a LanDevice,
@@ -1108,79 +1101,33 @@ fn global_ipv6_by_candidate_index<'a>(
         .nth(candidate_index - 1)
 }
 
-fn first_ipv4(device: &LanDevice) -> Option<&str> {
-    device
-        .ipv4
-        .iter()
-        .map(|value| value.trim())
-        .find(|value| !value.is_empty())
-}
-
-pub(crate) fn resolve_device_ipv6(
+/// Resolve only from this scan. Saved DNS values and historical IPv6 addresses
+/// are for display and must never authorize a provider request.
+pub(crate) fn resolve_device_record_value<'a>(
     config: &DeviceDdnsConfig,
-    devices: &[LanDevice],
-) -> Result<String, String> {
-    let device = matching_device_for_config(config, devices)
-        .ok_or_else(|| "未找到匹配的局域网设备".to_string())?;
-
-    global_ipv6_by_candidate_index(config, device)
-        .map(|value| value.to_string())
-        .ok_or_else(|| {
-            format!(
-                "设备 {} 没有第 {} 个可用的公网 IPv6 候选",
-                device.display_name,
-                config.ip_candidate_index.max(1)
-            )
-        })
-}
-
-pub(crate) fn resolve_device_ipv4(
-    config: &DeviceDdnsConfig,
-    devices: &[LanDevice],
-) -> Result<String, String> {
-    let device = matching_device_for_config(config, devices)
-        .ok_or_else(|| "未找到匹配的局域网设备".to_string())?;
-
-    let selected_ip = config.selected_ip.trim();
-    if !selected_ip.is_empty() {
-        let selected_is_available = device.ipv4.iter().any(|value| value.trim() == selected_ip);
-        if selected_is_available {
-            return Ok(selected_ip.to_string());
-        }
-    }
-
-    first_ipv4(device)
-        .map(|value| value.to_string())
-        .ok_or_else(|| format!("设备 {} 没有可用的 IPv4", device.display_name))
-}
-
-pub(crate) fn resolve_device_record_value(
-    config: &DeviceDdnsConfig,
-    devices: &[LanDevice],
-) -> Result<String, String> {
+    devices: &'a [LanDevice],
+) -> Option<&'a str> {
+    let device = matching_device_for_config(config, devices).filter(|device| device.online)?;
     if config.record_type.trim().eq_ignore_ascii_case("A") {
-        resolve_device_ipv4(config, devices)
+        let mut addresses = device.ipv4.iter().map(|ip| ip.trim()).filter(|ip| !ip.is_empty());
+        let selected = config.selected_ip.trim();
+        addresses.clone().find(|ip| *ip == selected).or_else(|| addresses.next())
     } else {
-        resolve_device_ipv6(config, devices)
+        global_ipv6_by_candidate_index(config, device)
     }
 }
 
 pub(crate) async fn update_device_ddns_record(
     config: &DeviceDdnsConfig,
-    devices: &[LanDevice],
-) -> Result<(String, String), String> {
+    ip: &str,
+) -> Result<String, String> {
     validate_device_ddns_config(config)?;
-    if !device_ddns_device_is_online(config, devices) {
-        return Err("设备离线，无法更新 DDNS".to_string());
-    }
-    let ip = resolve_device_record_value(config, devices)?;
     let client = crate::ddns::aliyun::AliyunDdns::new(to_device_ddns_aliyun_config(config));
-    let result = if config.record_type.trim().eq_ignore_ascii_case("A") {
-        client.update_record(&ip, "").await?
+    if config.record_type.trim().eq_ignore_ascii_case("A") {
+        client.update_record(ip, "").await
     } else {
-        client.update_record("", &ip).await?
-    };
-    Ok((ip, result))
+        client.update_record("", ip).await
+    }
 }
 
 fn runtime_ddns_status(config: &AppConfig) -> &'static str {
@@ -1918,16 +1865,19 @@ pub async fn trigger_device_ddns_update(
     if was_saved && !device_binding_is_current(&state, &device_config, &identity) {
         return Err("地址刷新期间 DDNS 绑定已变更，请重新同步".into());
     }
-    let currently_online = device_ddns_device_is_online(&device_config, &devices);
+    let Some(ip) = resolve_device_record_value(&device_config, &devices) else {
+        crate::record_device_ddns_offline(&state, &device_config, &identity)?;
+        return Err(crate::DEVICE_DDNS_OFFLINE_RESULT.into());
+    };
     let domain = device_ddns_domain(&device_config);
-    let update_result = update_device_ddns_record(&device_config, &devices).await;
+    let update_result = update_device_ddns_record(&device_config, ip).await;
 
     match update_result {
-        Ok((ip, result)) => {
+        Ok(result) => {
             match apply_device_ddns_status_if_current(
                 &state,
                 &identity,
-                Some(ip.clone()),
+                Some(ip.to_owned()),
                 result.clone(),
                 Some(true),
                 true,
@@ -1958,7 +1908,7 @@ pub async fn trigger_device_ddns_update(
                 &identity,
                 None,
                 error.clone(),
-                Some(currently_online),
+                Some(true),
                 true,
             ) {
                 Ok(true) => {}
@@ -2638,8 +2588,8 @@ mod tests {
         )];
 
         assert_eq!(
-            resolve_device_ipv6(&config, &devices),
-            Ok("2408:8200::10".to_string())
+            resolve_device_record_value(&config, &devices),
+            Some("2408:8200::10")
         );
     }
 
@@ -2659,8 +2609,8 @@ mod tests {
         )];
 
         assert_eq!(
-            resolve_device_ipv6(&config, &devices),
-            Ok("2408:8200::11".to_string())
+            resolve_device_record_value(&config, &devices),
+            Some("2408:8200::11")
         );
     }
 
@@ -2677,8 +2627,8 @@ mod tests {
         )];
 
         assert_eq!(
-            resolve_device_ipv6(&config, &devices),
-            Ok("2408:8200::10".to_string())
+            resolve_device_record_value(&config, &devices),
+            Some("2408:8200::10")
         );
     }
 
@@ -2694,7 +2644,7 @@ mod tests {
             vec!["2408:8200::10"],
         )];
 
-        assert!(resolve_device_ipv6(&config, &devices).is_err());
+        assert!(resolve_device_record_value(&config, &devices).is_none());
     }
 
     #[test]
@@ -2711,8 +2661,8 @@ mod tests {
         )];
 
         assert_eq!(
-            resolve_device_ipv6(&config, &devices),
-            Ok("2408:8200::20".to_string())
+            resolve_device_record_value(&config, &devices),
+            Some("2408:8200::20")
         );
     }
 
@@ -2729,8 +2679,8 @@ mod tests {
         let devices = vec![device];
 
         assert_eq!(
-            resolve_device_ipv6(&config, &devices),
-            Ok("2408:8200::2".to_string())
+            resolve_device_record_value(&config, &devices),
+            Some("2408:8200::2")
         );
     }
 
@@ -2783,7 +2733,7 @@ mod tests {
 
         assert_eq!(
             resolve_device_record_value(&config, &devices),
-            Ok("192.168.110.95".to_string())
+            Some("192.168.110.95")
         );
     }
 
@@ -2799,7 +2749,7 @@ mod tests {
             vec!["2408:8200::10"],
         )];
 
-        assert!(device_ddns_device_is_online(&config, &devices));
+        assert!(resolve_device_record_value(&config, &devices).is_some());
     }
 
     #[test]
@@ -2823,8 +2773,8 @@ mod tests {
         assert!(!device_matches_config(&local, &config));
         assert!(device_matches_config(&target, &config));
         assert_eq!(
-            resolve_device_ipv6(&config, &[local, target]),
-            Ok("240e:358:1a2:df00::cf0".to_string())
+            resolve_device_record_value(&config, &[local, target]),
+            Some("240e:358:1a2:df00::cf0")
         );
     }
 
@@ -2857,7 +2807,7 @@ mod tests {
         let mut device = lan_device("device-1", "aa:bb:cc:dd:ee:ff", vec!["2408:8200::10"]);
         device.online = false;
 
-        assert!(!device_ddns_device_is_online(&config, &[device]));
+        assert!(resolve_device_record_value(&config, &[device]).is_none());
     }
 
     #[test]
@@ -3018,8 +2968,8 @@ mod tests {
             vec!["240e:358:1f9:4900::699"],
         );
         assert_eq!(
-            resolve_device_ipv6(&generated_local_config, &[corrected_local_device]),
-            Ok("240e:358:1f9:4900::699".to_string())
+            resolve_device_record_value(&generated_local_config, &[corrected_local_device]),
+            Some("240e:358:1f9:4900::699")
         );
         assert!(!device_selectors_match(
             "device-a",

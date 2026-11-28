@@ -424,16 +424,14 @@ fn enrich_neighbor_devices_with_active_discovery(
     hints: &[DeviceDiscoveryHint],
 ) {
     apply_device_discovery_hints(devices, hints);
-    refresh_hinted_device_ipv6_candidates(devices, hints);
 
     let targets = active_discovery_ipv4_targets(devices);
-    if targets.is_empty() {
-        return;
-    }
-
     let hostnames_by_ip =
         query_netbios_hostnames(&targets.iter().map(|(_, ip)| *ip).collect::<Vec<Ipv4Addr>>());
 
+    // A cached hostname may still resolve after shutdown. Use it for enrichment
+    // only if IPv6 is reachable or the host just answered a direct query.
+    refresh_hinted_device_ipv6_candidates(devices, hints, &hostnames_by_ip);
     let mut llmnr_targets = Vec::new();
     for (device_index, ip) in targets {
         if let Some(hostname) = hostnames_by_ip.get(&ip) {
@@ -461,16 +459,22 @@ fn enrich_neighbor_devices_with_active_discovery(
     }
 }
 
-fn refresh_hinted_device_ipv6_candidates(devices: &mut [LanDevice], hints: &[DeviceDiscoveryHint]) {
+fn refresh_hinted_device_ipv6_candidates(
+    devices: &mut [LanDevice],
+    hints: &[DeviceDiscoveryHint],
+    responding_hosts: &HashMap<Ipv4Addr, String>,
+) {
     let local_addresses = local_interface_ip_set();
-    refresh_hinted_device_ipv6_candidates_with_resolver(devices, hints, |device, hint| {
-        resolve_hint_ipv6_addresses_for_device(device, hint, &local_addresses)
-    });
+    refresh_hinted_device_ipv6_candidates_with_resolver(
+        devices, hints, responding_hosts,
+        |device, hint| resolve_hint_ipv6_addresses_for_device(device, hint, &local_addresses),
+    );
 }
 
 fn refresh_hinted_device_ipv6_candidates_with_resolver<F>(
     devices: &mut [LanDevice],
     hints: &[DeviceDiscoveryHint],
+    responding_hosts: &HashMap<Ipv4Addr, String>,
     mut resolve_addresses: F,
 ) where
     F: FnMut(&LanDevice, &DeviceDiscoveryHint) -> Vec<Ipv6Addr>,
@@ -479,6 +483,13 @@ fn refresh_hinted_device_ipv6_candidates_with_resolver<F>(
         let Some(hint) = matching_device_hint(device, hints) else {
             continue;
         };
+        if device.global_ipv6.is_empty()
+            && !device.ipv4.iter()
+                .filter_map(|ip| ip.parse::<Ipv4Addr>().ok())
+                .any(|ip| responding_hosts.contains_key(&ip))
+        {
+            continue;
+        }
         if hint.device_name.trim().is_empty() {
             continue;
         }
@@ -2233,7 +2244,7 @@ ip_address: 192.168.100.143
             ..DeviceDiscoveryHint::default()
         };
 
-        refresh_hinted_device_ipv6_candidates_with_resolver(&mut devices, &[hint], |_, _| {
+        refresh_hinted_device_ipv6_candidates_with_resolver(&mut devices, &[hint], &HashMap::new(), |_, _| {
             vec![
                 "240e:358:1f9:b700:8e7:364e:ff6a:7ec"
                     .parse::<Ipv6Addr>()
@@ -2277,7 +2288,7 @@ ip_address: 192.168.100.143
             ..DeviceDiscoveryHint::default()
         };
 
-        refresh_hinted_device_ipv6_candidates_with_resolver(&mut devices, &[hint], |_, _| {
+        refresh_hinted_device_ipv6_candidates_with_resolver(&mut devices, &[hint], &HashMap::new(), |_, _| {
             Vec::new()
         });
 
@@ -2388,6 +2399,34 @@ ff02::1                              33:33:00:00:00:01 en0 permanent  R
         assert_eq!(targets.len(), 8);
         assert_eq!(targets[0], ("en1", "2001:db8::20".parse().unwrap()));
         assert!(!targets.contains(&("en1", "2001:db8::21".parse().unwrap())));
+    }
+
+    #[test]
+    fn ipv4_reachability_and_cached_names_do_not_restore_an_offline_aaaa_binding() {
+        use crate::{commands::resolve_device_record_value, config::DeviceDdnsConfig};
+        let mac = "02:aa:bb:cc:dd:42";
+        let old_ipv6 = "2001:db8::42";
+        let arp = "192.0.2.42 02:aa:bb:cc:dd:42 1m 1m en0 1";
+        let ndp = "2001:db8::42 02:aa:bb:cc:dd:42 en0 10h S";
+        let mut devices = merge_neighbor_rows(parse_macos_neighbor_tables(arp, ndp));
+        let hint = DeviceDiscoveryHint {
+            device_mac: mac.into(), device_name: "desktop".into(), ..Default::default()
+        };
+        refresh_hinted_device_ipv6_candidates_with_resolver(
+            &mut devices, &[hint], &HashMap::new(), |_, _| vec![old_ipv6.parse().unwrap()],
+        );
+        let binding = DeviceDdnsConfig {
+            device_mac: mac.into(), selected_ipv6: old_ipv6.into(), last_synced_ip: old_ipv6.into(),
+            last_online: true, ..Default::default()
+        };
+        assert!(devices[0].online);
+        assert_eq!(devices[0].ipv6, [old_ipv6]);
+        assert_eq!(resolve_device_record_value(&binding, &devices), None);
+        let a = DeviceDdnsConfig { record_type: "A".into(), ..binding.clone() };
+        assert_eq!(resolve_device_record_value(&a, &devices), Some("192.0.2.42"));
+
+        let recovered = merge_neighbor_rows(parse_macos_neighbor_tables(arp, &ndp.replace("10h S", "25s R")));
+        assert_eq!(resolve_device_record_value(&binding, &recovered), Some(old_ipv6));
     }
 
     #[test]

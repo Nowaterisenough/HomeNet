@@ -266,7 +266,7 @@ fn ip_only_replies_and_redacted_macs_cannot_claim_an_existing_binding() {
         source: "icmp-reply".into(),
         last_seen: String::new(),
     };
-    assert!(!device_ddns_device_is_online(&config, &[device.clone()]));
+    assert!(resolve_device_record_value(&config, &[device.clone()]).is_none());
     config.device_id = "local-machine".into();
     config.device_name = "Remote PC".into();
     config.device_mac = "02:00:00:00:00:00".into();
@@ -275,7 +275,7 @@ fn ip_only_replies_and_redacted_macs_cannot_claim_an_existing_binding() {
         source: "local-interface".into(),
         ..device
     };
-    assert!(!device_ddns_device_is_online(&config, &[local]));
+    assert!(resolve_device_record_value(&config, &[local]).is_none());
 }
 
 #[test]

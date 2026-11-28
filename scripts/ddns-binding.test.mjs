@@ -7,7 +7,7 @@ import {
   prepareNewDdnsBinding,
 } from "../src/utils/ddns.ts";
 import { withBoundDevices } from "../src/utils/devices.ts";
-import { ddnsDeviceEntries } from "../src/utils/ddnsDevices.ts";
+import { currentIpForConfig, ddnsDeviceEntries } from "../src/utils/ddnsDevices.ts";
 import { devicePickerOptions } from "../src/utils/devicePicker.ts";
 
 const mac = ["02", "aa", "bb", "cc", "dd", "01"].join(":");
@@ -188,4 +188,16 @@ test("legacy bindings with a redacted MAC remain visible offline for repair with
   assert.equal(rows[0].device.source, "ddns-binding");
   assert.equal(rows[0].device.online, false);
   assert.equal(rows[0].configs[0], legacy);
+});
+
+test("AAAA binding goes offline when only historical IPv6 and IPv4 remain, then recovers", () => {
+  const aaaa = { ...base(), last_online: true, last_synced_ip: device.ipv6[0] };
+  const cached = { ...device, global_ipv6: [] };
+  assert.equal(ddnsDeviceEntries([cached], [aaaa])[0].online, false);
+  assert.equal(currentIpForConfig(aaaa, cached), "");
+  const a = { ...base(), record_type: "A" };
+  assert.equal(ddnsDeviceEntries([cached], [aaaa, a])[0].online, true);
+  assert.equal(currentIpForConfig(a, cached), device.ipv4[0]);
+  assert.equal(currentIpForConfig(aaaa, device), device.global_ipv6[0]);
+  assert.equal(ddnsDeviceEntries([device], [aaaa])[0].online, true);
 });

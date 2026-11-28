@@ -26,7 +26,15 @@ import {
   ddnsRecordKey,
 } from "../utils/ddns";
 import { statusTone } from "../utils/presentation";
-import { ddnsDeviceEntries } from "../utils/ddnsDevices";
+import {
+  availableIpsForRecordType,
+  configuredIpForConfig,
+  currentIpForConfig,
+  ddnsDeviceEntries,
+  offlineDdnsResult,
+  recordTypeForConfig,
+  uniqueStrings,
+} from "../utils/ddnsDevices";
 import { invokeCommand } from "../lib/tauri";
 import type { DeviceDdnsConfig, LanDevice } from "../types";
 import { formatSyncTime } from "../utils/time";
@@ -59,60 +67,8 @@ interface DeviceRow {
   configs: DeviceDdnsConfig[];
 }
 
-function uniqueStrings(values: string[]): string[] {
-  return values.reduce<string[]>((result, value) => {
-    const trimmed = value.trim();
-    if (trimmed && !result.includes(trimmed)) result.push(trimmed);
-    return result;
-  }, []);
-}
-
 function displayName(device: LanDevice, index: number): string {
   return device.hostname || device.display_name || `LAN-DEVICE-${index + 1}`;
-}
-
-function firstGlobalIpv6(device: LanDevice): string {
-  return device.global_ipv6[0] || "";
-}
-
-function recordTypeForConfig(config: DeviceDdnsConfig | null): "A" | "AAAA" {
-  return config?.record_type.trim().toUpperCase() === "A" ? "A" : "AAAA";
-}
-
-function configuredIpForConfig(config: DeviceDdnsConfig | null): string {
-  if (!config) return "";
-  const recordType = recordTypeForConfig(config);
-  if (recordType === "A") return config.selected_ip.trim();
-  return (config.selected_ip || config.selected_ipv6).trim();
-}
-
-function availableIpsForRecordType(
-  device: LanDevice,
-  recordType: "A" | "AAAA",
-): string[] {
-  if (!device.online) return [];
-  if (recordType === "A") {
-    return uniqueStrings(device.ipv4);
-  }
-  return uniqueStrings(device.global_ipv6.filter((ip) => ip.includes(":")));
-}
-
-function currentIpForConfig(
-  config: DeviceDdnsConfig | null,
-  device: LanDevice,
-): string {
-  const recordType = recordTypeForConfig(config);
-  const available = availableIpsForRecordType(device, recordType);
-  if (recordType === "AAAA") {
-    const candidateIndex = Math.max(
-      1,
-      Math.floor(Number(config?.ip_candidate_index) || 1),
-    );
-    return available[candidateIndex - 1] || "";
-  }
-  const configured = configuredIpForConfig(config);
-  if (configured && available.includes(configured)) return configured;
-  return available[0] || "";
 }
 
 function normalizeConfig(
@@ -160,9 +116,8 @@ function configuredDomain(config: DeviceDdnsConfig | null): string {
 }
 
 function mapDdnsDevice(
-  device: LanDevice,
+  { device, configs: boundConfigs, online }: ReturnType<typeof ddnsDeviceEntries>[number],
   index: number,
-  boundConfigs: DeviceDdnsConfig[],
   preferredBindingKey = "",
 ): DeviceRow {
   const config =
@@ -181,7 +136,7 @@ function mapDdnsDevice(
     name: configuredName || nativeName,
     nativeName,
     mac: device.mac || "-",
-    online: device.online,
+    online,
     configured: Boolean(config),
     enabled: boundConfigs.some((config) => config.enabled),
     domain: configuredDomain(config),
@@ -211,7 +166,7 @@ function buildDdnsRows(
 ) {
   return prioritizeEnabledDeviceRows(
     ddnsDeviceEntries(devices, configs).map((entry, index) =>
-      mapDdnsDevice(entry.device, index, entry.configs, preferredBindingKey),
+      mapDdnsDevice(entry, index, preferredBindingKey),
     ),
   );
 }
@@ -317,6 +272,8 @@ export default function DeviceDdnsPanel({
       recordTypeForConfig(draft),
     );
   }, [draft, selectedRow]);
+  const bindingIp = selectedRow && currentIpForConfig(selectedRow.config, selectedRow.raw);
+  const draftIp = selectedRow && currentIpForConfig(draft, selectedRow.raw);
   const selectedIpv6Candidate = useMemo(() => {
     if (!draft || recordTypeForConfig(draft) !== "AAAA") return "";
     const candidateIndex = Math.max(
@@ -405,7 +362,7 @@ export default function DeviceDdnsPanel({
     if (!selectedRow || !draft) return "请选择要配置的 DDNS 设备";
     if (!selectedRow.raw.mac.trim()) return "绑定设备必须有 MAC 地址";
     if (requireEnabled && !draft.enabled) return "请先启用同步";
-    if (requireEnabled && !selectedRow.online)
+    if (requireEnabled && !draftIp)
       return "设备离线，等待上线后再同步";
     if (!draft.access_key_id.trim() || !draft.access_key_secret.trim()) {
       return "请填写完整的 AccessKey ID 和 Secret";
@@ -415,11 +372,9 @@ export default function DeviceDdnsPanel({
       return "记录类型仅支持 A 或 AAAA";
     }
     if (
-      selectedRow.online &&
+      availableIpOptions.length > 0 &&
       draft.record_type.trim().toUpperCase() === "AAAA"
     ) {
-      if (availableIpOptions.length === 0)
-        return "当前设备没有可用于 DDNS 的稳定公网 IPv6";
       const candidateIndex = Math.max(
         1,
         Math.floor(Number(draft.ip_candidate_index) || 1),
@@ -441,13 +396,7 @@ export default function DeviceDdnsPanel({
       1,
       Math.floor(Number(draft.ip_candidate_index) || 1),
     );
-    const selectedIp = !selectedRow.online
-      ? configuredIpForConfig(draft)
-      : (recordType === "A"
-          ? draft.selected_ip || selectedRow.raw.ipv4[0]
-          : availableIpsForRecordType(selectedRow.raw, "AAAA")[
-              candidateIndex - 1
-            ] || firstGlobalIpv6(selectedRow.raw)) || "";
+    const selectedIp = draftIp || configuredIpForConfig(draft);
     return {
       ...draft,
       provider: draft.provider || defaultConfig.provider,
@@ -565,8 +514,14 @@ export default function DeviceDdnsPanel({
       setMessageType("success");
       notifyDataChanged();
     } catch (error) {
-      setStatusMessage(`设备 DDNS 同步失败：${String(error)}`);
-      setMessageType("error");
+      if (String(error) === offlineDdnsResult) {
+        setStatusMessage(offlineDdnsResult);
+        setMessageType("info");
+        await inventory.refresh();
+      } else {
+        setStatusMessage(`设备 DDNS 同步失败：${String(error)}`);
+        setMessageType("error");
+      }
     } finally {
       setSyncing(false);
       window.setTimeout(() => setStatusMessage(""), 5200);
@@ -584,7 +539,7 @@ export default function DeviceDdnsPanel({
     const candidateIndex = Math.max(1, Math.floor(Number(value) || 1));
     const selectedIp =
       availableIpOptions[candidateIndex - 1] ||
-      (!selectedRow?.online ? configuredIpForConfig(draft) : "");
+      (availableIpOptions.length === 0 ? configuredIpForConfig(draft) : "");
     setDraft((current) =>
       current
         ? {
@@ -641,7 +596,11 @@ export default function DeviceDdnsPanel({
     ? "未绑定"
     : !selectedRow.config?.enabled
       ? "已停用"
-      : selectedRow.config?.last_result || "等待首次同步";
+      : !bindingIp
+        ? offlineDdnsResult
+        : selectedRow.config.last_result === offlineDdnsResult
+          ? "等待下次同步"
+          : selectedRow.config.last_result || "等待首次同步";
 
   return (
     <div className={`device-ddns-stack ${className}`.trim()}>
@@ -738,6 +697,7 @@ export default function DeviceDdnsPanel({
                       <strong>{device.name}</strong>
                       <small className="mono">
                         {device.boundIp || "暂无已同步地址"}
+                        {device.boundIp && !device.online ? "（上次地址）" : ""}
                       </small>
                     </span>
                     <span className="device-status-icons">
@@ -832,7 +792,7 @@ export default function DeviceDdnsPanel({
               <div className="device-detail-body">
                 <div className="detail-section-heading">
                   <h3>网络信息</h3>
-                  {selectedRow.raw.global_ipv6.length ? (
+                  {selectedRow.online && selectedRow.raw.global_ipv6.length > 0 ? (
                     <span className="badge">公网 IPv6</span>
                   ) : (
                     <span className="badge badge-neutral">
@@ -925,7 +885,7 @@ export default function DeviceDdnsPanel({
                       <p className="mono">
                         {recordTypeForConfig(selectedRow.config)} ·{" "}
                         {selectedRow.boundIp || "暂无已同步地址"}
-                        {selectedRow.boundIp && !selectedRow.online ? "（上次地址）" : ""}
+                        {selectedRow.boundIp && !bindingIp ? "（上次地址）" : ""}
                       </p>
                     </div>
                     <dl className="detail-list">
@@ -972,9 +932,9 @@ export default function DeviceDdnsPanel({
                   {selectedRow.config?.enabled ? (
                     <button
                       className="btn btn-secondary"
-                      disabled={mutating || syncing || !selectedRow.online}
+                      disabled={mutating || syncing || !bindingIp}
                       title={
-                        !selectedRow.online
+                        !bindingIp
                           ? "设备离线，等待上线后再同步"
                           : undefined
                       }
@@ -1032,9 +992,9 @@ export default function DeviceDdnsPanel({
               <button
                 className="btn btn-secondary"
                 type="button"
-                disabled={mutating || syncing || !selectedRow.online}
+                disabled={mutating || syncing || !draftIp}
                 title={
-                  !selectedRow.online ? "设备离线，等待上线后再同步" : undefined
+                  !draftIp ? "设备离线，等待上线后再同步" : undefined
                 }
                 onClick={syncNow}
               >

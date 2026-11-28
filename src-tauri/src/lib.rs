@@ -277,6 +277,23 @@ fn device_ddns_should_write_offline_state(config: &config::DeviceDdnsConfig) -> 
     config.last_online || config.last_result.trim() != DEVICE_DDNS_OFFLINE_RESULT
 }
 
+fn record_device_ddns_offline(
+    state: &commands::AppState,
+    config: &config::DeviceDdnsConfig,
+    identity: &commands::DeviceDdnsOperationIdentity,
+) -> Result<(), String> {
+    if device_ddns_should_write_offline_state(config)
+        && commands::apply_device_ddns_status_if_current(
+            state, identity, None, DEVICE_DDNS_OFFLINE_RESULT.into(), Some(false), false,
+        )?
+    {
+        config::add_log("info", "设备DDNS", &format!(
+            "设备 DDNS 检测到设备离线，等待上线后自动同步：{}", commands::device_ddns_domain(config)
+        ));
+    }
+    Ok(())
+}
+
 /// One fresh address inventory serves all bindings due in this scheduling round.
 async fn device_ddns_background_task(app: tauri::AppHandle) {
     config::add_log("info", "设备DDNS", "设备 DDNS 后台任务已启动");
@@ -315,53 +332,24 @@ async fn sync_due_devices(
     for device_config in device_configs {
         let identity = commands::device_ddns_identity(&device_config);
         let domain = commands::device_ddns_domain(&device_config);
-        let currently_online = commands::device_ddns_device_is_online(&device_config, devices);
         // A binding can be edited or disabled while a shared scan is in flight.
         if !commands::device_binding_is_current(state, &device_config, &identity) {
             continue;
         }
 
-        if !currently_online {
-            if device_ddns_should_write_offline_state(&device_config) {
-                match commands::apply_device_ddns_status_if_current(
-                    state,
-                    &identity,
-                    None,
-                    DEVICE_DDNS_OFFLINE_RESULT.to_string(),
-                    Some(false),
-                    false,
-                ) {
-                    Ok(true) => config::add_log(
-                        "info",
-                        "设备DDNS",
-                        &format!("设备 DDNS 检测到设备离线，等待上线后自动同步：{}", domain),
-                    ),
-                    Ok(false) => config::add_log(
-                        "warn",
-                        "设备DDNS",
-                        &format!(
-                            "设备 DDNS 检测到设备离线但配置已变化，跳过状态写入：{}",
-                            domain
-                        ),
-                    ),
-                    Err(error) => config::add_log(
-                        "error",
-                        "设备DDNS",
-                        &format!("设备 DDNS 离线状态写入失败：{}，{}", domain, error),
-                    ),
-                }
+        let Some(ip) = commands::resolve_device_record_value(&device_config, devices) else {
+            if let Err(error) = record_device_ddns_offline(state, &device_config, &identity) {
+                config::add_log("error", "设备DDNS", &format!("设备 DDNS 离线状态写入失败：{domain}，{error}"));
             }
             continue;
-        }
+        };
 
-        let update_result = commands::update_device_ddns_record(&device_config, devices).await;
-
-        match update_result {
-            Ok((ip, result)) => {
+        match commands::update_device_ddns_record(&device_config, ip).await {
+            Ok(result) => {
                 match commands::apply_device_ddns_status_if_current(
                     state,
                     &identity,
-                    Some(ip.clone()),
+                    Some(ip.to_owned()),
                     result.clone(),
                     Some(true),
                     true,
